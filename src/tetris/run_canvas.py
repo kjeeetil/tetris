@@ -99,7 +99,10 @@ class Runner:
                     # piece is already in an invalid position, resetting the
                     # game avoids crashes from attempting to lock out-of-bounds
                     # blocks.
-                    if self.state.active and not can_move(self.state.board, self.state.active, 0, 0):
+                    if not self.state.active:
+                        self._log("Game over. Resetting.")
+                        self.state.reset_game()
+                    elif not can_move(self.state.board, self.state.active, 0, 0):
                         self._log("Game over. Resetting.")
                         self.state.reset_game()
                     else:
