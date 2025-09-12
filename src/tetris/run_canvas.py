@@ -97,8 +97,12 @@ class Runner:
                 else:
                     # Lock and spawn next using board utilities
                     self.state.board.lock_piece(self.state.active)
-                    self.state.board.clear_full_rows()
-                    self.state.spawn_tetromino()
+                    if any(self.state.board.grid[0]):
+                        self._log("Game over. Resetting.")
+                        self.state.reset_game()
+                    else:
+                        self.state.board.clear_full_rows()
+                        self.state.spawn_tetromino()
         self._draw()
         self.raf_handle = window.requestAnimationFrame(create_proxy(self._tick))
 
@@ -120,8 +124,12 @@ class Runner:
             while can_move(self.state.board, self.state.active, 0, 1):
                 self.state.active.move(0, 1)
             self.state.board.lock_piece(self.state.active)
-            self.state.board.clear_full_rows()
-            self.state.spawn_tetromino()
+            if any(self.state.board.grid[0]):
+                self._log("Game over. Resetting.")
+                self.state.reset_game()
+            else:
+                self.state.board.clear_full_rows()
+                self.state.spawn_tetromino()
         self._draw()
 
     def start(self) -> None:
