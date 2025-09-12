@@ -8,6 +8,7 @@ together with ``pygame`` for rendering and input.
 
 from __future__ import annotations
 
+import os
 import pygame
 
 from .board import Board, PIECE_VALUES
@@ -100,6 +101,9 @@ def handle_key(event: pygame.event.Event, state: GameState) -> None:
 
 
 def main() -> None:
+    # Ensure SDL/pygame binds to the visible canvas in the page when running on Web.
+    os.environ.setdefault("SDL_HINT_EMSCRIPTEN_CANVAS_ELEMENT_ID", "#canvas")
+    os.environ.setdefault("SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT", "#canvas")
     pygame.init()
     board_px = Board.width * CELL_SIZE
     board_py = Board.height * CELL_SIZE
