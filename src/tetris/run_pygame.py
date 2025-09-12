@@ -19,8 +19,6 @@ from .utils import can_move
 
 # Size of a single board cell in pixels
 CELL_SIZE = 30
-# Milliseconds between automatic downward moves
-GRAVITY_MS = 500
 # Frames per second to run the game loop at
 FPS = 60
 
@@ -39,6 +37,48 @@ SHAPE_COLORS = {
 CELL_COLORS = {0: (0, 0, 0)}
 for shape, value in PIECE_VALUES.items():
     CELL_COLORS[value] = SHAPE_COLORS[shape]
+
+
+# Level speed table roughly matching classic NES Tetris
+LEVEL_FRAMES = {
+    0: 48,
+    1: 43,
+    2: 38,
+    3: 33,
+    4: 28,
+    5: 23,
+    6: 18,
+    7: 13,
+    8: 8,
+    9: 6,
+    10: 5,
+    11: 5,
+    12: 5,
+    13: 4,
+    14: 4,
+    15: 4,
+    16: 3,
+    17: 3,
+    18: 3,
+    19: 2,
+    20: 2,
+    21: 2,
+    22: 2,
+    23: 2,
+    24: 2,
+    25: 2,
+    26: 2,
+    27: 2,
+    28: 2,
+    29: 1,
+}
+
+
+def gravity_for_level(level: int) -> int:
+    """Return gravity in ms for the given level."""
+
+    frames = LEVEL_FRAMES.get(min(level, 29), 1)
+    return int((frames / 60) * 1000)
 
 
 _LOG_BUFFER: list[str] = []
@@ -126,6 +166,14 @@ def lock_and_continue(state: GameState) -> None:
         except Exception:
             pass
 
+    state.pieces += 1
+    if state.pieces % 20 == 0:
+        state.level += 1
+        try:
+            log(f"Level up! Level {state.level}")
+        except Exception:
+            pass
+
     state.spawn_tetromino()
     if not can_move(state.board, state.active, 0, 0):
         # Game over -> reset
@@ -205,7 +253,8 @@ class GameRunner:
 
             if not self._paused and self._state:
                 self._drop_timer += dt
-                if self._drop_timer >= GRAVITY_MS:
+                gravity = gravity_for_level(self._state.level)
+                if self._drop_timer >= gravity:
                     self._drop_timer = 0
                     if self._state.active and can_move(self._state.board, self._state.active, 0, 1):
                         self._state.active.move(0, 1)
@@ -221,7 +270,11 @@ class GameRunner:
                     # Draw the piece but dim? For now, still draw it
                     draw_tetromino(self._screen, self._state)
                 pygame.display.set_caption(
-                    f"Tetris - {'Paused - ' if self._paused else ''}Score: {self._state.score}"
+                    (
+                        "Tetris - "
+                        f"{'Paused - ' if self._paused else ''}Score: {self._state.score} "
+                        f"Level: {self._state.level}"
+                    )
                 )
                 pygame.display.flip()
 
