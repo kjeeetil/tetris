@@ -123,9 +123,11 @@ class PlacementEnv:
 
     Key properties
     - Action: index into the current list of valid (rotation, column) placements.
-    - Reward: ``reward_per_line * lines_cleared`` (default 100 per line). When
-      the game is over (no valid placements), an optional ``top_out_penalty``
-      is applied once.
+    - Reward: lines cleared multiplied by ``reward_per_line`` where the
+      per-line value scales with simultaneous clears. With the default
+      ``reward_per_line`` of 100, clearing 1/2/3/4 lines yields 100/200/300/400
+      points per line respectively. When the game is over (no valid placements),
+      an optional ``top_out_penalty`` is applied once.
     - Episode termination: when there are no valid placements for the active
       piece.
     - Observation: dictionary containing the binary occupancy grid and piece
@@ -291,7 +293,8 @@ class PlacementEnv:
         # Lock and clear
         self.state.board.lock_piece(piece)
         cleared = self.state.board.clear_full_rows()
-        score_delta = cleared * self.reward_per_line
+        multiplier = cleared if cleared > 1 else 1
+        score_delta = cleared * self.reward_per_line * multiplier
         self.state.score += score_delta
 
         # Spawn next piece

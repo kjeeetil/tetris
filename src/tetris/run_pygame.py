@@ -98,7 +98,8 @@ def lock_and_continue(state: GameState) -> None:
     state.board.lock_piece(state.active)
     cleared = state.board.clear_full_rows()
     if cleared:
-        state.score += cleared * 100
+        per_line = 100 * (cleared if cleared > 1 else 1)
+        state.score += cleared * per_line
         try:
             log(f"Cleared {cleared} row(s). Score: {state.score}")
         except Exception:
