@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from .board import Board
+from typing import Optional, List
+
+from .board import Board, PIECE_VALUES
 from .tetromino import Tetromino
 
 
@@ -24,3 +26,20 @@ def can_move(board: Board, tetromino: Tetromino, dx: int, dy: int) -> bool:
         if not board.is_empty(new_row, new_col):
             return False
     return True
+
+
+def render_grid(board: Board, active: Optional[Tetromino] = None) -> List[List[int]]:
+    """Return a copy of the board grid with the active piece overlaid.
+
+    This is a convenience for renderers that want a single 2D array to draw
+    without mutating the underlying board state (i.e. without locking the
+    piece). Cells occupied by the active piece receive the mapped integer
+    value for the piece's shape.
+    """
+
+    grid = [row[:] for row in board.grid]
+    if active is not None:
+        for r, c in active.blocks():
+            if 0 <= r < board.height and 0 <= c < board.width:
+                grid[r][c] = PIECE_VALUES[active.shape]
+    return grid
