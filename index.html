@@ -399,7 +399,11 @@
             train.mean = new Float64Array(INITIAL_MEAN);
             train.std = new Float64Array(INITIAL_STD);
             train.gen = 0;
-            samplePopulation();
+            train.candWeights = [];
+            train.candScores = [];
+            train.candIndex = -1;
+            train.ai.plan = null;
+            train.ai.acc = 0;
             updateTrainStatus();
             log('Training parameters reset');
           }
