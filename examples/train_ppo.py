@@ -70,7 +70,12 @@ class WeightVisualizationCallback(BaseCallback):
             ax.set_ylabel("In")
             self.images.append(im)
         plt.tight_layout()
+        # Ensure the initial figure is rendered before training starts so that
+        # the weight visualisation window actually appears on screen.
+        assert self.fig is not None
+        self.fig.canvas.draw()
         plt.show(block=False)
+        plt.pause(0.001)
 
     def _on_step(self) -> bool:
         if self.n_calls % self.update_freq == 0:
