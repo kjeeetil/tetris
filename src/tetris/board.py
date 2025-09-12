@@ -67,38 +67,11 @@ class Board:
         return False
 
     def lock_piece(self, tetromino: Tetromino) -> None:
-        """Lock the tetromino's blocks into the board grid.
+        """Lock the tetromino's blocks into the board grid."""
 
-        Each block of the piece is written to the grid using a small integer
-        representing the piece's shape.  Values greater than zero represent
-        filled cells whilst ``0`` means empty.
-        """
-
-        for row, col in tetromino.blocks():
-            if 0 <= row < self.height and 0 <= col < self.width:
-                self.grid[row][col] = PIECE_VALUES[tetromino.shape]
-
-    def clear_full_rows(self) -> int:
-        """Remove any completely filled rows and return the number cleared."""
-
-        new_grid = [row for row in self.grid if any(cell == 0 for cell in row)]
-        cleared = self.height - len(new_grid)
-        while len(new_grid) < self.height:
-        """Return ``True`` if the cell at ``(row, col)`` is empty."""
-
-        if 0 <= row < self.height and 0 <= col < self.width:
-            return self.grid[row][col] == 0
-        return False
-
-    def lock_piece(self, tetromino: "Tetromino") -> None:
-        """Lock all blocks of ``tetromino`` into the board grid."""
-
-        from .tetromino import TetrominoType
-
-        shape_id = list(TetrominoType).index(tetromino.shape) + 1
         for r, c in tetromino.blocks():
             if 0 <= r < self.height and 0 <= c < self.width:
-                self.grid[r][c] = shape_id
+                self.grid[r][c] = PIECE_VALUES[tetromino.shape]
             else:
                 raise IndexError("Block out of bounds")
 
@@ -108,7 +81,7 @@ class Board:
         new_grid: Grid = [row for row in self.grid if any(cell == 0 for cell in row)]
         cleared = self.height - len(new_grid)
         for _ in range(cleared):
-
             new_grid.insert(0, [0] * self.width)
         self.grid = new_grid
         return cleared
+
