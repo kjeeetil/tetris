@@ -112,6 +112,9 @@
       <button id="toggle" class="icon-btn" title="Play/Pause" aria-label="Play/Pause">▶</button>
       <button id="reset" class="icon-btn" title="Reset" aria-label="Reset">⟲</button>
     </div>
+    <div class="controls">
+      <button id="train" class="icon-btn" title="Start/Stop Training" aria-label="Start/Stop Training">AI</button>
+    </div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
@@ -240,11 +243,15 @@
           if(!state.last) state.last = ts;
           const dt = ts - state.last; state.last = ts;
           if(!state.paused && state.active){
-            state.acc += dt;
-            if(state.acc >= GRAVITY_MS){
-              state.acc = 0;
-              if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-              else { lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)){ log('Game over. Resetting.'); Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0}); spawn(); } }
+            if(window.__train && window.__train.enabled){
+              window.__aiStep(dt);
+            } else {
+              state.acc += dt;
+              if(state.acc >= GRAVITY_MS){
+                state.acc = 0;
+                if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+                else { lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); } }
+              }
             }
           }
           draw(state.grid, state.active);
@@ -268,7 +275,7 @@
         document.addEventListener('keydown', (e) => {
           if(!state.running) return;
           if (BLOCK_KEYS.has(e.key)) e.preventDefault();
-          if(state.paused || !state.active) return;
+          if(state.paused || !state.active || (window.__train && window.__train.enabled)) return;
           if(e.key==='ArrowLeft' && canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0);
           else if(e.key==='ArrowRight' && canMove(state.grid, state.active, 1, 0)) state.active.move(1,0);
           else if(e.key==='ArrowUp'){ state.active.rotate(); if(!canMove(state.grid, state.active, 0, 0)) state.active.rotate(-1); }
@@ -283,6 +290,127 @@
 
         log('Ready. Click Start to run.');
         renderControls();
+
+        // ================= AI Training (placement-level with animation) =================
+        // Expose minimal API on window to avoid invasive edits above
+        (function(){
+          const FEAT_DIM = 5;
+          const AI_STEP_MS = 28; // ms between AI animation steps
+
+          const train = {
+            enabled: false,
+            gen: 0,
+            popSize: 8,
+            eliteFrac: 0.25,
+            mean: new Float64Array([1.0, -0.5, -0.8, -0.3, -0.2]),
+            std: new Float64Array([0.5, 0.5, 0.5, 0.5, 0.5]),
+            minStd: 0.05,
+            candWeights: [],
+            candScores: [],
+            candIndex: -1,
+            ai: { plan: null, acc: 0 },
+          };
+          window.__train = train;
+
+          function randn(){ let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+          function samplePopulation(){
+            train.candWeights = [];
+            for(let i=0;i<train.popSize;i++){
+              const w = new Float64Array(FEAT_DIM);
+              for(let d=0; d<FEAT_DIM; d++) w[d] = train.mean[d] + train.std[d]*randn();
+              train.candWeights.push(w);
+            }
+            train.candScores = new Array(train.popSize).fill(0);
+            train.candIndex = 0;
+          }
+
+          function startTraining(){
+            if(!state.running){ start(); }
+            train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
+            const btn = document.getElementById('train'); if(btn) btn.textContent = '⏹';
+            log('Training started');
+          }
+          function stopTraining(){ train.enabled = false; train.ai.plan = null; const btn = document.getElementById('train'); if(btn) btn.textContent = 'AI'; log('Training stopped'); }
+          window.startTraining = startTraining; window.stopTraining = stopTraining;
+
+          function onGameOver(){
+            log('Game over. Resetting.');
+            if(train.enabled){
+              if(train.candIndex >= 0) train.candScores[train.candIndex] = state.score;
+              if(train.candIndex + 1 < train.popSize){
+                train.candIndex += 1;
+                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+                spawn(); train.ai.plan = null; train.ai.acc = 0;
+                log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+              } else {
+                const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+                const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
+                const elites = idx.slice(0, eliteCount);
+                const newMean = new Float64Array(FEAT_DIM);
+                for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<FEAT_DIM; d++) newMean[d]+=w[d]; }
+                for(let d=0; d<FEAT_DIM; d++) newMean[d] /= eliteCount;
+                const newStd = new Float64Array(FEAT_DIM);
+                for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<FEAT_DIM; d++){ const diff=w[d]-newMean[d]; newStd[d]+=diff*diff; } }
+                for(let d=0; d<FEAT_DIM; d++) newStd[d] = Math.max(train.minStd, Math.sqrt(newStd[d]/eliteCount));
+                train.mean = newMean; train.std = newStd; train.gen += 1;
+                log(`Gen ${train.gen} complete. Best score: ${train.candScores[idx[0]]}`);
+                samplePopulation();
+                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+                spawn(); train.ai.plan = null; train.ai.acc = 0;
+                log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+              }
+            } else {
+              Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+              spawn();
+            }
+          }
+          window.__onGameOver = onGameOver;
+
+          function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
+          function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
+          function copyGrid(g){ return g.map(r=>r.slice()); }
+          function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
+          function enumeratePlacements(grid, shape){ const actions=[]; const rotIdx=uniqueRotIdx(shape); for(const rot of rotIdx){ const width=stateWidth(SHAPES[shape][rot]); for(let col=0; col<=WIDTH-width; col++){ const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(grid,p); if(fr!==null) actions.push({rot,col}); } } return actions; }
+          function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
+          function clearRowsSim(grid){ let remaining = grid.filter(row => row.some(v => v===0)); const cleared = HEIGHT - remaining.length; while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0)); for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r]; return cleared; }
+          function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
+          function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
+          function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
+          function featuresForPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); const h=columnHeights(g); const aggH=h.reduce((a,b)=>a+b,0); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); return { feats:new Float64Array([lines, aggH, Holes, Bump, maxH]), lines } }
+          function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; const f=ff.feats; let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*f[d]; return s; }
+          function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
+
+          function planForCurrentPiece(){ if(!state.active) return null; const w=train.candWeights[train.candIndex] || train.mean; const a=choosePlacement(w, state.grid, state.active.shape); if(!a){ return null; } const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len; return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' }; }
+
+          function aiStep(dt){
+            train.ai.acc += dt; if(train.ai.acc < AI_STEP_MS) return; train.ai.acc = 0;
+            if(!state.active){ return; }
+            if(!train.ai.plan){ train.ai.plan = planForCurrentPiece(); if(!train.ai.plan){ // force drop to end episode
+                while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+                lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return; }
+            }
+            const plan = train.ai.plan; if(!plan) return;
+            if(plan.stage==='rotate'){
+              if(plan.rotLeft>0){ state.active.rotate(); if(!canMove(state.grid, state.active, 0, 0)) state.active.rotate(-1); else plan.rotLeft -= 1; return; }
+              plan.stage='move'; return;
+            }
+            if(plan.stage==='move'){
+              if(state.active.col < plan.targetCol){ if(canMove(state.grid, state.active, 1, 0)) state.active.move(1,0); else plan.stage='drop'; return; }
+              if(state.active.col > plan.targetCol){ if(canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0); else plan.stage='drop'; return; }
+              plan.stage='drop'; return;
+            }
+            if(plan.stage==='drop'){
+              if(canMove(state.grid, state.active, 0, 1)){ state.active.move(0,1); return; }
+              lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+              spawn(); train.ai.plan = null; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
+            }
+          }
+          window.__aiStep = aiStep;
+
+          // Hook up training button
+          const trainBtn = document.getElementById('train');
+          if(trainBtn){ trainBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
+        })();
       })();
     </script>
   </body>
