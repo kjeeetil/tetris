@@ -179,6 +179,10 @@
           speedSlider.addEventListener('input', () => {
             speedMult = Number(speedSlider.value);
             if (speedDisplay) speedDisplay.textContent = `${speedMult}x`;
+            if (state.running) {
+              clearTimeout(state.raf);
+              scheduleNext();
+            }
           });
         }
 
@@ -303,6 +307,11 @@
 
         const spawn = () => { const s = state.next || randShape(); state.active = new Piece(s); state.next = randShape(); drawNext(state.next); updateScore(); updateLevel(); };
 
+        const scheduleNext = () => {
+          const delay = 1000 / (60 * speedMult);
+          state.raf = setTimeout(() => tick(performance.now()), delay);
+        };
+
         function tick(ts){
           if(!state.running){ return; }
           if(!state.last) state.last = ts;
@@ -333,13 +342,13 @@
             }
           }
           draw(state.grid, state.active);
-          state.raf = requestAnimationFrame(tick);
+          scheduleNext();
         }
 
-        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); state.raf = requestAnimationFrame(tick); log('Game started'); renderControls(); }
+        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
         function pause(){ if(!state.running){ log('Pause ignored: not running'); return; } state.paused=true; log('Paused'); }
         function resume(){ if(!state.running){ log('Resume ignored: not running'); return; } state.paused=false; log('Resumed'); }
-        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) cancelAnimationFrame(state.raf); log('Game stopped'); renderControls(); }
+        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) clearTimeout(state.raf); log('Game stopped'); renderControls(); }
 
         // Toggle + reset controls
         const toggleBtn = document.getElementById('toggle');
