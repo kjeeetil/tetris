@@ -6,6 +6,7 @@ from typing import List
 
 from .tetromino import Tetromino, TetrominoType
 
+
 # Dimensions of the standard Tetris board.
 WIDTH = 10
 HEIGHT = 20
@@ -83,6 +84,31 @@ class Board:
         new_grid = [row for row in self.grid if any(cell == 0 for cell in row)]
         cleared = self.height - len(new_grid)
         while len(new_grid) < self.height:
+        """Return ``True`` if the cell at ``(row, col)`` is empty."""
+
+        if 0 <= row < self.height and 0 <= col < self.width:
+            return self.grid[row][col] == 0
+        return False
+
+    def lock_piece(self, tetromino: "Tetromino") -> None:
+        """Lock all blocks of ``tetromino`` into the board grid."""
+
+        from .tetromino import TetrominoType
+
+        shape_id = list(TetrominoType).index(tetromino.shape) + 1
+        for r, c in tetromino.blocks():
+            if 0 <= r < self.height and 0 <= c < self.width:
+                self.grid[r][c] = shape_id
+            else:
+                raise IndexError("Block out of bounds")
+
+    def clear_full_rows(self) -> int:
+        """Clear completed rows and return how many were removed."""
+
+        new_grid: Grid = [row for row in self.grid if any(cell == 0 for cell in row)]
+        cleared = self.height - len(new_grid)
+        for _ in range(cleared):
+
             new_grid.insert(0, [0] * self.width)
         self.grid = new_grid
         return cleared
