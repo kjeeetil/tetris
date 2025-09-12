@@ -140,21 +140,13 @@ def lock_and_continue(state: GameState) -> None:
     # raise an ``IndexError`` and effectively freeze the game.  Treat such a
     # scenario as a game-over and reset instead of crashing.
     if not can_move(state.board, state.active, 0, 0):
-        try:
-            log("Game over. Resetting.")
-        except Exception:
-            pass
-        state.reset_game()
+        state.game_over(log)
         return
 
     state.board.lock_piece(state.active)
     # If any blocks reach the top row after locking, it's game over.
     if any(cell != 0 for cell in state.board.grid[0]):
-        try:
-            log("Game over. Resetting.")
-        except Exception:
-            pass
-        state.reset_game()
+        state.game_over(log)
         return
 
     cleared = state.board.clear_full_rows()
@@ -177,11 +169,7 @@ def lock_and_continue(state: GameState) -> None:
     state.spawn_tetromino()
     if not can_move(state.board, state.active, 0, 0):
         # Game over -> reset
-        try:
-            log("Game over. Resetting.")
-        except Exception:
-            pass
-        state.reset_game()
+        state.game_over(log)
 
 
 def handle_key(event: pygame.event.Event, state: GameState) -> None:

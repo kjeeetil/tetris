@@ -80,3 +80,18 @@ class GameState:
         self.hold_used = False
         self.spawn_tetromino()
 
+    def game_over(self, log_fn=None) -> None:
+        """Log a game-over message and reset the game state.
+
+        ``log_fn`` is an optional callable used for diagnostics.  Any
+        exceptions raised during logging are ignored so that the game loop can
+        continue unhindered.
+        """
+
+        if log_fn is not None:
+            try:
+                log_fn("Game over. Resetting.")
+            except Exception:
+                pass
+        self.reset_game()
+

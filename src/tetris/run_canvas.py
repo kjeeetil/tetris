@@ -100,16 +100,13 @@ class Runner:
                     # game avoids crashes from attempting to lock out-of-bounds
                     # blocks.
                     if not self.state.active:
-                        self._log("Game over. Resetting.")
-                        self.state.reset_game()
+                        self.state.game_over(self._log)
                     elif not can_move(self.state.board, self.state.active, 0, 0):
-                        self._log("Game over. Resetting.")
-                        self.state.reset_game()
+                        self.state.game_over(self._log)
                     else:
                         self.state.board.lock_piece(self.state.active)
                         if any(self.state.board.grid[0]):
-                            self._log("Game over. Resetting.")
-                            self.state.reset_game()
+                            self.state.game_over(self._log)
                         else:
                             self.state.board.clear_full_rows()
                             self.state.spawn_tetromino()
@@ -134,13 +131,11 @@ class Runner:
             while can_move(self.state.board, self.state.active, 0, 1):
                 self.state.active.move(0, 1)
             if not can_move(self.state.board, self.state.active, 0, 0):
-                self._log("Game over. Resetting.")
-                self.state.reset_game()
+                self.state.game_over(self._log)
             else:
                 self.state.board.lock_piece(self.state.active)
                 if any(self.state.board.grid[0]):
-                    self._log("Game over. Resetting.")
-                    self.state.reset_game()
+                    self.state.game_over(self._log)
                 else:
                     self.state.board.clear_full_rows()
                     self.state.spawn_tetromino()
