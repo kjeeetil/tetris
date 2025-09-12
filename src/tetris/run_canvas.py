@@ -67,11 +67,13 @@ class Runner:
             self._game_over()
             return
         self.state.board.lock_piece(self.state.active)
+        self.state.board.clear_full_rows()
         if any(self.state.board.grid[0]):
             self._game_over()
-        else:
-            self.state.board.clear_full_rows()
-            self.state.spawn_tetromino()
+            return
+        self.state.spawn_tetromino()
+        if not can_move(self.state.board, self.state.active, 0, 0):
+            self._game_over()
 
     def _draw(self) -> None:
         ctx = self._ctx()
