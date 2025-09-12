@@ -95,14 +95,21 @@ class Runner:
                 if self.state.active and can_move(self.state.board, self.state.active, 0, 1):
                     self.state.active.move(0, 1)
                 else:
-                    # Lock and spawn next using board utilities
-                    self.state.board.lock_piece(self.state.active)
-                    if any(self.state.board.grid[0]):
+                    # Lock and spawn next using board utilities.  If the
+                    # piece is already in an invalid position, resetting the
+                    # game avoids crashes from attempting to lock out-of-bounds
+                    # blocks.
+                    if self.state.active and not can_move(self.state.board, self.state.active, 0, 0):
                         self._log("Game over. Resetting.")
                         self.state.reset_game()
                     else:
-                        self.state.board.clear_full_rows()
-                        self.state.spawn_tetromino()
+                        self.state.board.lock_piece(self.state.active)
+                        if any(self.state.board.grid[0]):
+                            self._log("Game over. Resetting.")
+                            self.state.reset_game()
+                        else:
+                            self.state.board.clear_full_rows()
+                            self.state.spawn_tetromino()
         self._draw()
         self.raf_handle = window.requestAnimationFrame(create_proxy(self._tick))
 
@@ -123,13 +130,17 @@ class Runner:
         elif key == " ":  # Space
             while can_move(self.state.board, self.state.active, 0, 1):
                 self.state.active.move(0, 1)
-            self.state.board.lock_piece(self.state.active)
-            if any(self.state.board.grid[0]):
+            if not can_move(self.state.board, self.state.active, 0, 0):
                 self._log("Game over. Resetting.")
                 self.state.reset_game()
             else:
-                self.state.board.clear_full_rows()
-                self.state.spawn_tetromino()
+                self.state.board.lock_piece(self.state.active)
+                if any(self.state.board.grid[0]):
+                    self._log("Game over. Resetting.")
+                    self.state.reset_game()
+                else:
+                    self.state.board.clear_full_rows()
+                    self.state.spawn_tetromino()
         self._draw()
 
     def start(self) -> None:

@@ -95,6 +95,18 @@ def lock_and_continue(state: GameState) -> None:
 
     if not state.active:
         return
+    # If the piece is already in an invalid position (partially outside the
+    # board or colliding with existing blocks), attempting to lock it would
+    # raise an ``IndexError`` and effectively freeze the game.  Treat such a
+    # scenario as a game-over and reset instead of crashing.
+    if not can_move(state.board, state.active, 0, 0):
+        try:
+            log("Game over. Resetting.")
+        except Exception:
+            pass
+        state.reset_game()
+        return
+
     state.board.lock_piece(state.active)
     # If any blocks reach the top row after locking, it's game over.
     if any(cell != 0 for cell in state.board.grid[0]):
