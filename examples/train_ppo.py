@@ -96,6 +96,8 @@ def make_env():
         reward_per_line=100,
         invalid_action_penalty=-0.1,
         top_out_penalty=-10.0,
+        step_penalty=-1.0,
+        single_line_penalty=-10.0,
     )
 
 

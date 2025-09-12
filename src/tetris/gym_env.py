@@ -43,6 +43,8 @@ class TetrisPlacementGymEnv(gym.Env):
         invalid_action_penalty: float = -0.1,
         top_out_penalty: float = -10.0,
         deterministic_bag: bool = True,
+        step_penalty: float = 0.0,
+        single_line_penalty: float = 0.0,
         max_steps: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -51,6 +53,8 @@ class TetrisPlacementGymEnv(gym.Env):
             invalid_action_penalty=invalid_action_penalty,
             top_out_penalty=top_out_penalty,
             deterministic_bag=deterministic_bag,
+            step_penalty=step_penalty,
+            single_line_penalty=single_line_penalty,
         )
         self.include_action_mask = include_action_mask
         self.action_space = spaces.Discrete(MAX_PLACEMENT_ACTIONS)
