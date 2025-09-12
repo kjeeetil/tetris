@@ -114,7 +114,9 @@
     </div>
     <div class="controls">
       <button id="train" class="icon-btn" title="Start/Stop Training" aria-label="Start/Stop Training">AI</button>
+      <button id="train-reset" class="icon-btn" title="Reset Training" aria-label="Reset Training">♻️</button>
     </div>
+    <div id="train-status"></div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
@@ -122,6 +124,7 @@
         const canvas = document.getElementById('canvas');
         const preview = document.getElementById('preview');
         const diag = document.getElementById('diagnostics');
+        const trainStatus = document.getElementById('train-status');
         const scoreEl = document.getElementById('score');
         const ctx = canvas.getContext('2d');
         const pctx = preview.getContext('2d');
@@ -297,13 +300,15 @@
           const FEAT_DIM = 5;
           const AI_STEP_MS = 28; // ms between AI animation steps
 
+          const INITIAL_MEAN = new Float64Array([1.0, -0.5, -0.8, -0.3, -0.2]);
+          const INITIAL_STD = new Float64Array([0.5, 0.5, 0.5, 0.5, 0.5]);
           const train = {
             enabled: false,
             gen: 0,
             popSize: 8,
             eliteFrac: 0.25,
-            mean: new Float64Array([1.0, -0.5, -0.8, -0.3, -0.2]),
-            std: new Float64Array([0.5, 0.5, 0.5, 0.5, 0.5]),
+            mean: new Float64Array(INITIAL_MEAN),
+            std: new Float64Array(INITIAL_STD),
             minStd: 0.05,
             candWeights: [],
             candScores: [],
@@ -311,6 +316,15 @@
             ai: { plan: null, acc: 0 },
           };
           window.__train = train;
+
+          function updateTrainStatus(){
+            if(!trainStatus) return;
+            if(train.enabled){
+              trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize}`;
+            } else {
+              trainStatus.textContent = 'Training stopped';
+            }
+          }
 
           function randn(){ let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
           function samplePopulation(){
@@ -327,11 +341,21 @@
           function startTraining(){
             if(!state.running){ start(); }
             train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
+            updateTrainStatus();
             const btn = document.getElementById('train'); if(btn) btn.textContent = '⏹';
             log('Training started');
           }
-          function stopTraining(){ train.enabled = false; train.ai.plan = null; const btn = document.getElementById('train'); if(btn) btn.textContent = 'AI'; log('Training stopped'); }
-          window.startTraining = startTraining; window.stopTraining = stopTraining;
+          function stopTraining(){ train.enabled = false; train.ai.plan = null; const btn = document.getElementById('train'); if(btn) btn.textContent = 'AI'; log('Training stopped'); updateTrainStatus(); }
+          function resetTraining(){
+            stopTraining();
+            train.mean = new Float64Array(INITIAL_MEAN);
+            train.std = new Float64Array(INITIAL_STD);
+            train.gen = 0;
+            samplePopulation();
+            updateTrainStatus();
+            log('Training parameters reset');
+          }
+          window.startTraining = startTraining; window.stopTraining = stopTraining; window.resetTraining = resetTraining;
 
           function onGameOver(){
             log('Game over. Resetting.');
@@ -342,6 +366,7 @@
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
                 spawn(); train.ai.plan = null; train.ai.acc = 0;
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+                updateTrainStatus();
               } else {
                 const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
                 const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
@@ -358,6 +383,7 @@
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
                 spawn(); train.ai.plan = null; train.ai.acc = 0;
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+                updateTrainStatus();
               }
             } else {
               Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
@@ -407,9 +433,12 @@
           }
           window.__aiStep = aiStep;
 
-          // Hook up training button
+          // Hook up training buttons
           const trainBtn = document.getElementById('train');
           if(trainBtn){ trainBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
+          const trainResetBtn = document.getElementById('train-reset');
+          if(trainResetBtn){ trainResetBtn.addEventListener('click', resetTraining); }
+          updateTrainStatus();
         })();
       })();
     </script>
