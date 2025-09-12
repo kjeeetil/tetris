@@ -20,6 +20,8 @@ class GameState:
     held: Optional[TetrominoType] = None
     hold_used: bool = False
     score: int = 0
+    level: int = 0
+    pieces: int = 0
 
     def _random_type(self) -> TetrominoType:
         """Return a random tetromino type."""
@@ -70,6 +72,8 @@ class GameState:
         self.board = Board()
         self.board.grid = create_empty_grid()
         self.score = 0
+        self.level = 0
+        self.pieces = 0
         self.active = None
         self.upcoming = None
         self.held = None
