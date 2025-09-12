@@ -156,6 +156,7 @@
       <input id="speed" type="range" min="1" max="20" value="1" />
     </div>
     <div id="train-status"></div>
+    <div id="weights-display"></div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
@@ -164,6 +165,7 @@
         const preview = document.getElementById('preview');
         const diag = document.getElementById('diagnostics');
         const trainStatus = document.getElementById('train-status');
+        const weightsEl = document.getElementById('weights-display');
         const scoreEl = document.getElementById('score');
         const levelEl = document.getElementById('level');
         const ctx = canvas.getContext('2d');
@@ -400,12 +402,18 @@
           };
           window.__train = train;
 
+          function formatWeights(arr){ return Array.from(arr).map(v=>v.toFixed(2)).join(', '); }
           function updateTrainStatus(){
-            if(!trainStatus) return;
-            if(train.enabled){
-              trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize}`;
-            } else {
-              trainStatus.textContent = 'Training stopped';
+            if(trainStatus){
+              if(train.enabled){
+                trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize}`;
+              } else {
+                trainStatus.textContent = 'Training stopped';
+              }
+            }
+            if(weightsEl){
+              const w = train.enabled ? train.candWeights[train.candIndex] : train.mean;
+              weightsEl.textContent = w ? `Weights: ${formatWeights(w)}` : '';
             }
           }
 
