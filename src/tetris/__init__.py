@@ -3,6 +3,7 @@
 from .board import Board
 from .tetromino import Tetromino, TetrominoType, shape_blocks
 from .game_state import GameState
+from .placement_env import PlacementEnv
 from .utils import can_move, render_grid
 
 __all__ = [
@@ -10,6 +11,7 @@ __all__ = [
     "Tetromino",
     "TetrominoType",
     "GameState",
+    "PlacementEnv",
     "can_move",
     "render_grid",
     "shape_blocks",
