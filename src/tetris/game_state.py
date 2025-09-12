@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import random
 
-from .board import Board
+from .board import Board, create_empty_grid
 from .tetromino import Tetromino, TetrominoType
 
 
@@ -21,10 +21,26 @@ class GameState:
     hold_used: bool = False
     score: int = 0
 
+
+    def spawn_tetromino(self) -> Tetromino:
+        """Spawn and return a new active tetromino.
+
+        A random piece is chosen for the active slot while another random piece
+        is stored as ``upcoming`` to emulate the standard preview behaviour.
+        The new piece spawns near the top centre of the board.
+        """
+
+        shape = self.upcoming or random.choice(list(TetrominoType))
+        self.active = Tetromino(shape, position=(0, self.board.width // 2 - 2))
+        self.upcoming = random.choice(list(TetrominoType))
+        return self.active
     def _random_type(self) -> TetrominoType:
         """Return a random tetromino type."""
 
         return random.choice(list(TetrominoType))
+
+
+
 
     def spawn_tetromino(self) -> Tetromino:
         """Spawn and return a new active tetromino.
@@ -67,9 +83,12 @@ class GameState:
         """Reset the entire game state for a new game."""
 
         self.board = Board()
+        self.board.grid = create_empty_grid()
         self.score = 0
         self.active = None
         self.upcoming = None
         self.held = None
         self.hold_used = False
         self.spawn_tetromino()
+        
+
