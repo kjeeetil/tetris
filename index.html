@@ -150,6 +150,10 @@
       <button id="train" class="icon-btn" title="Start/Stop Training" aria-label="Start/Stop Training">AI</button>
       <button id="train-reset" class="icon-btn" title="Reset Training" aria-label="Reset Training">♻️</button>
     </div>
+    <div class="controls">
+      <label for="speed" id="speed-label">Speed: <span id="speed-display">1x</span></label>
+      <input id="speed" type="range" min="1" max="20" value="1" />
+    </div>
     <div id="train-status"></div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
@@ -165,6 +169,15 @@
         const CELL = 30, WIDTH = 10, HEIGHT = 20;
         const GRAVITY_MS = 500;
         const PREV_CELL = 28; // slightly smaller cell for preview
+        const speedSlider = document.getElementById('speed');
+        const speedDisplay = document.getElementById('speed-display');
+        let speedMult = 1;
+        if (speedSlider) {
+          speedSlider.addEventListener('input', () => {
+            speedMult = Number(speedSlider.value);
+            if (speedDisplay) speedDisplay.textContent = `${speedMult}x`;
+          });
+        }
 
         const log = (t) => {
           if (!diag) return;
@@ -279,11 +292,12 @@
           if(!state.running){ return; }
           if(!state.last) state.last = ts;
           const dt = ts - state.last; state.last = ts;
+          const effDt = dt * speedMult;
           if(!state.paused && state.active){
             if(window.__train && window.__train.enabled){
-              window.__aiStep(dt);
+              window.__aiStep(effDt);
             } else {
-              state.acc += dt;
+              state.acc += effDt;
               if(state.acc >= GRAVITY_MS){
                 state.acc = 0;
                 if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
