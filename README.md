@@ -3,12 +3,10 @@
 This repository provides a minimal Tetris implementation:
 
 - Web: Pure JavaScript renderer (no dependencies) served from `index.html` or `web/index.html`.
-- Desktop: Python + `pygame-ce` engine (`python -m tetris.run_pygame`).
 
 ## Requirements
 
 - A modern web browser with JavaScript enabled.
-- Internet access to load PyScript and the `pygame-ce` package. When running locally with Python, install dependencies with `pip install -r requirements.txt`.
 
 ## Running
 

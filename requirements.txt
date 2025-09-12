@@ -1,4 +1,3 @@
-pygame-ce
 gymnasium
 stable-baselines3
 numpy

@@ -1,4 +1,4 @@
-"""Canvas-based web front-end for Tetris (no pygame required).
+"""Canvas-based web front-end for Tetris.
 
 This renderer draws directly to the HTML5 canvas via PyScript/pyodide's JS
 bridge. It supports start/pause/resume/stop and basic keyboard controls.
