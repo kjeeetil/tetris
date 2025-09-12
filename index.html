@@ -152,7 +152,7 @@
     </div>
     <div class="controls">
       <label for="speed" id="speed-label">Speed: <span id="speed-display">1x</span></label>
-      <input id="speed" type="range" min="1" max="20" value="1" />
+      <input id="speed" type="range" min="1" max="60" value="1" />
     </div>
     <div id="train-status"></div>
     <div id="weights-display"></div>
@@ -294,16 +294,22 @@
           if(!state.running){ return; }
           if(!state.last) state.last = ts;
           const dt = ts - state.last; state.last = ts;
-          const effDt = dt * speedMult;
           if(!state.paused && state.active){
             if(window.__train && window.__train.enabled){
-              window.__aiStep(effDt);
+              window.__aiStep(dt * speedMult);
             } else {
-              state.acc += effDt;
-              if(state.acc >= GRAVITY_MS){
-                state.acc = 0;
+              const gravity = GRAVITY_MS / speedMult;
+              state.acc += dt;
+              while(state.acc >= gravity){
+                state.acc -= gravity;
                 if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-                else { lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); } }
+                else {
+                  lock(state.grid, state.active);
+                  const cleared = clearRows(state.grid);
+                  if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                  spawn();
+                  if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                }
               }
             }
           }

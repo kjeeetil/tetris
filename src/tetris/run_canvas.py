@@ -90,8 +90,8 @@ class Runner:
         self.last_ts = ts
         if not self.paused and self.state:
             self.drop_accum += dt
-            if self.drop_accum >= GRAVITY_MS:
-                self.drop_accum = 0
+            while self.drop_accum >= GRAVITY_MS:
+                self.drop_accum -= GRAVITY_MS
                 if self.state.active and can_move(self.state.board, self.state.active, 0, 1):
                     self.state.active.move(0, 1)
                 else:
