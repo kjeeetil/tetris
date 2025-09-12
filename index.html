@@ -166,8 +166,11 @@
         function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) cancelAnimationFrame(state.raf); log('Game stopped'); }
 
         // keyboard
+        const BLOCK_KEYS = new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','PageUp','PageDown','Home','End']);
         document.addEventListener('keydown', (e) => {
-          if(!state.running || state.paused || !state.active) return;
+          if(!state.running) return;
+          if (BLOCK_KEYS.has(e.key)) e.preventDefault();
+          if(state.paused || !state.active) return;
           if(e.key==='ArrowLeft' && canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0);
           else if(e.key==='ArrowRight' && canMove(state.grid, state.active, 1, 0)) state.active.move(1,0);
           else if(e.key==='ArrowUp'){ state.active.rotate(); if(!canMove(state.grid, state.active, 0, 0)) state.active.rotate(-1); }
