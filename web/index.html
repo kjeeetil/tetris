@@ -24,14 +24,71 @@
         border: 2px solid #000;
         display: block;
       }
+      .controls {
+        margin: 12px auto;
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        align-items: center;
+      }
+      #diagnostics {
+        width: 320px;
+        height: 140px;
+        margin: 12px auto 24px auto;
+        padding: 8px;
+        border: 1px solid #ccc;
+        background: #fafafa;
+        text-align: left;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+      }
     </style>
   </head>
   <body>
     <h1>Tetris</h1>
     <canvas id="canvas" width="300" height="600" tabindex="0"></canvas>
+    <div class="controls">
+      <button id="start">Start</button>
+      <button id="pause">Pause</button>
+      <button id="resume">Resume</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div id="diagnostics" aria-live="polite"></div>
     <py-script>
+from js import document
+from pyodide.ffi import create_proxy
 from tetris import run_pygame
-run_pygame.main()
+
+def log_ready():
+    try:
+        from js import Date
+        el = document.getElementById("diagnostics")
+        if el:
+            entry = document.createElement("div")
+            entry.textContent = f"[{Date().toLocaleTimeString()}] Ready. Click Start to run."
+            el.prepend(entry)
+    except Exception:
+        pass
+
+def on_start(evt=None):
+    run_pygame.start()
+
+def on_pause(evt=None):
+    run_pygame.pause()
+
+def on_resume(evt=None):
+    run_pygame.resume()
+
+def on_stop(evt=None):
+    run_pygame.stop()
+
+document.getElementById("start").addEventListener("click", create_proxy(on_start))
+document.getElementById("pause").addEventListener("click", create_proxy(on_pause))
+document.getElementById("resume").addEventListener("click", create_proxy(on_resume))
+document.getElementById("stop").addEventListener("click", create_proxy(on_stop))
+
+log_ready()
     </py-script>
   </body>
 </html>
