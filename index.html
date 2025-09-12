@@ -7,7 +7,6 @@
     <link rel="stylesheet" href="https://pyscript.net/latest/pyscript.css" />
     <script defer src="https://pyscript.net/latest/pyscript.js"></script>
     <py-config>
-      packages = ["pygame-ce"]
       [[fetch]]
       from = "./src/tetris"
       to_folder = "./tetris"
@@ -43,10 +42,15 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         font-size: 12px;
       }
+      /* Hide raw py-script source if PyScript fails to load */
+      py-script { display: none; }
     </style>
   </head>
   <body>
     <h1>Tetris</h1>
+    <noscript>
+      <div style="color:#b00020;margin:12px;">JavaScript is disabled. Enable it to run PyScript/pygame.</div>
+    </noscript>
     <canvas id="canvas" width="300" height="600" tabindex="0"></canvas>
     <div class="controls">
       <button id="start">Start</button>
@@ -56,40 +60,68 @@
     </div>
     <div id="diagnostics" aria-live="polite"></div>
     <py-script>
-from js import document
-from pyodide.ffi import create_proxy
-from tetris import run_pygame
+try:
+    from js import document
+    from pyodide.ffi import create_proxy
+    from tetris import run_canvas as runner
 
-def log_ready():
-    try:
-        from js import Date
-        el = document.getElementById("diagnostics")
-        if el:
-            entry = document.createElement("div")
-            entry.textContent = f"[{Date().toLocaleTimeString()}] Ready. Click Start to run."
-            el.prepend(entry)
-    except Exception:
-        pass
+    def log_ready():
+        try:
+            from js import Date
+            el = document.getElementById("diagnostics")
+            if el:
+                entry = document.createElement("div")
+                entry.textContent = f"[{Date().toLocaleTimeString()}] Ready. Click Start to run."
+                el.prepend(entry)
+        except Exception:
+            pass
 
-def on_start(evt=None):
-    run_pygame.start()
+    def on_start(evt=None):
+        runner.start()
 
-def on_pause(evt=None):
-    run_pygame.pause()
+    def on_pause(evt=None):
+        runner.pause()
 
-def on_resume(evt=None):
-    run_pygame.resume()
+    def on_resume(evt=None):
+        runner.resume()
 
-def on_stop(evt=None):
-    run_pygame.stop()
+    def on_stop(evt=None):
+        runner.stop()
 
-document.getElementById("start").addEventListener("click", create_proxy(on_start))
-document.getElementById("pause").addEventListener("click", create_proxy(on_pause))
-document.getElementById("resume").addEventListener("click", create_proxy(on_resume))
-document.getElementById("stop").addEventListener("click", create_proxy(on_stop))
+    document.getElementById("start").addEventListener("click", create_proxy(on_start))
+    document.getElementById("pause").addEventListener("click", create_proxy(on_pause))
+    document.getElementById("resume").addEventListener("click", create_proxy(on_resume))
+    document.getElementById("stop").addEventListener("click", create_proxy(on_stop))
 
-log_ready()
+    log_ready()
+except Exception as e:
+    from js import document
+    el = document.getElementById("diagnostics")
+    if el:
+        entry = document.createElement("div")
+        entry.textContent = f"[PyScript error] {e!r}"
+        el.prepend(entry)
     </py-script>
+    <script>
+      // Basic diagnostics if PyScript fails to load
+      (function () {
+        const add = (t) => {
+          const el = document.getElementById('diagnostics');
+          if (!el) return;
+          const div = document.createElement('div');
+          div.textContent = t;
+          el.prepend(div);
+        };
+        add('Loading Python runtime...');
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            if (!(window).pyodide && !(window).pyscript) {
+              add('PyScript did not load. Check network/CSP and try serving via http://localhost.');
+            }
+          }, 1500);
+        });
+      })();
+    </script>
   </body>
 </html>
 
