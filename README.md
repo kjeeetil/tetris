@@ -1,6 +1,9 @@
 # Tetris
 
-This repository provides a minimal Tetris implementation that runs in the browser using [PyScript](https://pyscript.net) and [`pygame-ce`](https://github.com/pygame-community/pygame-ce).
+This repository provides a minimal Tetris implementation:
+
+- Web: Pure JavaScript renderer (no dependencies) served from `index.html` or `web/index.html`.
+- Desktop: Python + `pygame-ce` engine (`python -m tetris.run_pygame`).
 
 ## Requirements
 
@@ -9,9 +12,8 @@ This repository provides a minimal Tetris implementation that runs in the browse
 
 ## Running
 
-1. Open [`index.html`](index.html) in your web browser.
-2. PyScript downloads the project and `pygame-ce`, then executes the Python block at the bottom of the page.
-3. The block imports `run_pygame` and calls `run_pygame.main()` which initializes the display and enters the main PyGame loop within the page's canvas element.
+1. Open [`index.html`](index.html) or `web/index.html` in your browser (no network CDNs required).
+2. Click Start. Use arrow keys to move, Up to rotate, Space to hard‑drop.
 
 ## Limitations
 

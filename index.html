@@ -5,13 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://pyscript.net; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; img-src 'self' data:;" />
     <title>Tetris</title>
-    <link rel="stylesheet" href="https://pyscript.net/latest/pyscript.css" />
-    <script defer src="https://pyscript.net/latest/pyscript.js"></script>
-    <py-config>
-      [[fetch]]
-      from = "./src/tetris"
-      to_folder = "./tetris"
-    </py-config>
+    
     <style>
       body {
         font-family: Arial, sans-serif;
@@ -43,8 +37,7 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         font-size: 12px;
       }
-      /* Hide raw py-script source if PyScript fails to load */
-      py-script { display: none; }
+      /* No external runtimes required; pure JS renderer */
     </style>
   </head>
   <body>
@@ -60,67 +53,136 @@
       <button id="stop">Stop</button>
     </div>
     <div id="diagnostics" aria-live="polite"></div>
-    <py-script>
-try:
-    from js import document
-    from pyodide.ffi import create_proxy
-    from tetris import run_canvas as runner
-
-    def log_ready():
-        try:
-            from js import Date
-            el = document.getElementById("diagnostics")
-            if el:
-                entry = document.createElement("div")
-                entry.textContent = f"[{Date().toLocaleTimeString()}] Ready. Click Start to run."
-                el.prepend(entry)
-        except Exception:
-            pass
-
-    def on_start(evt=None):
-        runner.start()
-
-    def on_pause(evt=None):
-        runner.pause()
-
-    def on_resume(evt=None):
-        runner.resume()
-
-    def on_stop(evt=None):
-        runner.stop()
-
-    document.getElementById("start").addEventListener("click", create_proxy(on_start))
-    document.getElementById("pause").addEventListener("click", create_proxy(on_pause))
-    document.getElementById("resume").addEventListener("click", create_proxy(on_resume))
-    document.getElementById("stop").addEventListener("click", create_proxy(on_stop))
-
-    log_ready()
-except Exception as e:
-    from js import document
-    el = document.getElementById("diagnostics")
-    if el:
-        entry = document.createElement("div")
-        entry.textContent = f"[PyScript error] {e!r}"
-        el.prepend(entry)
-    </py-script>
     <script>
-      // Basic diagnostics if PyScript fails to load
+      // --- Minimal Tetris in plain JavaScript (no PyScript) ---
       (function () {
-        const add = (t) => {
-          const el = document.getElementById('diagnostics');
-          if (!el) return;
-          const div = document.createElement('div');
-          div.textContent = t;
-          el.prepend(div);
+        const canvas = document.getElementById('canvas');
+        const diag = document.getElementById('diagnostics');
+        const ctx = canvas.getContext('2d');
+        const CELL = 30, WIDTH = 10, HEIGHT = 20;
+        const GRAVITY_MS = 500;
+
+        const log = (t) => {
+          if (!diag) return;
+          const d = document.createElement('div');
+          const now = new Date().toLocaleTimeString();
+          d.textContent = `[${now}] ${t}`;
+          diag.prepend(d);
         };
-        add('Loading Python runtime...');
-        window.addEventListener('load', function () {
-          setTimeout(function () {
-            if (!(window).pyodide && !(window).pyscript) {
-              add('PyScript did not load. Check network/CSP and try serving via http://localhost.');
+
+        const Shapes = {
+          I: [[0,0],[0,1],[0,2],[0,3]],
+          O: [[0,0],[0,1],[1,0],[1,1]],
+          T: [[0,0],[0,1],[0,2],[1,1]],
+          S: [[0,1],[0,2],[1,0],[1,1]],
+          Z: [[0,0],[0,1],[1,1],[1,2]],
+          J: [[0,0],[1,0],[1,1],[1,2]],
+          L: [[0,2],[1,0],[1,1],[1,2]],
+        };
+
+        const rotate = (state) => {
+          const rot = state.map(([r,c]) => [c, -r]);
+          let minR = Math.min(...rot.map(([r]) => r));
+          let minC = Math.min(...rot.map(([,c]) => c));
+          return rot.map(([r,c]) => [r - minR, c - minC]);
+        };
+
+        const genRotations = (s) => {
+          const r = [s];
+          for (let i=0;i<3;i++) r.push(s = rotate(s));
+          return r;
+        };
+
+        const SHAPES = {};
+        for (const k of Object.keys(Shapes)) SHAPES[k] = genRotations(Shapes[k]);
+
+        const emptyGrid = () => Array.from({length: HEIGHT}, () => Array(WIDTH).fill(0));
+
+        class Piece {
+          constructor(shape){ this.shape = shape; this.rot = 0; this.row = 0; this.col = Math.floor(WIDTH/2) - 2; }
+          blocks(){ const s = SHAPES[this.shape][this.rot]; return s.map(([dr,dc]) => [this.row+dr, this.col+dc]); }
+          move(dx,dy){ this.col += dx; this.row += dy; }
+          rotate(dir=1){ const states = SHAPES[this.shape]; this.rot = (this.rot + (dir>=0?1:states.length-1)) % states.length; }
+        }
+
+        const canMove = (grid, piece, dx, dy) => {
+          for(const [r,c] of piece.blocks()){
+            const nr = r + dy, nc = c + dx;
+            if (nr < 0 || nr >= HEIGHT || nc < 0 || nc >= WIDTH) return false;
+            if (grid[nr][nc] !== 0) return false;
+          }
+          return true;
+        };
+
+        const lock = (grid, piece) => { for(const [r,c] of piece.blocks()) grid[r][c] = 1; };
+
+        const clearRows = (grid) => {
+          let remaining = grid.filter(row => row.some(v => v===0));
+          const cleared = HEIGHT - remaining.length;
+          while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0));
+          for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r];
+          return cleared;
+        };
+
+        function draw(grid, active){
+          ctx.fillStyle = '#000'; ctx.fillRect(0,0,WIDTH*CELL,HEIGHT*CELL);
+          // locked
+          for(let r=0;r<HEIGHT;r++){
+            for(let c=0;c<WIDTH;c++){
+              if(grid[r][c]){ ctx.fillStyle = '#444'; ctx.fillRect(c*CELL,r*CELL,CELL,CELL); }
+              ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);
             }
-          }, 1500);
+          }
+          // active
+          if(active){ ctx.fillStyle = '#6cf'; for(const [r,c] of active.blocks()){ ctx.fillRect(c*CELL,r*CELL,CELL,CELL); ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);} }
+        }
+
+        const state = { grid: emptyGrid(), active: null, next: null, score: 0, running:false, paused:false, last:0, acc:0, raf:null };
+
+        const shapes = Object.keys(SHAPES);
+        const randShape = () => shapes[Math.floor(Math.random()*shapes.length)];
+
+        const spawn = () => { const s = state.next || randShape(); state.active = new Piece(s); state.next = randShape(); };
+
+        function tick(ts){
+          if(!state.running){ return; }
+          if(!state.last) state.last = ts;
+          const dt = ts - state.last; state.last = ts;
+          if(!state.paused && state.active){
+            state.acc += dt;
+            if(state.acc >= GRAVITY_MS){
+              state.acc = 0;
+              if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+              else { lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)){ log('Game over. Resetting.'); Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0}); spawn(); } }
+            }
+          }
+          draw(state.grid, state.active);
+          state.raf = requestAnimationFrame(tick);
+        }
+
+        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); state.raf = requestAnimationFrame(tick); log('Game started'); }
+        function pause(){ if(!state.running){ log('Pause ignored: not running'); return; } state.paused=true; log('Paused'); }
+        function resume(){ if(!state.running){ log('Resume ignored: not running'); return; } state.paused=false; log('Resumed'); }
+        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) cancelAnimationFrame(state.raf); log('Game stopped'); }
+
+        // keyboard
+        document.addEventListener('keydown', (e) => {
+          if(!state.running || state.paused || !state.active) return;
+          if(e.key==='ArrowLeft' && canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0);
+          else if(e.key==='ArrowRight' && canMove(state.grid, state.active, 1, 0)) state.active.move(1,0);
+          else if(e.key==='ArrowUp'){ state.active.rotate(); if(!canMove(state.grid, state.active, 0, 0)) state.active.rotate(-1); }
+          else if(e.key==='ArrowDown' && canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+          else if(e.key===' '){ while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1); lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100; log(`Cleared ${cleared} row(s). Score: ${state.score}`);} spawn(); }
+          draw(state.grid, state.active);
         });
+
+        // buttons
+        document.getElementById('start').addEventListener('click', start);
+        document.getElementById('pause').addEventListener('click', pause);
+        document.getElementById('resume').addEventListener('click', resume);
+        document.getElementById('stop').addEventListener('click', stop);
+
+        log('Ready. Click Start to run.');
       })();
     </script>
   </body>
