@@ -90,6 +90,38 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         font-size: 12px;
       }
+      @media (max-width: 600px) {
+        .game {
+          flex-direction: column;
+          max-width: 100%;
+        }
+        #canvas {
+          width: 90vw;
+          height: auto;
+          max-width: 300px;
+        }
+        .sidebar {
+          width: 100%;
+          flex-direction: row;
+          justify-content: center;
+        }
+        .panel {
+          width: auto;
+        }
+        #preview {
+          width: 80px;
+          height: 80px;
+        }
+        .controls {
+          flex-wrap: wrap;
+        }
+        .icon-btn {
+          width: 56px;
+          height: 56px;
+          font-size: 24px;
+          line-height: 56px;
+        }
+      }
       /* No external runtimes required; pure JS renderer */
     </style>
   </head>
