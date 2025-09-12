@@ -1,5 +1,9 @@
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/tetris', '.']
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - "gcr.io/$PROJECT_ID/tetris"
+      - .
 images:
-  - 'gcr.io/$PROJECT_ID/tetris'
+  - "gcr.io/$PROJECT_ID/tetris"
