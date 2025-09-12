@@ -96,6 +96,15 @@ def lock_and_continue(state: GameState) -> None:
     if not state.active:
         return
     state.board.lock_piece(state.active)
+    # If any blocks reach the top row after locking, it's game over.
+    if any(cell != 0 for cell in state.board.grid[0]):
+        try:
+            log("Game over. Resetting.")
+        except Exception:
+            pass
+        state.reset_game()
+        return
+
     cleared = state.board.clear_full_rows()
     if cleared:
         per_line = 100 * (cleared if cleared > 1 else 1)
@@ -104,6 +113,7 @@ def lock_and_continue(state: GameState) -> None:
             log(f"Cleared {cleared} row(s). Score: {state.score}")
         except Exception:
             pass
+
     state.spawn_tetromino()
     if not can_move(state.board, state.active, 0, 0):
         # Game over -> reset
