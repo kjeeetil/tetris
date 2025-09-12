@@ -300,10 +300,16 @@
               window.__aiStep(effDt);
             } else {
               state.acc += effDt;
-              if(state.acc >= GRAVITY_MS){
-                state.acc = 0;
+              while(state.acc >= GRAVITY_MS){
+                state.acc -= GRAVITY_MS;
                 if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-                else { lock(state.grid, state.active); const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); } }
+                else {
+                  lock(state.grid, state.active);
+                  const cleared = clearRows(state.grid);
+                  if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                  spawn();
+                  if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                }
               }
             }
           }
