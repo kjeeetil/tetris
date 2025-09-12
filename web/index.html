@@ -62,10 +62,22 @@
       .controls {
         margin: 12px auto;
         display: flex;
-        gap: 8px;
+        gap: 12px;
         justify-content: center;
         align-items: center;
       }
+      .icon-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 1px solid #bbb;
+        background: #fff;
+        font-size: 20px;
+        line-height: 44px;
+        cursor: pointer;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+      }
+      .icon-btn:active { transform: translateY(1px); }
       #diagnostics {
         width: 320px;
         height: 140px;
@@ -97,10 +109,8 @@
       </div>
     </div>
     <div class="controls">
-      <button id="start">Start</button>
-      <button id="pause">Pause</button>
-      <button id="resume">Resume</button>
-      <button id="stop">Stop</button>
+      <button id="toggle" class="icon-btn" title="Play/Pause" aria-label="Play/Pause">▶</button>
+      <button id="reset" class="icon-btn" title="Reset" aria-label="Reset">⟲</button>
     </div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
@@ -168,7 +178,7 @@
           return true;
         };
 
-        const lock = (grid, piece) => { for(const [r,c] of piece.blocks()) grid[r][c] = 1; };
+        const lock = (grid, piece) => { for(const [r,c] of piece.blocks()) grid[r][c] = piece.shape; };
 
         const clearRows = (grid) => {
           let remaining = grid.filter(row => row.some(v => v===0));
@@ -187,12 +197,13 @@
           // locked
           for(let r=0;r<HEIGHT;r++){
             for(let c=0;c<WIDTH;c++){
-              if(grid[r][c]){ ctx.fillStyle = '#444'; ctx.fillRect(c*CELL,r*CELL,CELL,CELL); }
+              const val = grid[r][c];
+              if(val){ ctx.fillStyle = SHAPE_COLORS[val] || '#444'; ctx.fillRect(c*CELL,r*CELL,CELL,CELL); }
               ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);
             }
           }
           // active
-          if(active){ ctx.fillStyle = '#6cf'; for(const [r,c] of active.blocks()){ ctx.fillRect(c*CELL,r*CELL,CELL,CELL); ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);} }
+          if(active){ ctx.fillStyle = SHAPE_COLORS[active.shape] || '#6cf'; for(const [r,c] of active.blocks()){ ctx.fillRect(c*CELL,r*CELL,CELL,CELL); ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);} }
         }
 
         function drawNext(shape){
@@ -240,10 +251,17 @@
           state.raf = requestAnimationFrame(tick);
         }
 
-        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; updateScore(); state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); state.raf = requestAnimationFrame(tick); log('Game started'); }
+        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; updateScore(); state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); state.raf = requestAnimationFrame(tick); log('Game started'); renderControls(); }
         function pause(){ if(!state.running){ log('Pause ignored: not running'); return; } state.paused=true; log('Paused'); }
         function resume(){ if(!state.running){ log('Resume ignored: not running'); return; } state.paused=false; log('Resumed'); }
-        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) cancelAnimationFrame(state.raf); log('Game stopped'); }
+        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) cancelAnimationFrame(state.raf); log('Game stopped'); renderControls(); }
+
+        // Toggle + reset controls
+        const toggleBtn = document.getElementById('toggle');
+        const resetBtn = document.getElementById('reset');
+        function renderControls(){ toggleBtn.textContent = (!state.running || state.paused) ? '▶' : '⏸'; }
+        function togglePlayPause(){ if(!state.running){ start(); } else if(state.paused){ resume(); } else { pause(); } renderControls(); }
+        function resetGame(){ if(state.running){ stop(); } start(); }
 
         // keyboard
         const BLOCK_KEYS = new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','PageUp','PageDown','Home','End']);
@@ -260,12 +278,11 @@
         });
 
         // buttons
-        document.getElementById('start').addEventListener('click', start);
-        document.getElementById('pause').addEventListener('click', pause);
-        document.getElementById('resume').addEventListener('click', resume);
-        document.getElementById('stop').addEventListener('click', stop);
+        toggleBtn.addEventListener('click', togglePlayPause);
+        resetBtn.addEventListener('click', resetGame);
 
         log('Ready. Click Start to run.');
+        renderControls();
       })();
     </script>
   </body>
