@@ -126,8 +126,10 @@ class PlacementEnv:
     - Reward: lines cleared multiplied by ``reward_per_line`` where the
       per-line value scales with simultaneous clears. With the default
       ``reward_per_line`` of 100, clearing 1/2/3/4 lines yields 100/200/300/400
-      points per line respectively. When the game is over (no valid placements),
-      an optional ``top_out_penalty`` is applied once.
+      points per line respectively. Clearing a single line can incur an
+      additional ``single_line_penalty``. Every action also adds ``step_penalty``.
+      When the game is over (no valid placements), an optional
+      ``top_out_penalty`` is applied once.
     - Episode termination: when there are no valid placements for the active
       piece.
     - Observation: dictionary containing the binary occupancy grid and piece
@@ -141,10 +143,14 @@ class PlacementEnv:
         invalid_action_penalty: float = -1.0,
         top_out_penalty: float = -500.0,
         deterministic_bag: bool = False,
+        step_penalty: float = 0.0,
+        single_line_penalty: float = 0.0,
     ) -> None:
         self.reward_per_line = reward_per_line
         self.invalid_action_penalty = invalid_action_penalty
         self.top_out_penalty = top_out_penalty
+        self.step_penalty = step_penalty
+        self.single_line_penalty = single_line_penalty
         self._state_random = random.Random()
         self._state: Optional["GameState"] = None
         self._cached_actions: List[Placement] = []
@@ -261,6 +267,7 @@ class PlacementEnv:
 
         placement = self._cached_actions[action]
         reward = self._apply_placement(placement)
+        reward += float(self.step_penalty)
 
         # Check termination: if next piece has no valid placements
         next_actions = _enumerate_placements(self.state.board, self.state.active.shape) if self.state.active else []
@@ -295,6 +302,8 @@ class PlacementEnv:
         cleared = self.state.board.clear_full_rows()
         multiplier = cleared if cleared > 1 else 1
         score_delta = cleared * self.reward_per_line * multiplier
+        if cleared == 1:
+            score_delta += int(self.single_line_penalty)
         self.state.score += score_delta
 
         # Spawn next piece
