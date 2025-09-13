@@ -44,6 +44,19 @@ class GameState:
         self.hold_used = False
         return self.active
 
+    def piece_locked(self) -> None:
+        """Update counters when a piece is placed on the board.
+
+        This should be called after the active piece is locked into the
+        board and any line clears have been processed.  The method increments
+        the total piece count and raises the level every 20 pieces, mimicking
+        the behaviour of the JavaScript implementation used in the web UI.
+        """
+
+        self.pieces += 1
+        if self.pieces % 20 == 0:
+            self.level += 1
+
     def swap_hold(self) -> None:
         """Swap the active piece with the held one.
 
