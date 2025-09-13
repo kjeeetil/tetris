@@ -8,6 +8,23 @@ from .board import Board, PIECE_VALUES
 from .tetromino import Tetromino
 
 
+BASE_GRAVITY_MS = 500
+
+
+def gravity_interval_ms(level: int) -> float:
+    """Return the fall interval in milliseconds for ``level``.
+
+    The interval decreases as the level rises, speeding up the falling
+    pieces.  For level ``29`` and above the function returns ``0`` to
+    indicate that the active piece should drop to the bottom immediately.
+    """
+
+    if level >= 29:
+        return 0.0
+    # Exponentially decrease the delay but keep a practical lower bound
+    return max(20.0, BASE_GRAVITY_MS * (0.85 ** level))
+
+
 def can_move(board: Board, tetromino: Tetromino, dx: int, dy: int) -> bool:
     """Return ``True`` if ``tetromino`` can move by ``dx`` and ``dy`` on ``board``.
 
