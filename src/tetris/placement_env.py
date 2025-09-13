@@ -46,11 +46,16 @@ import random
 
 from .board import Board
 from .tetromino import Tetromino, TetrominoType, TETROMINO_SHAPES
-from .utils import can_move
+from .utils import can_move, gravity_interval_ms
 
 
 # Fixed upper bound on the number of placement actions: 4 rotations * 10 cols
 MAX_PLACEMENT_ACTIONS = 40
+
+# Approximate delay between horizontal moves in milliseconds.  This is used to
+# estimate how many sideways shifts are possible before gravity forces the piece
+# down by one row.
+HORIZONTAL_MOVE_INTERVAL_MS = 100
 
 
 @dataclass(frozen=True)
@@ -98,44 +103,67 @@ def _drop_row(board: Board, tetromino: Tetromino) -> Optional[int]:
     return tetromino.position[0]
 
 
-def _path_clear(board: Board, shape: TetrominoType, rotation: int, column: int) -> bool:
+def _path_clear(
+    board: Board,
+    shape: TetrominoType,
+    rotation: int,
+    column: int,
+    level: int,
+) -> bool:
     """Return ``True`` if a piece can *reach* ``(rotation, column)`` from spawn.
 
     The helper simulates a very simple player: rotate the piece to the desired
-    orientation while it sits at the spawn column and then translate it
-    horizontally to ``column``.  Every intermediate step must be valid.  This
-    ignores wall kicks and more advanced manoeuvres but captures the basic
-    notion of path feasibility for many positions.
+    orientation while it sits at the spawn column and then translate toward the
+    target column while gravity pulls the piece downward.  The faster the
+    gravity (higher levels), the fewer horizontal moves are available.  At
+    level 29 and above the piece drops immediately, making horizontal movement
+    impossible.
     """
 
     piece = Tetromino(shape)
-    piece.position = (0, board.width // 2 - 2)
+    spawn_col = board.width // 2 - 2
+    piece.position = (0, spawn_col)
     # Rotate toward the target orientation
     steps = (rotation - piece.rotation) % 4
     for _ in range(steps):
         piece.rotate(True)
         if not can_move(board, piece, 0, 0):
             return False
-    # Translate horizontally toward the target column
-    while piece.position[1] < column:
-        if can_move(board, piece, 1, 0):
-            piece.move(1, 0)
-        else:
+
+    if column == piece.position[1]:
+        return True
+
+    gravity = gravity_interval_ms(level)
+    if gravity <= 0:
+        # Instant drop: no horizontal movement possible
+        return False
+
+    # Number of horizontal steps allowed before the piece falls one row
+    moves_per_row = max(1, int(gravity // HORIZONTAL_MOVE_INTERVAL_MS))
+
+    while piece.position[1] != column:
+        # Apply gravity first; pieces cannot slide purely horizontally
+        if not can_move(board, piece, 0, 1):
             return False
-    while piece.position[1] > column:
-        if can_move(board, piece, -1, 0):
-            piece.move(-1, 0)
-        else:
-            return False
+        piece.move(0, 1)
+
+        direction = 1 if column > piece.position[1] else -1
+        steps = min(moves_per_row, abs(column - piece.position[1]))
+        for _ in range(steps):
+            if not can_move(board, piece, direction, 0):
+                return False
+            piece.move(direction, 0)
+
     return True
 
 
-def _enumerate_placements(board: Board, shape: TetrominoType) -> List[Placement]:
+def _enumerate_placements(board: Board, shape: TetrominoType, level: int) -> List[Placement]:
     """Enumerate all valid (rotation, column) placements for ``shape``.
 
     A placement is considered valid if the piece can be moved to the target
-    rotation and column using the simple path simulated in ``_path_clear`` and,
-    when hard-dropped from that position, comes to rest without collision.
+    rotation and column using the gravity-aware path simulated in
+    ``_path_clear`` and, when hard-dropped from that position, comes to rest
+    without collision.
     """
 
     actions: List[Placement] = []
@@ -145,7 +173,7 @@ def _enumerate_placements(board: Board, shape: TetrominoType) -> List[Placement]
         for col in range(0, board.width - width + 1):
             temp = Tetromino(shape, rotation=rot, position=(0, col))
             final_row = _drop_row(board, temp)
-            if final_row is not None and _path_clear(board, shape, rot, col):
+            if final_row is not None and _path_clear(board, shape, rot, col, level):
                 actions.append(Placement(rotation=rot, column=col))
     return actions
 
@@ -256,7 +284,9 @@ class PlacementEnv:
         upc_idx = idx_map[self.state.upcoming] if self.state.upcoming else -1
         held_idx = idx_map[self.state.held] if self.state.held else -1
 
-        actions = _enumerate_placements(self.state.board, self.state.active.shape)
+        actions = _enumerate_placements(
+            self.state.board, self.state.active.shape, self.state.level
+        )
         self._cached_actions = actions
         mask = [False] * MAX_PLACEMENT_ACTIONS
         for i in range(min(len(actions), MAX_PLACEMENT_ACTIONS)):
@@ -302,7 +332,13 @@ class PlacementEnv:
         reward += float(self.step_penalty)
 
         # Check termination: if next piece has no valid placements
-        next_actions = _enumerate_placements(self.state.board, self.state.active.shape) if self.state.active else []
+        next_actions = (
+            _enumerate_placements(
+                self.state.board, self.state.active.shape, self.state.level
+            )
+            if self.state.active
+            else []
+        )
         self._done = len(next_actions) == 0
         if self._done and self.top_out_penalty:
             reward += float(self.top_out_penalty)
@@ -328,17 +364,22 @@ class PlacementEnv:
                 # Invalid path
                 return int(self.invalid_action_penalty)
 
-        # Translate horizontally toward the target column
-        while piece.position[1] < placement.column:
-            if can_move(board, piece, 1, 0):
-                piece.move(1, 0)
-            else:
+        # Translate toward the target column while respecting gravity
+        if placement.column != piece.position[1]:
+            gravity = gravity_interval_ms(self.state.level)
+            if gravity <= 0:
                 return int(self.invalid_action_penalty)
-        while piece.position[1] > placement.column:
-            if can_move(board, piece, -1, 0):
-                piece.move(-1, 0)
-            else:
-                return int(self.invalid_action_penalty)
+            moves_per_row = max(1, int(gravity // HORIZONTAL_MOVE_INTERVAL_MS))
+            while piece.position[1] != placement.column:
+                if not can_move(board, piece, 0, 1):
+                    return int(self.invalid_action_penalty)
+                piece.move(0, 1)
+                direction = 1 if placement.column > piece.position[1] else -1
+                steps = min(moves_per_row, abs(placement.column - piece.position[1]))
+                for _ in range(steps):
+                    if not can_move(board, piece, direction, 0):
+                        return int(self.invalid_action_penalty)
+                    piece.move(direction, 0)
 
         # Hard drop to the final resting row
         final_row = _drop_row(board, piece)
@@ -362,7 +403,13 @@ class PlacementEnv:
         self.state.spawn_tetromino()
 
         # Refresh action cache for the new piece
-        self._cached_actions = _enumerate_placements(self.state.board, self.state.active.shape) if self.state.active else []
+        self._cached_actions = (
+            _enumerate_placements(
+                self.state.board, self.state.active.shape, self.state.level
+            )
+            if self.state.active
+            else []
+        )
         return score_delta
 
     # Convenience helpers -------------------------------------------------
