@@ -66,6 +66,12 @@ class Runner:
         if self.state:
             self.state.reset_game()
             self._update_level()
+            # Reset timing accumulators so a new game starts cleanly.
+            # Without clearing these values the animation loop would
+            # continue using the old timestamps, causing the freshly
+            # spawned piece to drop immediately or skip frames.
+            self.last_ts = 0
+            self.drop_accum = 0
 
     def _lock_or_game_over(self) -> None:
         """Lock the active piece or reset if the game has ended."""
