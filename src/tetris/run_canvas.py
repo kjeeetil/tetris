@@ -15,11 +15,10 @@ from pyodide.ffi import create_proxy  # type: ignore
 from .board import Board
 from .game_state import GameState
 from .tetromino import TetrominoType
-from .utils import can_move
+from .utils import can_move, gravity_interval_ms
 
 
 CELL_SIZE = 30
-GRAVITY_MS = 500
 
 SHAPE_COLORS = {
     TetrominoType.I: "#00ffff",
@@ -130,9 +129,17 @@ class Runner:
         self.last_ts = ts
         if not self.paused and self.state:
             self.drop_accum += dt
-            if self.drop_accum >= GRAVITY_MS:
+            delay = gravity_interval_ms(self.state.level)
+            if self.drop_accum >= delay:
                 self.drop_accum = 0
-                if self.state.active and can_move(self.state.board, self.state.active, 0, 1):
+                if delay <= 0:
+                    if self.state.active:
+                        while can_move(self.state.board, self.state.active, 0, 1):
+                            self.state.active.move(0, 1)
+                        # Lock the piece and spawn the next one, resetting if
+                        # the game has reached a terminal state.
+                        self._lock_or_game_over()
+                elif self.state.active and can_move(self.state.board, self.state.active, 0, 1):
                     self.state.active.move(0, 1)
                 else:
                     # Lock the piece and spawn the next one, resetting if the
