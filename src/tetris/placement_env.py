@@ -98,12 +98,44 @@ def _drop_row(board: Board, tetromino: Tetromino) -> Optional[int]:
     return tetromino.position[0]
 
 
+def _path_clear(board: Board, shape: TetrominoType, rotation: int, column: int) -> bool:
+    """Return ``True`` if a piece can *reach* ``(rotation, column)`` from spawn.
+
+    The helper simulates a very simple player: rotate the piece to the desired
+    orientation while it sits at the spawn column and then translate it
+    horizontally to ``column``.  Every intermediate step must be valid.  This
+    ignores wall kicks and more advanced manoeuvres but captures the basic
+    notion of path feasibility for many positions.
+    """
+
+    piece = Tetromino(shape)
+    piece.position = (0, board.width // 2 - 2)
+    # Rotate toward the target orientation
+    steps = (rotation - piece.rotation) % 4
+    for _ in range(steps):
+        piece.rotate(True)
+        if not can_move(board, piece, 0, 0):
+            return False
+    # Translate horizontally toward the target column
+    while piece.position[1] < column:
+        if can_move(board, piece, 1, 0):
+            piece.move(1, 0)
+        else:
+            return False
+    while piece.position[1] > column:
+        if can_move(board, piece, -1, 0):
+            piece.move(-1, 0)
+        else:
+            return False
+    return True
+
+
 def _enumerate_placements(board: Board, shape: TetrominoType) -> List[Placement]:
     """Enumerate all valid (rotation, column) placements for ``shape``.
 
-    A placement is considered valid if the piece, placed at row 0 with the
-    chosen rotation and column and then hard-dropped, does not collide and
-    remains within bounds at rest.
+    A placement is considered valid if the piece can be moved to the target
+    rotation and column using the simple path simulated in ``_path_clear`` and,
+    when hard-dropped from that position, comes to rest without collision.
     """
 
     actions: List[Placement] = []
@@ -113,7 +145,7 @@ def _enumerate_placements(board: Board, shape: TetrominoType) -> List[Placement]
         for col in range(0, board.width - width + 1):
             temp = Tetromino(shape, rotation=rot, position=(0, col))
             final_row = _drop_row(board, temp)
-            if final_row is not None:
+            if final_row is not None and _path_clear(board, shape, rot, col):
                 actions.append(Placement(rotation=rot, column=col))
     return actions
 
@@ -285,15 +317,34 @@ class PlacementEnv:
         """
 
         assert self.state.active is not None
+        board = self.state.board
         piece = self.state.active
-        piece.rotation = placement.rotation
-        piece.position = (0, placement.column)
 
-        final_row = _drop_row(self.state.board, piece)
+        # Rotate step-by-step toward the desired orientation
+        steps = (placement.rotation - piece.rotation) % 4
+        for _ in range(steps):
+            piece.rotate(True)
+            if not can_move(board, piece, 0, 0):
+                # Invalid path
+                return int(self.invalid_action_penalty)
+
+        # Translate horizontally toward the target column
+        while piece.position[1] < placement.column:
+            if can_move(board, piece, 1, 0):
+                piece.move(1, 0)
+            else:
+                return int(self.invalid_action_penalty)
+        while piece.position[1] > placement.column:
+            if can_move(board, piece, -1, 0):
+                piece.move(-1, 0)
+            else:
+                return int(self.invalid_action_penalty)
+
+        # Hard drop to the final resting row
+        final_row = _drop_row(board, piece)
         if final_row is None:
             # Should not happen if action came from enumerate; treat as invalid
             return int(self.invalid_action_penalty)
-        # Move piece to final resting row (column already set)
         cur_row, cur_col = piece.position
         piece.position = (final_row, cur_col)
 
