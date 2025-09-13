@@ -305,6 +305,7 @@ class PlacementEnv:
         if cleared == 1:
             score_delta += int(self.single_line_penalty)
         self.state.score += score_delta
+        self.state.piece_locked()
 
         # Spawn next piece
         self.state.spawn_tetromino()

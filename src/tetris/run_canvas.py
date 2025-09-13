@@ -68,6 +68,7 @@ class Runner:
             return
         self.state.board.lock_piece(self.state.active)
         self.state.board.clear_full_rows()
+        self.state.piece_locked()
         if any(self.state.board.grid[0]):
             self._game_over()
             return
