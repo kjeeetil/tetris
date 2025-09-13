@@ -52,11 +52,20 @@ class Runner:
             div.textContent = msg
             el.prepend(div)
 
+    def _update_level(self) -> None:
+        """Update the level readout in the DOM if present."""
+        if not self.state:
+            return
+        el = document.getElementById("level")
+        if el:
+            el.textContent = f"Level: {self.state.level}"
+
     def _game_over(self) -> None:
         """Handle end of game by logging and resetting state."""
         self._log("Game over. Resetting.")
         if self.state:
             self.state.reset_game()
+            self._update_level()
 
     def _lock_or_game_over(self) -> None:
         """Lock the active piece or reset if the game has ended."""
@@ -69,6 +78,7 @@ class Runner:
         self.state.board.lock_piece(self.state.active)
         self.state.board.clear_full_rows()
         self.state.piece_locked()
+        self._update_level()
         if any(self.state.board.grid[0]):
             self._game_over()
             return
@@ -159,6 +169,7 @@ class Runner:
         self.paused = False
         self.last_ts = 0
         self.drop_accum = 0
+        self._update_level()
         document.addEventListener("keydown", create_proxy(self._on_key))
         self._draw()
         self.raf_handle = window.requestAnimationFrame(create_proxy(self._tick))
