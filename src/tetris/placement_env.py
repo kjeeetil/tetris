@@ -123,6 +123,7 @@ def _path_clear(
     piece = Tetromino(shape)
     spawn_col = board.width // 2 - 2
     piece.position = (0, spawn_col)
+
     # Rotate toward the target orientation
     steps = (rotation - piece.rotation) % 4
     for _ in range(steps):
@@ -130,7 +131,19 @@ def _path_clear(
         if not can_move(board, piece, 0, 0):
             return False
 
+    # Determine where the piece will ultimately come to rest.
+    target = Tetromino(shape, rotation=rotation, position=(0, column))
+    final_row = _drop_row(board, target)
+    if final_row is None:
+        return False
+
     if column == piece.position[1]:
+        # No horizontal translation required; just ensure the vertical drop is
+        # unobstructed.
+        while piece.position[0] < final_row:
+            if not can_move(board, piece, 0, 1):
+                return False
+            piece.move(0, 1)
         return True
 
     gravity = gravity_interval_ms(level)
@@ -153,6 +166,13 @@ def _path_clear(
             if not can_move(board, piece, direction, 0):
                 return False
             piece.move(direction, 0)
+
+    # Finish dropping to the pre-computed final row, checking for clashes with
+    # existing bricks along the way.
+    while piece.position[0] < final_row:
+        if not can_move(board, piece, 0, 1):
+            return False
+        piece.move(0, 1)
 
     return True
 
