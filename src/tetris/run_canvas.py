@@ -123,29 +123,35 @@ class Runner:
     def _tick(self, ts: float) -> None:
         if not self.running:
             return
-        if self.last_ts == 0:
+        try:
+            if self.last_ts == 0:
+                self.last_ts = ts
+            dt = ts - self.last_ts
             self.last_ts = ts
-        dt = ts - self.last_ts
-        self.last_ts = ts
-        if not self.paused and self.state:
-            self.drop_accum += dt
-            delay = gravity_interval_ms(self.state.level)
-            if self.drop_accum >= delay:
-                self.drop_accum = 0
-                if delay <= 0:
-                    if self.state.active:
-                        while can_move(self.state.board, self.state.active, 0, 1):
-                            self.state.active.move(0, 1)
-                        # Lock the piece and spawn the next one, resetting if
-                        # the game has reached a terminal state.
+            if not self.paused and self.state:
+                self.drop_accum += dt
+                delay = gravity_interval_ms(self.state.level)
+                if self.drop_accum >= delay:
+                    self.drop_accum = 0
+                    if delay <= 0:
+                        if self.state.active:
+                            while can_move(self.state.board, self.state.active, 0, 1):
+                                self.state.active.move(0, 1)
+                            # Lock the piece and spawn the next one, resetting if
+                            # the game has reached a terminal state.
+                            self._lock_or_game_over()
+                    elif self.state.active and can_move(self.state.board, self.state.active, 0, 1):
+                        self.state.active.move(0, 1)
+                    else:
+                        # Lock the piece and spawn the next one, resetting if the
+                        # game has reached a terminal state.
                         self._lock_or_game_over()
-                elif self.state.active and can_move(self.state.board, self.state.active, 0, 1):
-                    self.state.active.move(0, 1)
-                else:
-                    # Lock the piece and spawn the next one, resetting if the
-                    # game has reached a terminal state.
-                    self._lock_or_game_over()
-        self._draw()
+            self._draw()
+        except Exception as exc:  # pragma: no cover - defensive guard
+            # If anything goes wrong during the animation tick, log the error
+            # and reset the game so a fresh session can continue.
+            self._log(f"Crash detected: {exc}")
+            self._game_over()
         self.raf_handle = window.requestAnimationFrame(create_proxy(self._tick))
 
     def _on_key(self, evt) -> None:
