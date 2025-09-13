@@ -30,3 +30,15 @@ def test_level_29_no_horizontal_movement():
     actions = _enumerate_placements(board, TetrominoType.I, level=29)
     cols = {a.column for a in actions}
     assert cols == {board.width // 2 - 2}
+
+
+def test_rotation_blocked_at_spawn():
+    board = Board()
+    spawn_col = board.width // 2 - 2
+    # Occupy a cell that only interferes with the vertical rotation of an ``I``
+    # piece at the spawn column.  The path check should therefore exclude any
+    # placements requiring that rotation.
+    board.grid[2][spawn_col] = 1
+    actions = _enumerate_placements(board, TetrominoType.I, level=0)
+    rotations = {a.rotation for a in actions}
+    assert rotations == {0}, rotations
