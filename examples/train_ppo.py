@@ -12,7 +12,9 @@ Notes:
 
 from __future__ import annotations
 
+import argparse
 import os
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -20,7 +22,7 @@ import matplotlib.pyplot as plt
 
 try:  # Gymnasium preferred
     import gymnasium as gym
-except Exception:
+except Exception:  # pragma: no cover
     import gym  # type: ignore
 
 from stable_baselines3 import PPO
@@ -29,9 +31,44 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 # Allow running without installing the package (src-layout)
 import sys
+
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from tetris.gym_env import TetrisPlacementGymEnv
+
+
+# ---------------------------------------------------------------------------
+# Configuration dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EnvConfig:
+    include_action_mask: bool = True
+    deterministic_bag: bool = True
+    reward_per_line: int = 100
+    invalid_action_penalty: float = -0.1
+    top_out_penalty: float = -10.0
+    step_penalty: float = -1.0
+    single_line_penalty: float = -10.0
+
+
+@dataclass
+class PPOConfig:
+    n_envs: int = 8
+    total_timesteps: int = 200_000
+    learning_rate: float = 2.5e-4
+    n_steps: int = 128
+    batch_size: int = 256
+    gamma: float = 0.99
+    ent_coef: float = 0.005
+    clip_range: float = 0.2
+    tensorboard_log: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Visualisation callback
+# ---------------------------------------------------------------------------
 
 
 class WeightVisualizationCallback(BaseCallback):
@@ -46,7 +83,6 @@ class WeightVisualizationCallback(BaseCallback):
 
     def _on_training_start(self) -> None:
         plt.ion()
-        # Collect linear layers from the policy network
         self.layers = [
             module
             for module in self.model.policy.mlp_extractor.policy_net
@@ -70,8 +106,6 @@ class WeightVisualizationCallback(BaseCallback):
             ax.set_ylabel("In")
             self.images.append(im)
         plt.tight_layout()
-        # Ensure the initial figure is rendered before training starts so that
-        # the weight visualisation window actually appears on screen.
         assert self.fig is not None
         self.fig.canvas.draw()
         plt.show(block=False)
@@ -89,41 +123,52 @@ class WeightVisualizationCallback(BaseCallback):
             plt.pause(0.001)
         return True
 
-def make_env():
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def make_env(cfg: EnvConfig) -> TetrisPlacementGymEnv:
+    """Construct a configured Tetris environment."""
+
     return TetrisPlacementGymEnv(
-        include_action_mask=True,
-        deterministic_bag=True,
-        reward_per_line=100,
-        invalid_action_penalty=-0.1,
-        top_out_penalty=-10.0,
-        step_penalty=-1.0,
-        single_line_penalty=-10.0,
+        include_action_mask=cfg.include_action_mask,
+        deterministic_bag=cfg.deterministic_bag,
+        reward_per_line=cfg.reward_per_line,
+        invalid_action_penalty=cfg.invalid_action_penalty,
+        top_out_penalty=cfg.top_out_penalty,
+        step_penalty=cfg.step_penalty,
+        single_line_penalty=cfg.single_line_penalty,
     )
 
 
-def main():
-    n_envs = int(os.environ.get("N_ENVS", "8"))
-    total_timesteps = int(os.environ.get("TIMESTEPS", "200000"))
+def train(cfg: PPOConfig, env_cfg: EnvConfig) -> PPO:
+    """Train a PPO agent and return the fitted model."""
 
-    vec_env = make_vec_env(make_env, n_envs=n_envs)
+    env_fn = lambda: make_env(env_cfg)
+    vec_env = make_vec_env(env_fn, n_envs=cfg.n_envs)
     model = PPO(
         "MlpPolicy",
         vec_env,
         verbose=1,
-        learning_rate=2.5e-4,
-        n_steps=128,
-        batch_size=256,
-        gamma=0.99,
-        ent_coef=0.005,
-        clip_range=0.2,
-        tensorboard_log=os.environ.get("TB_LOGDIR"),
+        learning_rate=cfg.learning_rate,
+        n_steps=cfg.n_steps,
+        batch_size=cfg.batch_size,
+        gamma=cfg.gamma,
+        ent_coef=cfg.ent_coef,
+        clip_range=cfg.clip_range,
+        tensorboard_log=cfg.tensorboard_log,
     )
-
     callback = WeightVisualizationCallback(update_freq=1000)
-    model.learn(total_timesteps=total_timesteps, callback=callback)
+    model.learn(total_timesteps=cfg.total_timesteps, callback=callback)
+    return model
 
-    # Quick evaluation run
-    env = make_env()
+
+def evaluate(model: PPO, env_cfg: EnvConfig) -> float:
+    """Run a single evaluation episode and return the reward."""
+
+    env = make_env(env_cfg)
     obs, info = env.reset(seed=0)
     done = False
     total = 0.0
@@ -132,8 +177,26 @@ def main():
         obs, reward, terminated, truncated, info = env.step(int(action))
         total += reward
         done = terminated or truncated
+    return float(total)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--timesteps", type=int, default=200_000)
+    parser.add_argument("--n-envs", type=int, default=8)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    env_cfg = EnvConfig()
+    cfg = PPOConfig(n_envs=args.n_envs, total_timesteps=args.timesteps,
+                    tensorboard_log=os.environ.get("TB_LOGDIR"))
+    model = train(cfg, env_cfg)
+    total = evaluate(model, env_cfg)
     print(f"Eval total reward: {total}")
 
 
 if __name__ == "__main__":
     main()
+
