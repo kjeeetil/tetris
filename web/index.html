@@ -500,7 +500,82 @@
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function copyGrid(g){ return g.map(r=>r.slice()); }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
-          function enumeratePlacements(grid, shape){ const actions=[]; const rotIdx=uniqueRotIdx(shape); for(const rot of rotIdx){ const width=stateWidth(SHAPES[shape][rot]); for(let col=0; col<=WIDTH-width; col++){ const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(grid,p); if(fr!==null) actions.push({rot,col}); } } return actions; }
+
+          // Approximate delay between horizontal moves in ms, used to estimate
+          // how many sideways shifts are possible before a gravity drop.
+          const HORIZONTAL_MOVE_INTERVAL_MS = 100;
+
+          // Return true if a piece can reach (rot, col) from spawn under gravity.
+          function pathClear(grid, shape, rot, col, level){
+            // Start from spawn
+            const spawnCol = Math.floor(WIDTH/2) - 2;
+            const piece = new Piece(shape);
+            piece.row = 0; piece.col = spawnCol; piece.rot = 0;
+
+            // Try rotate-at-spawn step-by-step
+            const statesLen = SHAPES[shape].length;
+            const rotSteps = (rot - piece.rot + statesLen) % statesLen;
+            for(let i=0; i<rotSteps; i++){
+              piece.rotate();
+              if(!canMove(grid, piece, 0, 0)) return false;
+            }
+
+            // Compute the final resting row from the target column/rotation
+            const target = new Piece(shape);
+            target.row = 0; target.col = col; target.rot = rot;
+            const finalRow = dropRowSim(grid, target);
+            if(finalRow === null) return false;
+
+            // If already in the right column, ensure vertical path is clear
+            if(col === piece.col){
+              while(piece.row < finalRow){
+                if(!canMove(grid, piece, 0, 1)) return false;
+                piece.move(0, 1);
+              }
+              return true;
+            }
+
+            // Level 29: treat as instant drop (no horizontal movement)
+            if(level >= 29) return false;
+
+            // Estimate how many horizontal moves fit per gravity tick
+            const gravity = gravityForLevel(level);
+            const movesPerRow = Math.max(1, Math.floor(gravity / HORIZONTAL_MOVE_INTERVAL_MS));
+
+            // Translate toward target column under gravity
+            while(piece.col !== col){
+              // Gravity first
+              if(!canMove(grid, piece, 0, 1)) return false;
+              piece.move(0, 1);
+
+              const dir = (col > piece.col) ? 1 : -1;
+              const steps = Math.min(movesPerRow, Math.abs(col - piece.col));
+              for(let s=0; s<steps; s++){
+                if(!canMove(grid, piece, dir, 0)) return false;
+                piece.move(dir, 0);
+              }
+            }
+
+            // Finish dropping to the final row
+            while(piece.row < finalRow){
+              if(!canMove(grid, piece, 0, 1)) return false;
+              piece.move(0, 1);
+            }
+            return true;
+          }
+
+          function enumeratePlacements(grid, shape){
+            const actions=[]; const rotIdx=uniqueRotIdx(shape);
+            for(const rot of rotIdx){
+              const width=stateWidth(SHAPES[shape][rot]);
+              for(let col=0; col<=WIDTH-width; col++){
+                const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col;
+                const fr=dropRowSim(grid,p);
+                if(fr!==null && pathClear(grid, shape, rot, col, state.level)) actions.push({rot,col});
+              }
+            }
+            return actions;
+          }
           function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
           function clearRowsSim(grid){ let remaining = grid.filter(row => row.some(v => v===0)); const cleared = HEIGHT - remaining.length; while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0)); for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r]; return cleared; }
           function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
@@ -528,7 +603,17 @@
             }
             const plan = train.ai.plan; if(!plan) return;
             if(plan.stage==='rotate'){
-              if(plan.rotLeft>0){ state.active.rotate(); if(!canMove(state.grid, state.active, 0, 0)) state.active.rotate(-1); else plan.rotLeft -= 1; return; }
+              if(plan.rotLeft>0){
+                state.active.rotate();
+                if(!canMove(state.grid, state.active, 0, 0)){
+                  // Rotation blocked: abandon this plan to avoid stalling
+                  state.active.rotate(-1);
+                  train.ai.plan = null;
+                } else {
+                  plan.rotLeft -= 1;
+                }
+                return;
+              }
               plan.stage='move'; return;
             }
             if(plan.stage==='move'){

@@ -5,10 +5,11 @@ complete placement decision for the current tetromino: choose a rotation and a
 target column, hard-drop to the resting position, lock, clear any full rows,
 receive a reward based on cleared lines, then immediately spawn the next piece.
 
-The environment does not enforce path feasibility (i.e., how a human would
-translate/rotate the falling piece to reach the final position). This is
-intentional for placement-level control, which dramatically shortens the
-decision horizon and tends to learn faster.
+The environment enforces path feasibility using a simplified, gravity-aware
+simulation: rotations are attempted at the spawn column and sideways
+translations are limited by the effective gravity interval. Unreachable
+placements are excluded from the action set so policies do not select moves
+that a falling piece could not physically achieve.
 
 Example usage
 -------------
