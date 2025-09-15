@@ -373,7 +373,7 @@ function tick(ts){
           }
         }
 
-        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.wdAcc=0; state.lastSig=''; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
+        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.wdAcc=0; state.lastSig=''; state.running=true; state.paused=false; updateRenderDecimation(); spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
         function pause(){ if(!state.running){ log('Pause ignored: not running'); return; } state.paused=true; log('Paused'); }
         function resume(){ if(!state.running){ log('Resume ignored: not running'); return; } state.paused=false; log('Resumed'); }
         function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) clearTimeout(state.raf); state.raf=null; log('Game stopped'); renderControls(); }
@@ -625,8 +625,10 @@ function tick(ts){
             if(!canMove(state.grid, state.active, 0, 0)) { log('AI: spawn blocked -> game over'); onGameOver(); return; }
 
             // Execute as many micro-steps as fit into accumulated time
-            while (train.ai.acc >= AI_STEP_MS) {
+            let __aiSteps = 0;
+            while (train.ai.acc >= AI_STEP_MS && __aiSteps < MAX_AI_STEPS_PER_FRAME) {
               train.ai.acc -= AI_STEP_MS;
+              __aiSteps += 1;
 
               // Watchdog: if the active piece hasn't changed state for a while, force a drop
               const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
