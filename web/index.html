@@ -473,9 +473,11 @@ function tick(ts){
           const FEAT_DIM = 9;
           const AI_STEP_MS = 28; // ms between AI animation steps
           const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
+          const LOOKAHEAD_BEAM = 6; // evaluate next-piece lookahead only for top-K first moves
+          const SCORE_WEIGHT = 3.0; // emphasize final score in fitness
 
           // MLP architecture (when selected)
-          const MLP_H1 = 16; // hidden units
+          const MLP_H1 = 8; // hidden units (smaller for speed)
           const MLP_PARAM_DIM = FEAT_DIM*MLP_H1 + MLP_H1 + MLP_H1*1 + 1; // W1 + b1 + W2 + b2
 
           // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
@@ -502,11 +504,19 @@ function tick(ts){
             candWeights: [],
             candScores: [],
             candIndex: -1,
+            phase: 'eval',
+            reevalRuns: 3,
+            reevalDone: 0,
+            reevalAccum: 0,
+            reevalTarget: -1,
+            currentWeightsOverride: null,
             ai: { plan: null, acc: 0 },
             clearCounts: {1:0,2:0,3:0,4:0},
             gameScores: [],
             gameModelTypes: [],
             bestFitness: -Infinity,
+            bestEverFitness: -Infinity,
+            bestEverWeights: null,
             genNoImprove: 0,
             // exploration config
             heavyTailFrac: 0.25,
@@ -517,7 +527,7 @@ function tick(ts){
           };
           window.__train = train;
 
-          function formatWeights(arr){ const MAX_SHOW = 24; const vals = Array.from(arr).slice(0, MAX_SHOW).map(v=>v.toFixed(2)); const suffix = arr.length>MAX_SHOW? ' …' : ''; return vals.join(', ') + suffix; }
+          function formatWeights(arr){ const MAX_SHOW = 24; const vals = Array.from(arr).slice(0, MAX_SHOW).map(v=>Number.isFinite(v)?v.toFixed(2):String(v)); const suffix = arr.length>MAX_SHOW? ' …' : ''; return vals.join(', ') + suffix; }
           function updateTrainStatus(){
             if(trainStatus){
               if(train.enabled){
@@ -556,6 +566,7 @@ function tick(ts){
             if(!state.running){ start(); }
             train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
             train.gameScores = [];
+            train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
             updateTrainStatus();
             const btn = document.getElementById('train'); if(btn) btn.textContent = '⏹';
             log('Training started');
@@ -574,6 +585,7 @@ function tick(ts){
             train.ai.acc = 0;
             train.clearCounts = {1:0,2:0,3:0,4:0};
             train.gameScores = [];
+            train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
             updateScorePlot();
             updateTrainStatus();
             log('Training parameters reset');
@@ -586,7 +598,7 @@ function tick(ts){
               // Shaped fitness: prefer multi-line clears and discourage singles
               const c = train.clearCounts || {1:0,2:0,3:0,4:0};
               const c1 = c[1] || 0, c2 = c[2] || 0, c3 = c[3] || 0, c4 = c[4] || 0;
-              const fitness = state.score + 100*(4*c4 + 2*c3 + 1*c2) - 100*c1;
+              const fitness = SCORE_WEIGHT*state.score + 100*(4*c4 + 2*c3 + 1*c2) - 100*c1;
               if(train.candIndex >= 0) train.candScores[train.candIndex] = fitness;
               // Append raw score for progress plot and mark model type
               train.gameScores.push(state.score);
@@ -598,6 +610,55 @@ function tick(ts){
                 train.gameModelTypes.splice(0, train.gameModelTypes.length - cap);
               }
               updateScorePlot();
+              // Re-evaluation phase handling
+              if(train.phase === 'reeval'){
+                train.reevalAccum += fitness; train.reevalDone += 1;
+                if(train.reevalDone < train.reevalRuns){
+                  Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+                  state.gravity = gravityForLevel(0);
+                  updateLevel(); updateScore();
+                  spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+                  updateTrainStatus();
+                  return;
+                } else {
+                  const avgFit = train.reevalAccum / train.reevalRuns;
+                  if(train.reevalTarget >= 0) train.candScores[train.reevalTarget] = avgFit;
+                  train.currentWeightsOverride = null; train.phase = 'eval';
+                  // Complete generation update after re-eval
+                  const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+                  const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
+                  const elites = idx.slice(0, eliteCount);
+                  const dim = paramDim();
+                  const eliteMean = new Float64Array(dim);
+                  for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++) eliteMean[d]+=w[d]; }
+                  for(let d=0; d<dim; d++) eliteMean[d] /= eliteCount;
+                  const mu = 0.3; const bestW = train.candWeights[idx[0]];
+                  const newMean = new Float64Array(dim);
+                  for(let d=0; d<dim; d++) newMean[d] = (1-mu)*eliteMean[d] + mu*bestW[d];
+                  const newStd = new Float64Array(dim);
+                  for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++){ const diff=w[d]-eliteMean[d]; newStd[d]+=diff*diff; } }
+                  for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d]/eliteCount)));
+                  const bestThisGen = train.candScores[idx[0]];
+                  if(bestThisGen > (train.bestEverFitness ?? -Infinity)){
+                    train.bestEverFitness = bestThisGen; train.bestEverWeights = new Float64Array(train.candWeights[idx[0]]);
+                  }
+                  if(bestThisGen > train.bestFitness){ for(let d=0; d<newStd.length; d++) newStd[d] = Math.max(train.minStd, newStd[d] * 0.85); train.bestFitness = bestThisGen; train.genNoImprove = 0; }
+                  else { train.genNoImprove += 1; if(train.genNoImprove >= train.plateauGens){ for(let d=0; d<newStd.length; d++) newStd[d] = Math.min(train.maxStd, newStd[d] * train.stdBoost); train.genNoImprove = 0; log('Plateau detected: boosted exploration std'); } }
+                  train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
+                  samplePopulation();
+                  // Elitist carryover
+                  if(train.candWeights.length>0) train.candWeights[0] = new Float64Array(bestW);
+                  if(train.bestEverWeights && train.candWeights.length>1) train.candWeights[1] = new Float64Array(train.bestEverWeights);
+                  Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+                  state.gravity = gravityForLevel(0);
+                  updateLevel(); updateScore();
+                  spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+                  updateScorePlot();
+                  log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+                  updateTrainStatus();
+                  return;
+                }
+              }
               if(train.candIndex + 1 < train.popSize){
                 train.candIndex += 1;
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
@@ -607,39 +668,16 @@ function tick(ts){
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
               } else {
+              // Start re-evaluation of best-of-gen before updating population
               const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
-              const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
-              const elites = idx.slice(0, eliteCount);
-              const dim = paramDim();
-              const newMean = new Float64Array(dim);
-              for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++) newMean[d]+=w[d]; }
-              for(let d=0; d<dim; d++) newMean[d] /= eliteCount;
-              const newStd = new Float64Array(dim);
-              for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++){ const diff=w[d]-newMean[d]; newStd[d]+=diff*diff; } }
-              for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d]/eliteCount)));
-              train.mean = newMean; train.std = newStd; train.gen += 1;
-              const bestThisGen = train.candScores[idx[0]];
-              // Plateau detection: boost exploration if no improvement
-              if(bestThisGen <= train.bestFitness){
-                train.genNoImprove += 1;
-                if(train.genNoImprove >= train.plateauGens){
-                  for(let d=0; d<train.std.length; d++) train.std[d] = Math.min(train.maxStd, train.std[d] * train.stdBoost);
-                  train.genNoImprove = 0;
-                  log('Plateau detected: boosted exploration std');
-                }
-              } else {
-                train.bestFitness = bestThisGen;
-                train.genNoImprove = 0;
-              }
-              log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
-              samplePopulation();
-                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
-                state.gravity = gravityForLevel(0);
-                updateLevel(); updateScore();
-                spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
-                updateScorePlot();
-                log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
-                updateTrainStatus();
+              const bestIdx = idx[0];
+              train.phase = 'reeval'; train.reevalTarget = bestIdx; train.reevalDone = 0; train.reevalAccum = 0; train.currentWeightsOverride = new Float64Array(train.candWeights[bestIdx]);
+              Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+              state.gravity = gravityForLevel(0);
+              updateLevel(); updateScore();
+              spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+              updateTrainStatus();
+              return;
               }
             } else {
               Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
@@ -736,7 +774,7 @@ function tick(ts){
           function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
           function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
           function simulateAfterPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); return {grid:g, lines}; }
-          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0; const lines2=lines*lines; return new Float64Array([lines, lines2, is1, is2, is3, is4, Holes, Bump, maxH]); }
+          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0; const lines2=lines*lines; return [lines, lines2, is1, is2, is3, is4, Holes, Bump, maxH]; }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
@@ -748,34 +786,33 @@ function tick(ts){
             const b1 = weights.subarray(FEAT_DIM*H, FEAT_DIM*H + H);
             const W2 = weights.subarray(FEAT_DIM*H + H, FEAT_DIM*H + H + H);
             const b2 = weights[FEAT_DIM*H + H + H];
-            // Prefer tf.js if present, fallback to manual compute
-            if(window.tf && tf.tensor){
-              return tf.tidy(() => {
-                const x = tf.tensor2d([Array.from(feats)], [1, FEAT_DIM]);
-                const w1 = tf.tensor2d(Array.from(W1), [FEAT_DIM, H]);
-                const bb1 = tf.tensor1d(Array.from(b1));
-                const w2 = tf.tensor2d(Array.from(W2), [H, 1]);
-                const h = tf.relu(x.matMul(w1).add(bb1));
-                const y = h.matMul(w2).add(tf.scalar(b2));
-                return y.dataSync()[0];
-              });
-            } else {
-              // Manual forward
-              const h = new Float64Array(H);
-              for(let j=0;j<H;j++){
-                let sum = b1[j];
-                for(let i=0;i<FEAT_DIM;i++) sum += feats[i] * W1[i*H + j];
-                h[j] = sum > 0 ? sum : 0;
-              }
-              let y = b2;
-              for(let j=0;j<H;j++) y += h[j] * W2[j];
-              return y;
+            // Manual forward (faster than tf.js per-placement)
+            const h = new Float64Array(H);
+            for(let j=0;j<H;j++){
+              let sum = b1[j];
+              for(let i=0;i<FEAT_DIM;i++) sum += feats[i] * W1[i*H + j];
+              h[j] = sum > 0 ? sum : 0;
             }
+            let y = b2;
+            for(let j=0;j<H;j++) y += h[j] * W2[j];
+            return y;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
-          function choosePlacement2(weights, grid, curShape, nextShape){ const acts=enumeratePlacements(grid, curShape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const sim=simulateAfterPlacement(grid, curShape, a.rot, a.col); if(!sim) continue; let s = scoreFeats(weights, featuresFromGrid(sim.grid, sim.lines)); if(nextShape){ const acts2=enumeratePlacements(sim.grid, nextShape); if(acts2.length>0){ let best2=-Infinity; for(const a2 of acts2){ const ff2=featuresForPlacement(sim.grid, nextShape, a2.rot, a2.col); if(!ff2) continue; const s2=scoreFeats(weights, ff2.feats); if(s2>best2) best2=s2; } if(isFinite(best2)) s += LOOKAHEAD_LAMBDA*best2; } } if(s>bestS){ bestS=s; best=a; } } return best; }
+          function choosePlacement2(weights, grid, curShape, nextShape){ const acts=enumeratePlacements(grid, curShape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; const sims=[]; // precompute first-ply sims and scores
+            for(const a of acts){ const sim=simulateAfterPlacement(grid, curShape, a.rot, a.col); if(!sim) continue; const baseFeats = featuresFromGrid(sim.grid, sim.lines); const s1 = scoreFeats(weights, baseFeats); sims.push({a, sim, s1}); }
+            if(sims.length===0) return null;
+            // Beam: consider lookahead only for top-K first-ply moves
+            sims.sort((u,v)=>v.s1 - u.s1);
+            const K = Math.min(LOOKAHEAD_BEAM, sims.length);
+            for(let i=0;i<sims.length;i++){
+              let s = sims[i].s1;
+              if(nextShape && i < K){ const acts2=enumeratePlacements(sims[i].sim.grid, nextShape); if(acts2.length>0){ let best2=-Infinity; for(const a2 of acts2){ const ff2=featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col); if(!ff2) continue; const s2=scoreFeats(weights, ff2.feats); if(s2>best2) best2=s2; } if(isFinite(best2)) s += LOOKAHEAD_LAMBDA*best2; }
+              }
+              if(s>bestS){ bestS=s; best=sims[i].a; }
+            }
+            return best; }
 
-          function planForCurrentPiece(){ if(!state.active) return null; const w=train.candWeights[train.candIndex] || train.mean; const a=choosePlacement2(w, state.grid, state.active.shape, state.next); if(!a){ return null; } const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len; return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' }; }
+          function planForCurrentPiece(){ if(!state.active) return null; const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean; const a=choosePlacement2(w, state.grid, state.active.shape, state.next); if(!a){ return null; } const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len; return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' }; }
 
           // Scatter plot of raw score per game (all candidates)
           function updateScorePlot(){
