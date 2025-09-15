@@ -318,6 +318,14 @@
           const dt = ts - state.last; state.last = ts;
           const effDt = dt * speedMult;
           if(!state.paused && state.active){
+            // Global guard: if the active piece cannot exist at its current
+            // position (e.g., spawn collision), trigger game over/reset.
+            if(!canMove(state.grid, state.active, 0, 0)){
+              window.__onGameOver();
+              draw(state.grid, state.active);
+              scheduleNext();
+              return;
+            }
             if(window.__train && window.__train.enabled){
               window.__aiStep(effDt);
             } else {
@@ -377,7 +385,7 @@
               updateLevel();
             }
             const cleared = clearRows(state.grid);
-            if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`);} spawn(); }
+            if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`);} spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); }
           draw(state.grid, state.active);
         });
 
