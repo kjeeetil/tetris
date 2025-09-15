@@ -308,7 +308,9 @@
         const spawn = () => { const s = state.next || randShape(); state.active = new Piece(s); state.next = randShape(); drawNext(state.next); updateScore(); updateLevel(); };
 
         const scheduleNext = () => {
-          const delay = 1000 / (60 * speedMult);
+          // Run the main loop at a steady ~60 FPS; speed multiplier is applied
+          // inside the loop by scaling the effective delta time.
+          const delay = 1000 / 60;
           state.raf = setTimeout(() => tick(performance.now()), delay);
         };
 
