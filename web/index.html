@@ -343,8 +343,12 @@
                   }
                   const cleared = clearRows(state.grid);
                   if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
-                  spawn();
-                  if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                  // Top-out guard after lock/clear in manual mode
+                  if(state.grid[0].some(v => v !== 0)) { window.__onGameOver(); }
+                  else {
+                    spawn();
+                    if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                  }
                 }
               }
             }
@@ -385,7 +389,10 @@
               updateLevel();
             }
             const cleared = clearRows(state.grid);
-            if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`);} spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); }
+            if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`);} 
+            if(state.grid[0].some(v => v !== 0)) { onGameOver(); }
+            else { spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); }
+          }
           draw(state.grid, state.active);
         });
 
@@ -598,6 +605,8 @@
           function aiStep(dt){
             train.ai.acc += dt; if(train.ai.acc < AI_STEP_MS) return; train.ai.acc = 0;
             if(!state.active){ return; }
+            // Safety: if spawn is blocked or piece overlaps, end episode
+            if(!canMove(state.grid, state.active, 0, 0)) { onGameOver(); return; }
             if(!train.ai.plan){ train.ai.plan = planForCurrentPiece(); if(!train.ai.plan){ // force drop to end episode
                 while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
                 lock(state.grid, state.active);
@@ -607,7 +616,10 @@
                   state.gravity = gravityForLevel(state.level);
                   updateLevel();
                 }
-                const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); } spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return; }
+                const cleared = clearRows(state.grid);
+                if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                if(state.grid[0].some(v => v !== 0)) { onGameOver(); return; }
+                spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return; }
             }
             const plan = train.ai.plan; if(!plan) return;
             if(plan.stage==='rotate'){
@@ -638,7 +650,9 @@
                   state.gravity = gravityForLevel(state.level);
                   updateLevel();
                 }
-                const cleared = clearRows(state.grid); if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                const cleared = clearRows(state.grid);
+                if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+              if(state.grid[0].some(v => v !== 0)) { onGameOver(); train.ai.plan = null; return; }
               spawn(); train.ai.plan = null; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
             }
           }
