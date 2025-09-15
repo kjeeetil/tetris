@@ -498,7 +498,9 @@ function tick(ts){
               if(train.candIndex >= 0) train.candScores[train.candIndex] = state.score;
               if(train.candIndex + 1 < train.popSize){
                 train.candIndex += 1;
-                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+                state.gravity = gravityForLevel(0);
+                updateLevel(); updateScore();
                 spawn(); train.ai.plan = null; train.ai.acc = 0;
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
@@ -515,13 +517,17 @@ function tick(ts){
                 train.mean = newMean; train.std = newStd; train.gen += 1;
                 log(`Gen ${train.gen} complete. Best score: ${train.candScores[idx[0]]}`);
                 samplePopulation();
-                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+                state.gravity = gravityForLevel(0);
+                updateLevel(); updateScore();
                 spawn(); train.ai.plan = null; train.ai.acc = 0;
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
               }
             } else {
-              Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0});
+              Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+              state.gravity = gravityForLevel(0);
+              updateLevel(); updateScore();
               spawn();
             }
           }

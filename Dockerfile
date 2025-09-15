@@ -10,5 +10,5 @@ COPY . /app
 # Expose the port that the app runs on.
 EXPOSE 8080
 
-# Run a simple HTTP server to host the static site.
-CMD ["python", "-m", "http.server", "8080"]
+# Run a simple HTTP server to host the static site from the web directory.
+CMD ["python", "-m", "http.server", "8080", "--directory", "web"]
