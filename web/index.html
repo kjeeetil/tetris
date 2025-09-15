@@ -619,72 +619,78 @@ function tick(ts){
           function planForCurrentPiece(){ if(!state.active) return null; const w=train.candWeights[train.candIndex] || train.mean; const a=choosePlacement(w, state.grid, state.active.shape); if(!a){ return null; } const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len; return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' }; }
 
           function aiStep(dt){
-            train.ai.acc += dt; if(train.ai.acc < AI_STEP_MS) return; train.ai.acc = 0;
+            train.ai.acc += dt;
             if(!state.active){ return; }
             // Safety: if spawn is blocked or piece overlaps, end episode
             if(!canMove(state.grid, state.active, 0, 0)) { log('AI: spawn blocked -> game over'); onGameOver(); return; }
 
-            // Watchdog: if the active piece hasn't changed state for a while, force a drop
-            const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
-            if(train.ai.lastSig === sig){ train.ai.staleMs = (train.ai.staleMs || 0) + dt; } else { train.ai.staleMs = 0; train.ai.lastSig = sig; }
-            if(train.ai.staleMs > 1000){
-              log('AI: watchdog forced drop');
-              while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-              lock(state.grid, state.active);
-              state.pieces++;
-              if(state.pieces % 20 === 0){ state.level++; state.gravity = gravityForLevel(state.level); updateLevel(); }
-              const cleared = clearRows(state.grid);
-              if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
-              if(state.grid[0].some(v => v !== 0)) { onGameOver(); train.ai.plan = null; train.ai.staleMs = 0; return; }
-              spawn(); train.ai.plan = null; train.ai.staleMs = 0; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
-            }
-            if(!train.ai.plan){ train.ai.plan = planForCurrentPiece(); if(!train.ai.plan){ // force drop to end episode
+            // Execute as many micro-steps as fit into accumulated time
+            while (train.ai.acc >= AI_STEP_MS) {
+              train.ai.acc -= AI_STEP_MS;
+
+              // Watchdog: if the active piece hasn't changed state for a while, force a drop
+              const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
+              if(train.ai.lastSig === sig){ train.ai.staleMs = (train.ai.staleMs || 0) + AI_STEP_MS; } else { train.ai.staleMs = 0; train.ai.lastSig = sig; }
+              if(train.ai.staleMs > 1000){
+                log('AI: watchdog forced drop');
                 while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
                 lock(state.grid, state.active);
                 state.pieces++;
-                if(state.pieces % 20 === 0){
-                  state.level++;
-                  state.gravity = gravityForLevel(state.level);
-                  updateLevel();
-                }
+                if(state.pieces % 20 === 0){ state.level++; state.gravity = gravityForLevel(state.level); updateLevel(); }
                 const cleared = clearRows(state.grid);
                 if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
-                if(state.grid[0].some(v => v !== 0)) { log('AI: top-out after forced drop'); onGameOver(); return; }
-                spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return; }
-            }
-            const plan = train.ai.plan; if(!plan) return;
-            if(plan.stage==='rotate'){
-              if(plan.rotLeft>0){
-                state.active.rotate();
-                if(!canMove(state.grid, state.active, 0, 0)){
-                  // Rotation blocked: abandon this plan to avoid stalling
-                  state.active.rotate(-1);
-                  train.ai.plan = null; log('AI: rotation blocked, abandoning plan');
-                } else {
-                  plan.rotLeft -= 1;
-                }
-                return;
+                if(state.grid[0].some(v => v !== 0)) { onGameOver(); train.ai.plan = null; train.ai.staleMs = 0; return; }
+                spawn(); train.ai.plan = null; train.ai.staleMs = 0; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
               }
-              plan.stage='move'; return;
-            }
-            if(plan.stage==='move'){
-              if(state.active.col < plan.targetCol){ if(canMove(state.grid, state.active, 1, 0)) state.active.move(1,0); else plan.stage='drop'; return; }
-              if(state.active.col > plan.targetCol){ if(canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0); else plan.stage='drop'; return; }
-              plan.stage='drop'; return;
-            }
-            if(plan.stage==='drop'){
-              if(canMove(state.grid, state.active, 0, 1)){ state.active.move(0,1); return; }
-                lock(state.grid, state.active);
-                state.pieces++;
-                if(state.pieces % 20 === 0){
-                  state.level++;
-                  state.gravity = gravityForLevel(state.level);
-                  updateLevel();
+
+              if(!train.ai.plan){ train.ai.plan = planForCurrentPiece(); if(!train.ai.plan){ // force drop to end episode
+                  while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+                  lock(state.grid, state.active);
+                  state.pieces++;
+                  if(state.pieces % 20 === 0){
+                    state.level++;
+                    state.gravity = gravityForLevel(state.level);
+                    updateLevel();
+                  }
+                  const cleared = clearRows(state.grid);
+                  if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                  if(state.grid[0].some(v => v !== 0)) { log('AI: top-out after forced drop'); onGameOver(); return; }
+                  spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return; }
+              }
+              const plan = train.ai.plan; if(!plan) continue;
+              if(plan.stage==='rotate'){
+                if(plan.rotLeft>0){
+                  state.active.rotate();
+                  if(!canMove(state.grid, state.active, 0, 0)){
+                    // Rotation blocked: abandon this plan to avoid stalling
+                    state.active.rotate(-1);
+                    train.ai.plan = null; log('AI: rotation blocked, abandoning plan');
+                  } else {
+                    plan.rotLeft -= 1;
+                  }
+                  continue;
                 }
-                const cleared = clearRows(state.grid);
-                if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
-              if(state.grid[0].some(v => v !== 0)) { log('AI: top-out after drop'); onGameOver(); train.ai.plan = null; return; }
-              spawn(); train.ai.plan = null; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
+                plan.stage='move'; continue;
+              }
+              if(plan.stage==='move'){
+                if(state.active.col < plan.targetCol){ if(canMove(state.grid, state.active, 1, 0)) state.active.move(1,0); else plan.stage='drop'; continue; }
+                if(state.active.col > plan.targetCol){ if(canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0); else plan.stage='drop'; continue; }
+                plan.stage='drop'; continue;
+              }
+              if(plan.stage==='drop'){
+                if(canMove(state.grid, state.active, 0, 1)){ state.active.move(0,1); continue; }
+                  lock(state.grid, state.active);
+                  state.pieces++;
+                  if(state.pieces % 20 === 0){
+                    state.level++;
+                    state.gravity = gravityForLevel(state.level);
+                    updateLevel();
+                  }
+                  const cleared = clearRows(state.grid);
+                  if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                if(state.grid[0].some(v => v !== 0)) { log('AI: top-out after drop'); onGameOver(); train.ai.plan = null; return; }
+                spawn(); train.ai.plan = null; if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); return;
+              }
             }
           }
           window.__aiStep = aiStep;
