@@ -300,7 +300,7 @@
         function updateScore(){ if(scoreEl) scoreEl.textContent = `Score: ${state.score}`; }
         function updateLevel(){ if(levelEl) levelEl.textContent = `Level: ${state.level}`; }
 
-        const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null };
+        const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'' };
 
         const shapes = Object.keys(SHAPES);
         const randShape = () => shapes[Math.floor(Math.random()*shapes.length)];
@@ -319,6 +319,10 @@
           if(!state.last) state.last = ts;
           const dt = ts - state.last; state.last = ts;
           const effDt = dt * speedMult;
+          // Watchdog: detect lack of progress for > 2s wall time and reset
+          const curSig = state.active ? `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}:${state.pieces}` : `none:${state.score}:${state.pieces}`;
+          if(curSig === state.lastSig){ state.wdAcc += dt; } else { state.wdAcc = 0; state.lastSig = curSig; }
+          if(state.wdAcc > 2000 && !state.paused){ log('Watchdog: no progress for 2s -> game over'); window.__onGameOver(); state.wdAcc = 0; }
           // Fallback: ensure there is always an active piece when running
           if(!state.paused && !state.active){
             spawn();
@@ -365,10 +369,10 @@
           scheduleNext();
         }
 
-        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
+        function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.wdAcc=0; state.lastSig=''; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
         function pause(){ if(!state.running){ log('Pause ignored: not running'); return; } state.paused=true; log('Paused'); }
         function resume(){ if(!state.running){ log('Resume ignored: not running'); return; } state.paused=false; log('Resumed'); }
-        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) clearTimeout(state.raf); log('Game stopped'); renderControls(); }
+        function stop(){ if(!state.running){ log('Stop ignored: not running'); return; } state.running=false; state.paused=false; if(state.raf) clearTimeout(state.raf); state.raf=null; log('Game stopped'); renderControls(); }
 
         // Toggle + reset controls
         const toggleBtn = document.getElementById('toggle');
