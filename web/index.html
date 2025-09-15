@@ -139,6 +139,10 @@
           <div class="panel-title">Next</div>
           <canvas id="preview" width="160" height="160"></canvas>
         </div>
+        <div class="panel">
+          <div class="panel-title">Training Progress</div>
+          <canvas id="score-plot" width="160" height="120"></canvas>
+        </div>
         <div id="level">Level: 0</div>
         <div id="score">Score: 0</div>
       </div>
@@ -299,6 +303,17 @@
           }
         }
 
+        // Record cleared line counts for training fitness (safe no-op if training is off)
+        function recordClear(lines){
+          try {
+            const tr = window.__train;
+            if(tr && tr.enabled){
+              if(!tr.clearCounts) tr.clearCounts = {1:0,2:0,3:0,4:0};
+              if(lines>=1 && lines<=4){ tr.clearCounts[lines] = (tr.clearCounts[lines]||0) + 1; }
+            }
+          } catch(_) { /* ignore */ }
+        }
+
         function updateScore(){ if(scoreEl) scoreEl.textContent = `Score: ${state.score}`; }
         function updateLevel(){ if(levelEl) levelEl.textContent = `Level: ${state.level}`; }
 
@@ -441,15 +456,18 @@ function tick(ts){
         // ================= AI Training (placement-level with animation) =================
         // Expose minimal API on window to avoid invasive edits above
         (function(){
-          const FEAT_DIM = 5;
+          // Features: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH]
+          const FEAT_DIM = 9;
           const AI_STEP_MS = 28; // ms between AI animation steps
+          const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
 
-          const INITIAL_MEAN = new Float64Array([1.0, -0.5, -0.8, -0.3, -0.2]);
-          const INITIAL_STD = new Float64Array([0.5, 0.5, 0.5, 0.5, 0.5]);
+          // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH]
+          const INITIAL_MEAN = new Float64Array([0.0, 0.8, -2.0, 0.5, 1.5, 3.0, -3.0, -0.6, -0.2]);
+          const INITIAL_STD = new Float64Array([0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4]);
           const train = {
             enabled: false,
             gen: 0,
-            popSize: 8,
+            popSize: 16,
             eliteFrac: 0.25,
             mean: new Float64Array(INITIAL_MEAN),
             std: new Float64Array(INITIAL_STD),
@@ -458,6 +476,8 @@ function tick(ts){
             candScores: [],
             candIndex: -1,
             ai: { plan: null, acc: 0 },
+            clearCounts: {1:0,2:0,3:0,4:0},
+            gameScores: [],
           };
           window.__train = train;
 
@@ -486,6 +506,7 @@ function tick(ts){
             }
             train.candScores = new Array(train.popSize).fill(0);
             train.candIndex = 0;
+            train.clearCounts = {1:0,2:0,3:0,4:0};
           }
 
           function startTraining(){
