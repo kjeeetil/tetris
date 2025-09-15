@@ -172,6 +172,8 @@
         const pctx = preview.getContext('2d');
         const CELL = 30, WIDTH = 10, HEIGHT = 20;
         const PREV_CELL = 28; // slightly smaller cell for preview
+        // Performance tuning caps
+        const MAX_AI_STEPS_PER_FRAME = 64;
         const speedSlider = document.getElementById('speed');
         const speedDisplay = document.getElementById('speed-display');
         let speedMult = 1;
@@ -300,7 +302,7 @@
         function updateScore(){ if(scoreEl) scoreEl.textContent = `Score: ${state.score}`; }
         function updateLevel(){ if(levelEl) levelEl.textContent = `Level: ${state.level}`; }
 
-        const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'' };
+        const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'', renderEvery:1, renderCounter:0 };
 
         const shapes = Object.keys(SHAPES);
         const randShape = () => shapes[Math.floor(Math.random()*shapes.length)];
@@ -313,6 +315,12 @@
           const delay = 1000 / 60;
           state.raf = setTimeout(() => tick(performance.now()), delay);
         };
+
+        function updateRenderDecimation(){
+          // Default: draw every frame; this can be expanded later to skip frames
+          state.renderEvery = 1;
+          state.renderCounter = 0;
+        }
 
 function tick(ts){
           try {
@@ -368,7 +376,18 @@ function tick(ts){
             try { log(`Tick error: ${e && e.message ? e.message : e}`); } catch(_) {}
             try { window.__onGameOver(); } catch(_) {}
           } finally {
-            try { draw(state.grid, state.active); } catch(_) {}
+            try {
+              if(state.renderEvery <= 1){
+                draw(state.grid, state.active);
+              } else {
+                if(state.renderCounter <= 0){
+                  draw(state.grid, state.active);
+                  state.renderCounter = state.renderEvery - 1;
+                } else {
+                  state.renderCounter -= 1;
+                }
+              }
+            } catch(_) {}
             scheduleNext();
           }
         }
