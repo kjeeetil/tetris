@@ -314,59 +314,63 @@
           state.raf = setTimeout(() => tick(performance.now()), delay);
         };
 
-        function tick(ts){
-          if(!state.running){ return; }
-          if(!state.last) state.last = ts;
-          const dt = ts - state.last; state.last = ts;
-          const effDt = dt * speedMult;
-          // Watchdog: detect lack of progress for > 2s wall time and reset
-          const curSig = state.active ? `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}:${state.pieces}` : `none:${state.score}:${state.pieces}`;
-          if(curSig === state.lastSig){ state.wdAcc += dt; } else { state.wdAcc = 0; state.lastSig = curSig; }
-          if(state.wdAcc > 2000 && !state.paused){ log('Watchdog: no progress for 2s -> game over'); window.__onGameOver(); state.wdAcc = 0; }
-          // Fallback: ensure there is always an active piece when running
-          if(!state.paused && !state.active){
-            spawn();
-            if(!canMove(state.grid, state.active, 0, 0)) { log('Tick: spawned into block -> game over'); window.__onGameOver(); draw(state.grid, state.active); scheduleNext(); return; }
-          }
-          if(!state.paused && state.active){
-            // Global guard: if the active piece cannot exist at its current
-            // position (e.g., spawn collision), trigger game over/reset.
-            if(!canMove(state.grid, state.active, 0, 0)){
-              log('Tick: spawn blocked -> game over');
-              window.__onGameOver();
-              draw(state.grid, state.active);
-              scheduleNext();
-              return;
+function tick(ts){
+          try {
+            if(!state.running){ return; }
+            if(!state.last) state.last = ts;
+            const dt = ts - state.last; state.last = ts;
+            const effDt = dt * speedMult;
+            // Watchdog: detect lack of progress for > 2s wall time and reset
+            const curSig = state.active ? `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}:${state.pieces}` : `none:${state.score}:${state.pieces}`;
+            if(curSig === state.lastSig){ state.wdAcc += dt; } else { state.wdAcc = 0; state.lastSig = curSig; }
+            if(state.wdAcc > 2000 && !state.paused){ log('Watchdog: no progress for 2s -> game over'); window.__onGameOver(); state.wdAcc = 0; }
+            // Fallback: ensure there is always an active piece when running
+            if(!state.paused && !state.active){
+              spawn();
+              if(!canMove(state.grid, state.active, 0, 0)) { log('Tick: spawned into block -> game over'); window.__onGameOver(); return; }
             }
-            if(window.__train && window.__train.enabled){
-              window.__aiStep(effDt);
-            } else {
-              state.acc += effDt;
-              while(state.acc >= state.gravity){
-                state.acc -= state.gravity;
-                if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-                else {
-                  lock(state.grid, state.active);
-                  state.pieces++;
-                  if(state.pieces % 20 === 0){
-                    state.level++;
-                    state.gravity = gravityForLevel(state.level);
-                    updateLevel();
-                  }
-                  const cleared = clearRows(state.grid);
-                  if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
-                  // Top-out guard after lock/clear in manual mode
-                  if(state.grid[0].some(v => v !== 0)) { window.__onGameOver(); }
+            if(!state.paused && state.active){
+              // Global guard: if the active piece cannot exist at its current
+              // position (e.g., spawn collision), trigger game over/reset.
+              if(!canMove(state.grid, state.active, 0, 0)){
+                log('Tick: spawn blocked -> game over');
+                window.__onGameOver();
+                return;
+              }
+              if(window.__train && window.__train.enabled){
+                window.__aiStep(effDt);
+              } else {
+                state.acc += effDt;
+                while(state.acc >= state.gravity){
+                  state.acc -= state.gravity;
+                  if(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
                   else {
-                    spawn();
-                    if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                    lock(state.grid, state.active);
+                    state.pieces++;
+                    if(state.pieces % 20 === 0){
+                      state.level++;
+                      state.gravity = gravityForLevel(state.level);
+                      updateLevel();
+                    }
+                    const cleared = clearRows(state.grid);
+                    if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); log(`Cleared ${cleared} row(s). Score: ${state.score}`); }
+                    // Top-out guard after lock/clear in manual mode
+                    if(state.grid[0].some(v => v !== 0)) { window.__onGameOver(); }
+                    else {
+                      spawn();
+                      if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
+                    }
                   }
                 }
               }
             }
+          } catch (e) {
+            try { log(`Tick error: ${e && e.message ? e.message : e}`); } catch(_) {}
+            try { window.__onGameOver(); } catch(_) {}
+          } finally {
+            try { draw(state.grid, state.active); } catch(_) {}
+            scheduleNext();
           }
-          draw(state.grid, state.active);
-          scheduleNext();
         }
 
         function start(){ if(state.running){ log('Already running'); return; } canvas.focus(); state.grid = emptyGrid(); state.score=0; state.level=0; state.pieces=0; state.gravity=gravityForLevel(0); updateScore(); updateLevel(); state.last=0; state.acc=0; state.wdAcc=0; state.lastSig=''; state.running=true; state.paused=false; spawn(); draw(state.grid, state.active); scheduleNext(); log('Game started'); renderControls(); }
