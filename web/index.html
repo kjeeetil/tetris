@@ -176,6 +176,7 @@
         const canvas = document.getElementById('canvas');
         const preview = document.getElementById('preview');
         const diag = document.getElementById('diagnostics');
+        const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
         const weightsEl = document.getElementById('weights-display');
         const scoreEl = document.getElementById('score');
@@ -206,6 +207,10 @@
           const now = new Date().toLocaleTimeString();
           d.textContent = `[${now}] ${t}`;
           diag.prepend(d);
+          // Trim log to avoid unbounded DOM growth
+          while (diag.childElementCount > MAX_LOG_LINES) {
+            diag.removeChild(diag.lastChild);
+          }
         };
 
         const Shapes = {
@@ -493,6 +498,7 @@ function tick(ts){
             mean: new Float64Array(INITIAL_MEAN_LINEAR),
             std: new Float64Array(INITIAL_STD_LINEAR),
             minStd: 0.05,
+            maxStd: 3.0,
             candWeights: [],
             candScores: [],
             candIndex: -1,
@@ -500,6 +506,14 @@ function tick(ts){
             clearCounts: {1:0,2:0,3:0,4:0},
             gameScores: [],
             gameModelTypes: [],
+            bestFitness: -Infinity,
+            genNoImprove: 0,
+            // exploration config
+            heavyTailFrac: 0.25,
+            heavyTailScale: 3.0,
+            plateauGens: 8,
+            stdBoost: 1.8,
+            maxPlotPoints: 4000,
           };
           window.__train = train;
 
@@ -522,9 +536,11 @@ function tick(ts){
           function samplePopulation(){
             const dim = paramDim();
             train.candWeights = [];
+            const heavyCount = Math.floor(train.heavyTailFrac * train.popSize);
             for(let i=0;i<train.popSize;i++){
               const w = new Float64Array(dim);
-              for(let d=0; d<dim; d++) w[d] = train.mean[d] + train.std[d]*randn();
+              const scale = (i < heavyCount) ? (train.heavyTailScale) : 1.0;
+              for(let d=0; d<dim; d++) w[d] = train.mean[d] + (train.std[d] || train.minStd) * scale * randn();
               train.candWeights.push(w);
             }
             // Ensure the very first attempt (gen 0, cand 0) uses the mean weights (intentionally poor)
@@ -575,6 +591,12 @@ function tick(ts){
               // Append raw score for progress plot and mark model type
               train.gameScores.push(state.score);
               train.gameModelTypes.push(train.modelType);
+              // Cap data arrays to bound memory
+              const cap = train.maxPlotPoints;
+              if (train.gameScores.length > cap) {
+                train.gameScores.splice(0, train.gameScores.length - cap);
+                train.gameModelTypes.splice(0, train.gameModelTypes.length - cap);
+              }
               updateScorePlot();
               if(train.candIndex + 1 < train.popSize){
                 train.candIndex += 1;
@@ -585,18 +607,32 @@ function tick(ts){
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
               } else {
-                const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
-                const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
-                const elites = idx.slice(0, eliteCount);
-                const newMean = new Float64Array(FEAT_DIM);
-                for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<FEAT_DIM; d++) newMean[d]+=w[d]; }
-                for(let d=0; d<FEAT_DIM; d++) newMean[d] /= eliteCount;
-                const newStd = new Float64Array(FEAT_DIM);
-                for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<FEAT_DIM; d++){ const diff=w[d]-newMean[d]; newStd[d]+=diff*diff; } }
-                for(let d=0; d<FEAT_DIM; d++) newStd[d] = Math.max(train.minStd, Math.sqrt(newStd[d]/eliteCount));
-                train.mean = newMean; train.std = newStd; train.gen += 1;
-                log(`Gen ${train.gen} complete. Best score: ${train.candScores[idx[0]]}`);
-                samplePopulation();
+              const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+              const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
+              const elites = idx.slice(0, eliteCount);
+              const dim = paramDim();
+              const newMean = new Float64Array(dim);
+              for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++) newMean[d]+=w[d]; }
+              for(let d=0; d<dim; d++) newMean[d] /= eliteCount;
+              const newStd = new Float64Array(dim);
+              for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++){ const diff=w[d]-newMean[d]; newStd[d]+=diff*diff; } }
+              for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d]/eliteCount)));
+              train.mean = newMean; train.std = newStd; train.gen += 1;
+              const bestThisGen = train.candScores[idx[0]];
+              // Plateau detection: boost exploration if no improvement
+              if(bestThisGen <= train.bestFitness){
+                train.genNoImprove += 1;
+                if(train.genNoImprove >= train.plateauGens){
+                  for(let d=0; d<train.std.length; d++) train.std[d] = Math.min(train.maxStd, train.std[d] * train.stdBoost);
+                  train.genNoImprove = 0;
+                  log('Plateau detected: boosted exploration std');
+                }
+              } else {
+                train.bestFitness = bestThisGen;
+                train.genNoImprove = 0;
+              }
+              log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
+              samplePopulation();
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
                 state.gravity = gravityForLevel(0);
                 updateLevel(); updateScore();
