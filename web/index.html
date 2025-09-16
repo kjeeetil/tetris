@@ -362,8 +362,23 @@
           } catch(_) { /* ignore */ }
         }
 
-        function updateScore(){ if(scoreEl) scoreEl.textContent = `Score: ${state.score}`; }
-        function updateLevel(){ if(levelEl) levelEl.textContent = `Level: ${state.level}`; }
+        function isHeadlessTrainingActive(){
+          try {
+            const tr = window.__train;
+            return !!(tr && tr.enabled && tr.visualizeBoard === false);
+          } catch (_) {
+            return false;
+          }
+        }
+
+        function updateScore(force){
+          if(!force && isHeadlessTrainingActive()) return;
+          if(scoreEl) scoreEl.textContent = `Score: ${state.score}`;
+        }
+        function updateLevel(force){
+          if(!force && isHeadlessTrainingActive()) return;
+          if(levelEl) levelEl.textContent = `Level: ${state.level}`;
+        }
 
         const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'', renderEvery:1, renderCounter:0 };
 
@@ -1352,6 +1367,7 @@
               // When re-enabling visualization, draw current state immediately
               if(train.visualizeBoard){
                 try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
+                updateScore(true); updateLevel(true);
               }
             });
           }
