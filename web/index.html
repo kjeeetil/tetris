@@ -326,6 +326,25 @@
             Hide Game
           </button>
         </div>
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <button
+            id="download-weights"
+            class="icon-btn icon-btn--wide"
+            title="Download current model weights"
+            aria-label="Download current model weights"
+          >
+            Save Weights
+          </button>
+          <button
+            id="upload-weights-button"
+            class="icon-btn icon-btn--violet icon-btn--wide"
+            title="Upload weights from a saved file"
+            aria-label="Upload model weights"
+          >
+            Load Weights
+          </button>
+          <input id="upload-weights" type="file" accept=".txt,.json,text/plain" class="hidden" />
+        </div>
         <div
           id="mlp-config"
           class="glass-panel hidden w-full max-w-3xl flex flex-col items-center gap-4 px-4 py-4 text-sm text-plum/70"
@@ -1011,6 +1030,211 @@
               return `Architecture: ${parts.join(' → ')}`;
             }
             return `Linear policy with ${FEAT_DIM} inputs`;
+          }
+
+          function activeWeightArray(){
+            if(train && train.currentWeightsOverride && train.currentWeightsOverride.length){
+              return train.currentWeightsOverride;
+            }
+            if(train && train.enabled && train.candIndex >= 0 && train.candIndex < train.candWeights.length){
+              const candidate = train.candWeights[train.candIndex];
+              if(candidate && candidate.length){
+                return candidate;
+              }
+            }
+            if(train && train.mean && train.mean.length){
+              return train.mean;
+            }
+            if(train && train.bestEverWeights && train.bestEverWeights.length){
+              return train.bestEverWeights;
+            }
+            return null;
+          }
+
+          function createWeightSnapshot(){
+            const weights = activeWeightArray();
+            if(!weights || !weights.length){
+              return null;
+            }
+            const values = Array.from(weights, (v) => Number(v));
+            const hiddenLayersSnapshot = (train && train.modelType === 'mlp')
+              ? (() => {
+                  const sizes = currentMlpLayerSizes();
+                  if(!sizes || sizes.length <= 2){
+                    return [];
+                  }
+                  return sizes.slice(1, sizes.length - 1).map((size, idx) => sanitizeHiddenUnits(size, idx, size));
+                })()
+              : [];
+            const snapshot = {
+              version: 1,
+              createdAt: new Date().toISOString(),
+              modelType: train ? train.modelType : currentModelType,
+              dtype: (train && train.dtype) ? train.dtype : DEFAULT_DTYPE,
+              featureCount: FEAT_DIM,
+              hiddenLayers: hiddenLayersSnapshot,
+              weights: values,
+            };
+            if(train && Number.isFinite(train.gen)){
+              snapshot.generation = train.gen;
+            }
+            if(train && Number.isFinite(train.bestEverFitness)){
+              snapshot.bestEverFitness = train.bestEverFitness;
+            }
+            return snapshot;
+          }
+
+          function downloadCurrentWeights(){
+            try {
+              const snapshot = createWeightSnapshot();
+              if(!snapshot){
+                log('Weights unavailable for download yet. Start a game or training session first.');
+                return;
+              }
+              const text = JSON.stringify(snapshot, null, 2);
+              const blob = new Blob([text], { type: 'text/plain' });
+              const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+              const safeModel = (snapshot.modelType || 'model').toLowerCase();
+              const fileName = `tetris-${safeModel}-weights-${timestamp}.txt`;
+              const link = document.createElement('a');
+              link.href = URL.createObjectURL(blob);
+              link.download = fileName;
+              document.body.appendChild(link);
+              link.click();
+              setTimeout(() => {
+                try {
+                  URL.revokeObjectURL(link.href);
+                } catch (_) {}
+                if(link.parentNode){
+                  link.parentNode.removeChild(link);
+                }
+              }, 0);
+              log(`Saved ${snapshot.modelType.toUpperCase()} weights (${snapshot.weights.length} params) to ${fileName}.`);
+            } catch (err) {
+              console.error(err);
+              const message = (err && err.message) ? err.message : 'unknown error';
+              log(`Failed to export weights: ${message}`);
+            }
+          }
+
+          function parseWeightSnapshot(text){
+            if(!text || !text.trim()){
+              throw new Error('File was empty');
+            }
+            let data;
+            try {
+              data = JSON.parse(text);
+            } catch (err) {
+              throw new Error('File was not valid JSON');
+            }
+            if(!data || typeof data !== 'object'){
+              throw new Error('Snapshot data missing');
+            }
+            if(data.version && Number(data.version) !== 1){
+              throw new Error(`Unsupported snapshot version ${data.version}`);
+            }
+            if(data.modelType !== 'linear' && data.modelType !== 'mlp'){
+              throw new Error('Snapshot missing model type');
+            }
+            if(!Array.isArray(data.weights) || !data.weights.length){
+              throw new Error('Snapshot missing weights');
+            }
+            if(data.featureCount && data.featureCount !== FEAT_DIM){
+              throw new Error(`Snapshot expects ${data.featureCount} features but this build uses ${FEAT_DIM}`);
+            }
+            data.version = 1;
+            return data;
+          }
+
+          function applyWeightSnapshot(snapshot, context){
+            if(!snapshot){
+              throw new Error('Snapshot missing');
+            }
+            const modelType = snapshot.modelType;
+            let dtype = snapshot.dtype;
+            if(dtype === 'f16' && !HAS_F16){
+              dtype = 'f32';
+            }
+            if(dtype !== 'f16' && dtype !== 'f32'){
+              dtype = 'f32';
+            }
+
+            const weights = snapshot.weights.map((v) => Number(v));
+            let expectedDim = FEAT_DIM;
+            let snapshotHidden = [];
+            if(modelType === 'mlp'){
+              const raw = Array.isArray(snapshot.hiddenLayers) ? snapshot.hiddenLayers : [];
+              snapshotHidden = raw.slice(0, MLP_MAX_HIDDEN_LAYERS).map((value, idx) => sanitizeHiddenUnits(value, idx, value));
+              if(snapshotHidden.length === 0){
+                const fallback = DEFAULT_MLP_HIDDEN[0] || 8;
+                snapshotHidden.push(sanitizeHiddenUnits(fallback, 0, fallback));
+              }
+              let prev = FEAT_DIM;
+              expectedDim = 0;
+              for(let i = 0; i < snapshotHidden.length; i++){
+                const size = sanitizeHiddenUnits(snapshotHidden[i], i, snapshotHidden[i]);
+                snapshotHidden[i] = size;
+                expectedDim += prev * size + size;
+                prev = size;
+              }
+              expectedDim += prev + 1;
+            }
+
+            if(weights.length !== expectedDim){
+              throw new Error(`Expected ${expectedDim} weights for ${modelType.toUpperCase()} model, received ${weights.length}`);
+            }
+
+            const typed = allocWeights(expectedDim, dtype);
+            for(let i = 0; i < expectedDim; i++){
+              const val = weights[i];
+              typed[i] = Number.isFinite(val) ? val : 0;
+            }
+
+            const wasRunning = train && train.enabled;
+            if(wasRunning){
+              stopTraining();
+            }
+
+            if(modelSel){
+              modelSel.value = modelType;
+            }
+
+            if(modelType === 'mlp'){
+              applyMlpHiddenLayers(snapshotHidden, { rerenderControls: true, syncInputs: true });
+            }
+
+            train.modelType = modelType;
+            currentModelType = modelType;
+            train.dtype = dtype;
+
+            resetTraining();
+            syncMlpConfigVisibility();
+
+            train.mean = typed;
+            train.std = initialStd(modelType, mlpHiddenLayers);
+            train.currentWeightsOverride = null;
+            train.ai.plan = null;
+
+            const bestCopy = new Float64Array(typed.length);
+            for(let i = 0; i < typed.length; i++){
+              bestCopy[i] = typed[i];
+            }
+            train.bestEverWeights = bestCopy;
+            train.bestEverFitness = Number.isFinite(snapshot.bestEverFitness) ? snapshot.bestEverFitness : -Infinity;
+            const snapGen = Number(snapshot.generation);
+            if(Number.isFinite(snapGen) && snapGen >= 0){
+              train.gen = snapGen;
+            }
+            train.bestFitness = train.bestEverFitness;
+            train.genNoImprove = 0;
+
+            updateTrainStatus();
+
+            const origin = context && context.fileName ? ` from ${context.fileName}` : '';
+            log(`Loaded ${modelType.toUpperCase()} weights (${typed.length} params)${origin}.`);
+            if(wasRunning){
+              log('Training paused. Restart AI training to continue with imported weights.');
+            }
           }
 
           function applyMlpHiddenLayers(newLayers, options = {}){
@@ -2122,6 +2346,43 @@
             }
           }
           window.__aiStep = aiStep;
+
+          const downloadBtn = document.getElementById('download-weights');
+          if(downloadBtn){
+            downloadBtn.addEventListener('click', downloadCurrentWeights);
+          }
+          const uploadInput = document.getElementById('upload-weights');
+          const uploadBtn = document.getElementById('upload-weights-button');
+          if(uploadBtn && uploadInput){
+            uploadBtn.addEventListener('click', () => {
+              uploadInput.click();
+            });
+            uploadInput.addEventListener('change', () => {
+              const file = uploadInput.files && uploadInput.files[0];
+              if(!file){
+                return;
+              }
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                try {
+                  const text = typeof event.target.result === 'string' ? event.target.result : '';
+                  const snapshot = parseWeightSnapshot(text);
+                  applyWeightSnapshot(snapshot, { fileName: file.name });
+                } catch (err) {
+                  console.error(err);
+                  const message = (err && err.message) ? err.message : 'unknown error';
+                  log(`Failed to load weights: ${message}`);
+                } finally {
+                  uploadInput.value = '';
+                }
+              };
+              reader.onerror = () => {
+                log('Failed to read weight file.');
+                uploadInput.value = '';
+              };
+              reader.readAsText(file);
+            });
+          }
 
           // Hook up training buttons
           const trainBtn = document.getElementById('train');
