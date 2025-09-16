@@ -70,9 +70,11 @@ def print_summary(tracker: PerformanceTracker, limit: int = 10) -> None:
 
 def log_summary(tracker: PerformanceTracker, *, limit: int, index: int) -> list[dict[str, float | int]]:
     summary = tracker.summary(sort_by="total")
-    message = _format_summary(summary, limit=limit)
+    limit = max(0, limit)
+    limited_summary = summary[:limit] if limit else []
+    message = _format_summary(limited_summary, limit=limit)
     LOGGER.info("Simulation %d performance: %s", index, message)
-    return summary
+    return limited_summary
 
 
 def parse_args() -> argparse.Namespace:
