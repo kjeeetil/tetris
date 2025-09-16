@@ -6,6 +6,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://pyscript.net; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; img-src 'self' data:;" />
     <title>Tetris</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
     
     <style>
       body {
@@ -79,6 +80,22 @@
         box-shadow: 0 1px 2px rgba(0,0,0,0.08);
       }
       .icon-btn:active { transform: translateY(1px); }
+      #network-viz {
+        width: 320px;
+        height: 220px;
+        margin: 12px auto 0 auto;
+      }
+      #network-viz svg {
+        width: 100%;
+        height: 100%;
+        border: 1px solid #eee;
+        background: #fff;
+      }
+      #network-viz text {
+        font-size: 10px;
+        fill: #444;
+        pointer-events: none;
+      }
       #diagnostics {
         width: 320px;
         height: 140px;
@@ -123,6 +140,11 @@
           height: 56px;
           font-size: 24px;
           line-height: 56px;
+        }
+        #network-viz {
+          width: 90vw;
+          max-width: 360px;
+          height: 220px;
         }
       }
       /* No external runtimes required; pure JS renderer */
@@ -170,6 +192,7 @@
     </div>
     <div id="train-status"></div>
     <div id="weights-display"></div>
+    <div id="network-viz" aria-label="Network weight visualization"></div>
     <div id="diagnostics" aria-live="polite"></div>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
@@ -180,6 +203,7 @@
         const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
         const weightsEl = document.getElementById('weights-display');
+        const networkVizEl = document.getElementById('network-viz');
         const scoreEl = document.getElementById('score');
         const levelEl = document.getElementById('level');
         const ctx = canvas.getContext('2d');
@@ -502,8 +526,24 @@ function tick(ts){
         // Expose minimal API on window to avoid invasive edits above
         (function(){
           // Features (scaled):
-          // [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
-          const FEAT_DIM = 15;
+          const FEATURE_NAMES = [
+            'Lines',
+            'Lines²',
+            'Single Clear',
+            'Double Clear',
+            'Triple Clear',
+            'Tetris',
+            'Holes',
+            'Bumpiness',
+            'Max Height',
+            'Well Sum',
+            'Edge Wells',
+            'Contact',
+            'Row Transitions',
+            'Col Transitions',
+            'Aggregate Height',
+          ];
+          const FEAT_DIM = FEATURE_NAMES.length;
           const AI_STEP_MS = 28; // ms between AI animation steps
           const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
           const LOOKAHEAD_BEAM = 6; // evaluate next-piece lookahead only for top-K first moves
@@ -531,6 +571,230 @@ function tick(ts){
           function makeTyped(vals){ const arr = newWeightArray(vals.length); for(let i=0;i<vals.length;i++) arr[i]=vals[i]; return arr; }
           function initialMean(model){ return model === 'mlp' ? makeTyped(INITIAL_MEAN_MLP_BASE) : makeTyped(INITIAL_MEAN_LINEAR_BASE); }
           function initialStd(model){ return model === 'mlp' ? makeTyped(INITIAL_STD_MLP_BASE) : makeTyped(INITIAL_STD_LINEAR_BASE); }
+
+          function sliceSegment(arr, start, end){
+            if(!arr) return null;
+            if(typeof arr.subarray === 'function'){
+              return arr.subarray(start, end);
+            }
+            return arr.slice(start, end);
+          }
+
+          function inferLayerSizesFromWeights(weights, override){
+            const inputDim = FEATURE_NAMES.length;
+            if(Array.isArray(override) && override.length >= 2){
+              return override.slice();
+            }
+            if(!weights || !weights.length){
+              return [inputDim, 1];
+            }
+            const total = weights.length;
+            const cache = new Map();
+
+            function dfs(offset, prev){
+              if(offset === total){
+                return [];
+              }
+              const key = `${offset}|${prev}`;
+              if(cache.has(key)) return cache.get(key);
+              const remaining = total - offset;
+
+              if(remaining % prev === 0){
+                const outSize = remaining / prev;
+                const seq = [outSize];
+                cache.set(key, seq);
+                return seq;
+              }
+
+              const maxNext = Math.floor(remaining / (prev + 1));
+              for(let next = 1; next <= maxNext; next++){
+                const need = prev * next + next;
+                if(need > remaining) continue;
+                const rest = dfs(offset + need, next);
+                if(rest){
+                  const seq = [next, ...rest];
+                  cache.set(key, seq);
+                  return seq;
+                }
+              }
+              cache.set(key, null);
+              return null;
+            }
+
+            const seq = dfs(0, inputDim);
+            if(seq){
+              return [inputDim, ...seq];
+            }
+            if(total === inputDim){
+              return [inputDim, 1];
+            }
+            if(total === inputDim + 1){
+              return [inputDim, 1];
+            }
+            return [inputDim, 1];
+          }
+
+          function sliceWeightMatrices(weights, layerSizes){
+            const slices = [];
+            if(!weights || !layerSizes || layerSizes.length < 2) return slices;
+            let offset = 0;
+            const totalLen = weights.length || 0;
+            for(let layer = 1; layer < layerSizes.length; layer++){
+              const prev = layerSizes[layer - 1];
+              const curr = layerSizes[layer];
+              const weightCount = prev * curr;
+              const matrix = sliceSegment(weights, offset, offset + weightCount);
+              offset += weightCount;
+              let bias = null;
+              if(offset + curr <= totalLen){
+                bias = sliceSegment(weights, offset, offset + curr);
+                offset += curr;
+              }
+              slices.push({ weights: matrix, bias });
+            }
+            return slices;
+          }
+
+          function renderNetworkD3(weights, overrideLayerSizes){
+            if(!networkVizEl || typeof d3 === 'undefined'){
+              return;
+            }
+            const width = networkVizEl.clientWidth || 320;
+            const height = networkVizEl.clientHeight || 220;
+            const marginX = 52;
+            const marginY = 28;
+
+            let svg = d3.select(networkVizEl).select('svg');
+            if(svg.empty()){
+              svg = d3.select(networkVizEl)
+                .append('svg')
+                .attr('role', 'img')
+                .attr('aria-label', 'Visualization of model weights')
+                .attr('preserveAspectRatio', 'xMidYMid meet');
+            }
+            svg
+              .attr('width', width)
+              .attr('height', height)
+              .attr('viewBox', `0 0 ${width} ${height}`);
+            svg.selectAll('*').remove();
+
+            if(!weights || !weights.length){
+              svg.append('text')
+                .attr('x', width / 2)
+                .attr('y', height / 2)
+                .attr('text-anchor', 'middle')
+                .attr('fill', '#888')
+                .text('Weights unavailable');
+              return;
+            }
+
+            const layerSizes = inferLayerSizesFromWeights(weights, overrideLayerSizes);
+            const slices = sliceWeightMatrices(weights, layerSizes);
+            const totalLayers = layerSizes.length;
+            const innerWidth = Math.max(width - 2 * marginX, 10);
+            const innerHeight = Math.max(height - 2 * marginY, 10);
+
+            const nodes = [];
+            const nodeLookup = new Map();
+            for(let layerIdx = 0; layerIdx < totalLayers; layerIdx++){
+              const layerSize = layerSizes[layerIdx];
+              const x = totalLayers === 1 ? width / 2 : marginX + (innerWidth * layerIdx) / Math.max(1, totalLayers - 1);
+              const step = layerSize > 1 ? innerHeight / (layerSize - 1) : 0;
+              const biasSlice = layerIdx > 0 && slices[layerIdx - 1] ? slices[layerIdx - 1].bias : null;
+              for(let i = 0; i < layerSize; i++){
+                const y = layerSize > 1 ? marginY + step * i : height / 2;
+                const id = `${layerIdx}-${i}`;
+                const label = layerIdx === 0
+                  ? (FEATURE_NAMES[i] || `x${i + 1}`)
+                  : (layerIdx === totalLayers - 1
+                    ? (layerSize === 1 ? 'Output' : `y${i + 1}`)
+                    : `h${layerIdx}-${i + 1}`);
+                const biasVal = (biasSlice && biasSlice.length > i) ? biasSlice[i] : null;
+                const node = { id, layer: layerIdx, index: i, x, y, label, bias: biasVal };
+                nodes.push(node);
+                nodeLookup.set(id, node);
+              }
+            }
+
+            const edges = [];
+            for(let layerIdx = 1; layerIdx < layerSizes.length; layerIdx++){
+              const prev = layerSizes[layerIdx - 1];
+              const curr = layerSizes[layerIdx];
+              const slice = slices[layerIdx - 1];
+              const matrix = slice && slice.weights ? slice.weights : null;
+              for(let i = 0; i < prev; i++){
+                for(let j = 0; j < curr; j++){
+                  const wIdx = matrix ? (i * curr + j) : null;
+                  const weightValue = (matrix && wIdx !== null && wIdx < matrix.length) ? matrix[wIdx] : 0;
+                  edges.push({
+                    source: nodeLookup.get(`${layerIdx - 1}-${i}`),
+                    target: nodeLookup.get(`${layerIdx}-${j}`),
+                    weight: weightValue,
+                  });
+                }
+              }
+            }
+
+            const maxAbs = edges.length ? d3.max(edges, (d) => Math.abs(d.weight)) : 0;
+            const denom = (maxAbs && Number.isFinite(maxAbs) && maxAbs > 0) ? maxAbs : 1;
+
+            const edgeGroup = svg.append('g').attr('class', 'edges');
+            const edgeSel = edgeGroup.selectAll('line')
+              .data(edges)
+              .enter()
+              .append('line')
+              .attr('x1', (d) => d.source ? d.source.x : 0)
+              .attr('y1', (d) => d.source ? d.source.y : 0)
+              .attr('x2', (d) => d.target ? d.target.x : 0)
+              .attr('y2', (d) => d.target ? d.target.y : 0)
+              .attr('stroke', (d) => (d.weight >= 0 ? '#2b8cbe' : '#d7301f'))
+              .attr('stroke-width', (d) => {
+                const norm = Math.min(1, Math.abs(d.weight) / denom);
+                return 0.6 + norm * 3.4;
+              })
+              .attr('stroke-opacity', (d) => {
+                const norm = Math.min(1, Math.abs(d.weight) / denom);
+                return 0.2 + norm * 0.8;
+              });
+            edgeSel.append('title').text((d) => `w=${d.weight.toFixed(3)}`);
+
+            const nodeGroup = svg.append('g').attr('class', 'nodes');
+            const nodeSel = nodeGroup.selectAll('g')
+              .data(nodes)
+              .enter()
+              .append('g')
+              .attr('transform', (d) => `translate(${d.x}, ${d.y})`);
+
+            nodeSel.append('circle')
+              .attr('r', 10)
+              .attr('fill', '#fff')
+              .attr('stroke', '#555')
+              .attr('stroke-width', 1.2);
+
+            nodeSel.append('text')
+              .attr('text-anchor', (d) => {
+                if(d.layer === 0) return 'end';
+                if(d.layer === totalLayers - 1) return 'start';
+                return 'middle';
+              })
+              .attr('x', (d) => {
+                if(d.layer === 0) return -14;
+                if(d.layer === totalLayers - 1) return 14;
+                return 0;
+              })
+              .attr('dy', 4)
+              .text((d) => d.label);
+
+            nodeSel.append('title').text((d) => {
+              if(d.layer === 0){
+                return d.label;
+              }
+              if(typeof d.bias === 'number' && Number.isFinite(d.bias)){
+                return `${d.label} (bias ${d.bias.toFixed(3)})`;
+              }
+              return d.label;
+            });
+          }
 
           const train = {
             enabled: false,
@@ -583,9 +847,21 @@ function tick(ts){
                 trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()}`;
               }
             }
+            let currentWeights = null;
+            if(train.currentWeightsOverride){
+              currentWeights = train.currentWeightsOverride;
+            } else if(train.enabled && train.candIndex >= 0 && train.candIndex < train.candWeights.length){
+              currentWeights = train.candWeights[train.candIndex];
+            } else if(train.mean){
+              currentWeights = train.mean;
+            }
             if(weightsEl){
-              const w = train.enabled ? train.candWeights[train.candIndex] : train.mean;
-              weightsEl.textContent = w ? `Weights: ${formatWeights(w)}` : '';
+              weightsEl.textContent = currentWeights ? `Weights: ${formatWeights(currentWeights)}` : '';
+            }
+            try {
+              renderNetworkD3(currentWeights);
+            } catch (_) {
+              /* ignore render failures */
             }
           }
 
