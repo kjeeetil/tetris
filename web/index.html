@@ -205,7 +205,7 @@
       }
       .icon-btn--wide {
         width: auto;
-        min-width: 132px;
+        min-width: 150px;
         padding: 0 1.8rem;
         font-size: 18px;
       }
@@ -243,7 +243,7 @@
           font-size: 22px;
         }
         .icon-btn--wide {
-          min-width: 120px;
+          min-width: 140px;
           padding: 0 1.5rem;
         }
       }
@@ -326,10 +326,10 @@
           <button
             id="render-toggle"
             class="icon-btn icon-btn--violet icon-btn--wide"
-            title="Show/Hide Board During Training"
-            aria-label="Show/Hide Board"
+            title="Show/Hide Game During Training"
+            aria-label="Show or Hide Game"
           >
-            Hide
+            Hide Game
           </button>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
@@ -752,7 +752,12 @@
         // Toggle + reset controls
         const toggleBtn = document.getElementById('toggle');
         const resetBtn = document.getElementById('reset');
-        function renderControls(){ toggleBtn.textContent = (!state.running || state.paused) ? '▶' : '⏸'; }
+        function renderControls(){
+          if(!toggleBtn) return;
+          const showPauseIcon = state.running && !state.paused;
+          toggleBtn.textContent = showPauseIcon ? '⏸' : '▶';
+          toggleBtn.classList.toggle('icon-btn--emerald', showPauseIcon);
+        }
         function togglePlayPause(){ if(!state.running){ start(); } else if(state.paused){ resume(); } else { pause(); } renderControls(); }
         function resetGame(){ if(state.running){ stop(); } start(); }
 
@@ -1172,10 +1177,26 @@
             train.gameScores = [];
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
             updateTrainStatus();
-            const btn = document.getElementById('train'); if(btn) btn.textContent = '⏹';
+            const btn = document.getElementById('train');
+            if(btn){
+              btn.textContent = '⏹';
+              btn.classList.remove('icon-btn--violet');
+              btn.classList.add('icon-btn--emerald');
+            }
             log('Training started');
           }
-          function stopTraining(){ train.enabled = false; train.ai.plan = null; const btn = document.getElementById('train'); if(btn) btn.textContent = 'AI'; log('Training stopped'); updateTrainStatus(); }
+          function stopTraining(){
+            train.enabled = false;
+            train.ai.plan = null;
+            const btn = document.getElementById('train');
+            if(btn){
+              btn.textContent = 'AI';
+              btn.classList.remove('icon-btn--emerald');
+              btn.classList.add('icon-btn--violet');
+            }
+            log('Training stopped');
+            updateTrainStatus();
+          }
           function resetTraining(){
             stopTraining();
             // Reset mean/std based on selected model
@@ -1600,7 +1621,15 @@
           const trainResetBtn = document.getElementById('train-reset');
           if(trainResetBtn){ trainResetBtn.addEventListener('click', resetTraining); }
           const renderToggleBtn = document.getElementById('render-toggle');
-          function updateRenderToggleBtn(){ if(renderToggleBtn) renderToggleBtn.textContent = (train.visualizeBoard ? 'Hide' : 'Show'); }
+          function updateRenderToggleBtn(){
+            if(!renderToggleBtn) return;
+            const label = train.visualizeBoard ? 'Hide Game' : 'Show Game';
+            renderToggleBtn.textContent = label;
+            renderToggleBtn.setAttribute('aria-label', label);
+            renderToggleBtn.title = train.visualizeBoard
+              ? 'Hide Game During Training'
+              : 'Show Game During Training';
+          }
           if(renderToggleBtn){
             renderToggleBtn.addEventListener('click', () => {
               train.visualizeBoard = !train.visualizeBoard;
