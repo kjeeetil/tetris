@@ -330,6 +330,11 @@
           id="mlp-config"
           class="glass-panel hidden w-full max-w-3xl flex flex-col items-center gap-4 px-4 py-4 text-sm text-plum/70"
         >
+          <p class="text-xs uppercase tracking-[0.35em] text-plum/60">MLP Architecture Controls</p>
+          <p class="max-w-xl text-center text-[13px] text-plum/60">
+            Adjust the multi-layer perceptron policy before or during training. Choose how many hidden layers to use and how many
+            neurons should live in each layer; the model and visualisation update instantly.
+          </p>
           <div class="flex flex-wrap items-center justify-center gap-3">
             <label for="mlp-hidden-count" class="text-xs uppercase tracking-[0.35em] text-plum/70">Hidden Layers</label>
             <select id="mlp-hidden-count" class="bg-transparent text-base font-display">
@@ -358,6 +363,11 @@
       </section>
       <section class="mt-6 w-full max-w-5xl space-y-6">
         <div id="train-status" class="text-center text-xs uppercase tracking-[0.45em] text-mint/70"></div>
+        <div
+          id="model-architecture"
+          class="text-center text-sm uppercase tracking-[0.3em] text-plum/60"
+          aria-live="polite"
+        ></div>
         <div id="network-viz" aria-label="Network weight visualization" class="glass-panel mx-auto h-[260px] w-full overflow-hidden p-6"></div>
         <div
           id="diagnostics"
@@ -453,6 +463,7 @@
         const diag = document.getElementById('diagnostics');
         const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
+        const architectureEl = document.getElementById('model-architecture');
         const networkVizEl = document.getElementById('network-viz');
         const mlpConfigEl = document.getElementById('mlp-config');
         const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
@@ -1424,8 +1435,8 @@
               currentWeights = train.mean;
             }
 
-            if(weightsEl){
-              weightsEl.textContent = describeModelArchitecture();
+            if(architectureEl){
+              architectureEl.textContent = describeModelArchitecture();
             }
             try {
               const override = (train.modelType === 'mlp') ? currentMlpLayerSizes() : null;
