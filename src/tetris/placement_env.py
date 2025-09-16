@@ -43,22 +43,17 @@ Notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 import random
 
 from .board import Board
-from .tetromino import Tetromino, TetrominoType, TETROMINO_SHAPES
-from .utils import can_move, gravity_interval_ms
+from .bitboard import board_key, board_to_bitmask, cached_placements
+from .tetromino import Tetromino, TetrominoType
+from .utils import can_move
 
 
 # Fixed upper bound on the number of placement actions: 4 rotations * 10 cols
 MAX_PLACEMENT_ACTIONS = 40
-
-# Approximate delay between horizontal moves in milliseconds.  This is used to
-# estimate how many sideways shifts are possible before gravity forces the piece
-# down by one row.
-HORIZONTAL_MOVE_INTERVAL_MS = 100
-
 
 @dataclass(frozen=True)
 class Placement:
@@ -67,138 +62,19 @@ class Placement:
     row: int
 
 
-def _unique_rotation_indices(shape: TetrominoType) -> List[int]:
-    """Return indices of unique rotation states for ``shape``.
-
-    Some shapes (e.g. ``O``, ``I``, ``S``, ``Z``) have duplicate states among
-    the four rotations. This function returns a minimal set of indices whose
-    states are unique by block layout.
-    """
-
-    seen = set()
-    unique: List[int] = []
-    for idx, state in enumerate(TETROMINO_SHAPES[shape]):
-        key = tuple(sorted(state))
-        if key not in seen:
-            seen.add(key)
-            unique.append(idx)
-    return unique
-
-
-def _state_width(state: Sequence[Tuple[int, int]]) -> int:
-    """Return the width (in columns) of a rotation state (min-corner normalised)."""
-
-    max_dc = max(dc for _, dc in state)
-    return max_dc + 1
-
-
-def _drop_row(board: Board, tetromino: Tetromino) -> Optional[int]:
-    """Return the final row the tetromino would rest on, or ``None`` if invalid.
-
-    The tetromino's current rotation and column are honoured; its row is
-    assumed to be set to 0 on entry.
-    """
-
-    if not can_move(board, tetromino, 0, 0):
-        return None
-    while can_move(board, tetromino, 0, 1):
-        tetromino.move(0, 1)
-    return tetromino.position[0]
-
-
-def _path_clear(
-    board: Board,
-    shape: TetrominoType,
-    rotation: int,
-    column: int,
-    level: int,
-) -> bool:
-    """Return ``True`` if a piece can *reach* ``(rotation, column)`` from spawn.
-
-    The helper simulates a very simple player: rotate the piece to the desired
-    orientation while it sits at the spawn column and then translate toward the
-    target column while gravity pulls the piece downward.  The faster the
-    gravity (higher levels), the fewer horizontal moves are available.  At
-    level 29 and above the piece drops immediately, making horizontal movement
-    impossible.
-    """
-
-    piece = Tetromino(shape)
-    spawn_col = board.width // 2 - 2
-    piece.position = (0, spawn_col)
-
-    # Rotate toward the target orientation
-    steps = (rotation - piece.rotation) % 4
-    for _ in range(steps):
-        piece.rotate(True)
-        if not can_move(board, piece, 0, 0):
-            return False
-
-    # Determine where the piece will ultimately come to rest.
-    target = Tetromino(shape, rotation=rotation, position=(0, column))
-    final_row = _drop_row(board, target)
-    if final_row is None:
-        return False
-
-    if column == piece.position[1]:
-        # No horizontal translation required; just ensure the vertical drop is
-        # unobstructed.
-        while piece.position[0] < final_row:
-            if not can_move(board, piece, 0, 1):
-                return False
-            piece.move(0, 1)
-        return True
-
-    gravity = gravity_interval_ms(level)
-    if gravity <= 0:
-        # Instant drop: no horizontal movement possible
-        return False
-
-    # Number of horizontal steps allowed before the piece falls one row
-    moves_per_row = max(1, int(gravity // HORIZONTAL_MOVE_INTERVAL_MS))
-
-    while piece.position[1] != column:
-        # Apply gravity first; pieces cannot slide purely horizontally
-        if not can_move(board, piece, 0, 1):
-            return False
-        piece.move(0, 1)
-
-        direction = 1 if column > piece.position[1] else -1
-        steps = min(moves_per_row, abs(column - piece.position[1]))
-        for _ in range(steps):
-            if not can_move(board, piece, direction, 0):
-                return False
-            piece.move(direction, 0)
-
-    # Finish dropping to the pre-computed final row, checking for clashes with
-    # existing bricks along the way.
-    while piece.position[0] < final_row:
-        if not can_move(board, piece, 0, 1):
-            return False
-        piece.move(0, 1)
-
-    return True
-
-
 def _enumerate_placements(board: Board, shape: TetrominoType, level: int) -> List[Placement]:
     """Enumerate all valid (rotation, column) placements for ``shape``.
 
     A placement is considered valid if the piece can be moved to the target
-    rotation and column using the gravity-aware path simulated in
-    ``_path_clear`` and, when hard-dropped from that position, comes to rest
-    without collision.
+    rotation and column using the gravity-aware path simulation implemented in
+    :mod:`tetris.bitboard` and, when hard-dropped from that position, comes to
+    rest without collision.
     """
 
-    actions: List[Placement] = []
-    for rot in _unique_rotation_indices(shape):
-        state = TETROMINO_SHAPES[shape][rot]
-        width = _state_width(state)
-        for col in range(0, board.width - width + 1):
-            temp = Tetromino(shape, rotation=rot, position=(0, col))
-            final_row = _drop_row(board, temp)
-            if final_row is not None and _path_clear(board, shape, rot, col, level):
-                actions.append(Placement(rotation=rot, column=col, row=final_row))
-    return actions
+    board_masks = board_to_bitmask(board)
+    key = board_key(board_masks)
+    cached = cached_placements(key, shape, level)
+    return [Placement(rotation=r, column=c, row=row) for (r, c, row) in cached]
 
 
 class PlacementEnv:
