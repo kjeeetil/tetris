@@ -333,9 +333,11 @@
         const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'', renderEvery:1, renderCounter:0 };
 
         const shapes = Object.keys(SHAPES);
-        const randShape = () => shapes[Math.floor(Math.random()*shapes.length)];
+        function shuffle(arr){ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=arr[i]; arr[i]=arr[j]; arr[j]=t; } return arr; }
+        let bag = [];
+        const drawFromBag = () => { if(bag.length===0){ bag = shuffle(shapes.slice()); } return bag.pop(); };
 
-        const spawn = () => { const s = state.next || randShape(); state.active = new Piece(s); state.next = randShape(); drawNext(state.next); updateScore(); updateLevel(); };
+        const spawn = () => { const s = state.next || drawFromBag(); state.active = new Piece(s); state.next = drawFromBag(); drawNext(state.next); updateScore(); updateLevel(); };
 
         const scheduleNext = () => {
           // Run the main loop at a steady ~60 FPS; speed multiplier is applied
@@ -469,27 +471,34 @@ function tick(ts){
         // ================= AI Training (placement-level with animation) =================
         // Expose minimal API on window to avoid invasive edits above
         (function(){
-          // Features: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH]
-          const FEAT_DIM = 9;
+          // Features (scaled):
+          // [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
+          const FEAT_DIM = 15;
           const AI_STEP_MS = 28; // ms between AI animation steps
           const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
           const LOOKAHEAD_BEAM = 6; // evaluate next-piece lookahead only for top-K first moves
           const SCORE_WEIGHT = 3.0; // emphasize final score in fitness
 
           // MLP architecture (when selected)
-          const MLP_H1 = 8; // hidden units (smaller for speed)
+          const MLP_H1 = 8; // hidden units (small for speed)
           const MLP_PARAM_DIM = FEAT_DIM*MLP_H1 + MLP_H1 + MLP_H1*1 + 1; // W1 + b1 + W2 + b2
 
+          // Numeric dtype for weight arrays: prefer f16 if available
+          const HAS_F16 = (typeof Float16Array !== 'undefined');
+          const DEFAULT_DTYPE = HAS_F16 ? 'f16' : 'f32';
+          function newWeightArray(n){ const useF16 = HAS_F16 && ((typeof train === 'undefined') ? (DEFAULT_DTYPE==='f16') : (train && train.dtype==='f16')); return useF16 ? new Float16Array(n) : new Float32Array(n); }
+
           // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
-          // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH]
-          const INITIAL_MEAN_LINEAR = new Float64Array([0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1]);
-          const INITIAL_STD_LINEAR  = new Float64Array([0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4]);
-          const INITIAL_MEAN_MLP    = new Float64Array(MLP_PARAM_DIM).fill(0.0);
-          const INITIAL_STD_MLP     = new Float64Array(MLP_PARAM_DIM).fill(0.2);
+          // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
+          const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.1, 0.1, 0.2];
+          const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
+          const INITIAL_MEAN_MLP_BASE    = new Array(MLP_PARAM_DIM).fill(0.0);
+          const INITIAL_STD_MLP_BASE     = new Array(MLP_PARAM_DIM).fill(0.2);
 
           function paramDim(){ return (train && train.modelType === 'mlp') ? MLP_PARAM_DIM : FEAT_DIM; }
-          function initialMean(model){ return model === 'mlp' ? new Float64Array(INITIAL_MEAN_MLP) : new Float64Array(INITIAL_MEAN_LINEAR); }
-          function initialStd(model){ return model === 'mlp' ? new Float64Array(INITIAL_STD_MLP) : new Float64Array(INITIAL_STD_LINEAR); }
+          function makeTyped(vals){ const arr = newWeightArray(vals.length); for(let i=0;i<vals.length;i++) arr[i]=vals[i]; return arr; }
+          function initialMean(model){ return model === 'mlp' ? makeTyped(INITIAL_MEAN_MLP_BASE) : makeTyped(INITIAL_MEAN_LINEAR_BASE); }
+          function initialStd(model){ return model === 'mlp' ? makeTyped(INITIAL_STD_MLP_BASE) : makeTyped(INITIAL_STD_LINEAR_BASE); }
 
           const train = {
             enabled: false,
@@ -497,8 +506,9 @@ function tick(ts){
             popSize: 16,
             eliteFrac: 0.25,
             modelType: 'linear',
-            mean: new Float64Array(INITIAL_MEAN_LINEAR),
-            std: new Float64Array(INITIAL_STD_LINEAR),
+            dtype: DEFAULT_DTYPE,
+            mean: initialMean('linear'),
+            std: initialStd('linear'),
             minStd: 0.05,
             maxStd: 3.0,
             candWeights: [],
@@ -546,16 +556,29 @@ function tick(ts){
           function samplePopulation(){
             const dim = paramDim();
             train.candWeights = [];
-            const heavyCount = Math.floor(train.heavyTailFrac * train.popSize);
+            const heavyPairs = Math.floor((train.heavyTailFrac * train.popSize)/2);
+            const half = Math.floor(train.popSize/2);
+            const baseNoises = new Array(half);
+            for(let j=0;j<half;j++){
+              const eps = new Float32Array(dim);
+              for(let d=0; d<dim; d++) eps[d] = randn();
+              baseNoises[j] = eps;
+            }
             for(let i=0;i<train.popSize;i++){
-              const w = new Float64Array(dim);
-              const scale = (i < heavyCount) ? (train.heavyTailScale) : 1.0;
-              for(let d=0; d<dim; d++) w[d] = train.mean[d] + (train.std[d] || train.minStd) * scale * randn();
+              const pair = (i<half) ? i : (i-half);
+              const sign = (i<half) ? 1.0 : -1.0;
+              const w = newWeightArray(dim);
+              const pairScale = (pair < heavyPairs) ? train.heavyTailScale : 1.0;
+              for(let d=0; d<dim; d++){
+                const stdv = (train.std[d] || train.minStd) * pairScale;
+                w[d] = train.mean[d] + sign * stdv * baseNoises[pair][d];
+              }
               train.candWeights.push(w);
             }
             // Ensure the very first attempt (gen 0, cand 0) uses the mean weights (intentionally poor)
             if(train.gen === 0 && train.candWeights.length > 0){
-              train.candWeights[0] = new Float64Array(train.mean);
+              const dim0 = train.mean.length; const m = newWeightArray(dim0); for(let d=0; d<dim0; d++) m[d]=train.mean[d];
+              train.candWeights[0] = m;
             }
             train.candScores = new Array(train.popSize).fill(0);
             train.candIndex = 0;
@@ -624,20 +647,26 @@ function tick(ts){
                   const avgFit = train.reevalAccum / train.reevalRuns;
                   if(train.reevalTarget >= 0) train.candScores[train.reevalTarget] = avgFit;
                   train.currentWeightsOverride = null; train.phase = 'eval';
-                  // Complete generation update after re-eval
+                  // Complete generation update after re-eval with rank-weighted elites
                   const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
                   const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
                   const elites = idx.slice(0, eliteCount);
                   const dim = paramDim();
-                  const eliteMean = new Float64Array(dim);
-                  for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++) eliteMean[d]+=w[d]; }
-                  for(let d=0; d<dim; d++) eliteMean[d] /= eliteCount;
+                  const wsum = eliteCount*(eliteCount+1)/2;
+                  const eliteMean = newWeightArray(dim);
+                  for(let r=0;r<elites.length;r++){
+                    const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
+                    for(let d=0; d<dim; d++) eliteMean[d] += wRank * wCand[d];
+                  }
                   const mu = 0.3; const bestW = train.candWeights[idx[0]];
-                  const newMean = new Float64Array(dim);
+                  const newMean = newWeightArray(dim);
                   for(let d=0; d<dim; d++) newMean[d] = (1-mu)*eliteMean[d] + mu*bestW[d];
-                  const newStd = new Float64Array(dim);
-                  for(const ei of elites){ const w = train.candWeights[ei]; for(let d=0; d<dim; d++){ const diff=w[d]-eliteMean[d]; newStd[d]+=diff*diff; } }
-                  for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d]/eliteCount)));
+                  const newStd = newWeightArray(dim);
+                  for(let r=0;r<elites.length;r++){
+                    const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
+                    for(let d=0; d<dim; d++){ const diff=wCand[d]-eliteMean[d]; newStd[d]+= wRank*diff*diff; }
+                  }
+                  for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d])));
                   const bestThisGen = train.candScores[idx[0]];
                   if(bestThisGen > (train.bestEverFitness ?? -Infinity)){
                     train.bestEverFitness = bestThisGen; train.bestEverWeights = new Float64Array(train.candWeights[idx[0]]);
@@ -647,8 +676,8 @@ function tick(ts){
                   train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
                   samplePopulation();
                   // Elitist carryover
-                  if(train.candWeights.length>0) train.candWeights[0] = new Float64Array(bestW);
-                  if(train.bestEverWeights && train.candWeights.length>1) train.candWeights[1] = new Float64Array(train.bestEverWeights);
+                  if(train.candWeights.length>0){ const copy0 = newWeightArray(bestW.length); for(let d=0; d<bestW.length; d++) copy0[d]=bestW[d]; train.candWeights[0] = copy0; }
+                  if(train.bestEverWeights && train.candWeights.length>1){ const be = train.bestEverWeights; const copy1=newWeightArray(be.length); for(let d=0; d<be.length; d++) copy1[d]=be[d]; train.candWeights[1] = copy1; }
                   Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
                   state.gravity = gravityForLevel(0);
                   updateLevel(); updateScore();
@@ -773,8 +802,19 @@ function tick(ts){
           function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
           function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
           function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
+          function wellMetrics(heights){ let wellSum=0; let edgeWell=0; for(let c=0;c<WIDTH;c++){ let left = (c>0)?heights[c-1]:Infinity; let right = (c<WIDTH-1)?heights[c+1]:Infinity; let minNbr = Math.min(left,right); let depth = minNbr - heights[c]; if(depth>0) wellSum += depth; if(c===0) edgeWell = Math.max(edgeWell, right - heights[0]); if(c===WIDTH-1) edgeWell = Math.max(edgeWell, left - heights[WIDTH-1]); } return {wellSum, edgeWell: Math.max(0, edgeWell)}; }
+          function contactArea(g){ let contact=0; for(let r=0;r<HEIGHT;r++){ for(let c=0;c<WIDTH;c++){ if(!g[r][c]) continue; // bottom
+                if(r===HEIGHT-1 || g[r+1][c]) contact++; // left
+                if(c>0 && g[r][c-1]) contact++; // right
+                if(c<WIDTH-1 && g[r][c+1]) contact++; } } return contact; }
+          function rowTransitions(g){ let t=0; for(let r=0;r<HEIGHT;r++){ let prev=0; for(let c=0;c<WIDTH;c++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
+          function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function simulateAfterPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); return {grid:g, lines}; }
-          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0; const lines2=lines*lines; return [lines, lines2, is1, is2, is3, is4, Holes, Bump, maxH]; }
+          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const {wellSum, edgeWell}=wellMetrics(h); const Contact=contactArea(g); const rT=rowTransitions(g); const cT=colTransitions(g); const aggH=h.reduce((a,b)=>a+b,0);
+            // Scaling
+            const sLines = lines/4; const sLines2=(lines*lines)/16; const sHoles=Holes/(WIDTH*HEIGHT); const sBump=Bump/((WIDTH-1)*HEIGHT); const sMaxH=maxH/HEIGHT; const sWell=wellSum/(WIDTH*HEIGHT); const sEdge=edgeWell/HEIGHT; const sContact=Contact/(WIDTH*HEIGHT*2); const sRT=rT/(WIDTH*HEIGHT); const sCT=cT/(WIDTH*HEIGHT); const sAgg=aggH/(WIDTH*HEIGHT);
+            const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0;
+            return [sLines, sLines2, is1, is2, is3, is4, sHoles, sBump, sMaxH, sWell, sEdge, sContact, sRT, sCT, sAgg]; }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
@@ -804,9 +844,10 @@ function tick(ts){
             // Beam: consider lookahead only for top-K first-ply moves
             sims.sort((u,v)=>v.s1 - u.s1);
             const K = Math.min(LOOKAHEAD_BEAM, sims.length);
+            const acts2Cache = new WeakMap();
             for(let i=0;i<sims.length;i++){
               let s = sims[i].s1;
-              if(nextShape && i < K){ const acts2=enumeratePlacements(sims[i].sim.grid, nextShape); if(acts2.length>0){ let best2=-Infinity; for(const a2 of acts2){ const ff2=featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col); if(!ff2) continue; const s2=scoreFeats(weights, ff2.feats); if(s2>best2) best2=s2; } if(isFinite(best2)) s += LOOKAHEAD_LAMBDA*best2; }
+              if(nextShape && i < K){ let acts2 = acts2Cache.get(sims[i].sim.grid); if(!acts2){ acts2 = enumeratePlacements(sims[i].sim.grid, nextShape); acts2Cache.set(sims[i].sim.grid, acts2); } if(acts2.length>0){ let best2=-Infinity; for(const a2 of acts2){ const ff2=featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col); if(!ff2) continue; const s2=scoreFeats(weights, ff2.feats); if(s2>best2) best2=s2; } if(isFinite(best2)) s += LOOKAHEAD_LAMBDA*best2; }
               }
               if(s>bestS){ bestS=s; best=sims[i].a; }
             }
@@ -936,6 +977,8 @@ function tick(ts){
             const wasRunning = train.enabled;
             if(wasRunning) stopTraining();
             train.modelType = mt;
+            // Prefer f16 for MLP if available, else f32
+            train.dtype = (mt==='mlp' && HAS_F16) ? 'f16' : 'f32';
             // Re-init mean/std to the appropriate initial values for this model
             train.mean = initialMean(mt);
             train.std  = initialStd(mt);
