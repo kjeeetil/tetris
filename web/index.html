@@ -344,7 +344,6 @@
       </section>
       <section class="mt-6 w-full max-w-5xl space-y-6">
         <div id="train-status" class="text-center text-xs uppercase tracking-[0.45em] text-mint/70"></div>
-        <div id="weights-display" class="text-center text-sm text-plum/70"></div>
         <div id="network-viz" aria-label="Network weight visualization" class="glass-panel mx-auto h-[260px] w-full overflow-hidden p-6"></div>
         <div
           id="diagnostics"
@@ -436,7 +435,6 @@
         const diag = document.getElementById('diagnostics');
         const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
-        const weightsEl = document.getElementById('weights-display');
         const networkVizEl = document.getElementById('network-viz');
         const scoreEl = document.getElementById('score');
         const levelEl = document.getElementById('level');
@@ -1189,7 +1187,6 @@
           train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
           train.scorePlotPending = 0;
 
-          function formatWeights(arr){ const MAX_SHOW = 24; const vals = Array.from(arr).slice(0, MAX_SHOW).map(v=>Number.isFinite(v)?v.toFixed(2):String(v)); const suffix = arr.length>MAX_SHOW? ' …' : ''; return vals.join(', ') + suffix; }
           function updateTrainStatus(){
             if(trainStatus){
               if(train.enabled){
@@ -1205,9 +1202,6 @@
               currentWeights = train.candWeights[train.candIndex];
             } else if(train.mean){
               currentWeights = train.mean;
-            }
-            if(weightsEl){
-              weightsEl.textContent = currentWeights ? `Weights: ${formatWeights(currentWeights)}` : '';
             }
             try {
               renderNetworkD3(currentWeights);
