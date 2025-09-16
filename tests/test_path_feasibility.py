@@ -20,14 +20,14 @@ def test_deep_obstacle_blocks_path():
     # obstacle a few rows below the spawn to ensure the path check accounts for
     # bricks already on the board.
     board.grid[2][2] = 1
-    actions = _enumerate_placements(board, TetrominoType.I, level=20)
+    actions = _enumerate_placements(board, TetrominoType.I, level=9)
     cols = [a.column for a in actions]
     assert all(c >= 2 for c in cols), cols
 
 
-def test_level_29_no_horizontal_movement():
+def test_level_10_no_horizontal_movement():
     board = Board()
-    actions = _enumerate_placements(board, TetrominoType.I, level=29)
+    actions = _enumerate_placements(board, TetrominoType.I, level=10)
     cols = {a.column for a in actions}
     assert cols == {board.width // 2 - 2}
 

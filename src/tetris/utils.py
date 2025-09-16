@@ -15,11 +15,11 @@ def gravity_interval_ms(level: int) -> float:
     """Return the fall interval in milliseconds for ``level``.
 
     The interval decreases as the level rises, speeding up the falling
-    pieces.  For level ``29`` and above the function returns ``0`` to
+    pieces.  For level ``10`` and above the function returns ``0`` to
     indicate that the active piece should drop to the bottom immediately.
     """
 
-    if level >= 29:
+    if level >= 10:
         return 0.0
     # Exponentially decrease the delay but keep a practical lower bound
     return max(20.0, BASE_GRAVITY_MS * (0.85 ** level))
