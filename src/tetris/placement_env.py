@@ -36,7 +36,8 @@ Notes
 - Observation is a simple dict with the board occupancy and piece type indices.
 - `info` contains a stable-size `action_mask` of length 40 (max 4 rotations *
   10 columns) and the concrete `action_list` mapping action indices to
-  (rotation, column) placements valid in the current state.
+  :class:`Placement` objects describing the rotation, column and final row for
+  each valid placement in the current state.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ HORIZONTAL_MOVE_INTERVAL_MS = 100
 class Placement:
     rotation: int
     column: int
+    row: int
 
 
 def _unique_rotation_indices(shape: TetrominoType) -> List[int]:
@@ -195,7 +197,7 @@ def _enumerate_placements(board: Board, shape: TetrominoType, level: int) -> Lis
             temp = Tetromino(shape, rotation=rot, position=(0, col))
             final_row = _drop_row(board, temp)
             if final_row is not None and _path_clear(board, shape, rot, col, level):
-                actions.append(Placement(rotation=rot, column=col))
+                actions.append(Placement(rotation=rot, column=col, row=final_row))
     return actions
 
 
@@ -377,38 +379,11 @@ class PlacementEnv:
         board = self.state.board
         piece = self.state.active
 
-        # Rotate step-by-step toward the desired orientation
-        steps = (placement.rotation - piece.rotation) % 4
-        for _ in range(steps):
-            piece.rotate(True)
-            if not can_move(board, piece, 0, 0):
-                # Invalid path
-                return int(self.invalid_action_penalty)
+        piece.rotation = placement.rotation
+        piece.position = (placement.row, placement.column)
 
-        # Translate toward the target column while respecting gravity
-        if placement.column != piece.position[1]:
-            gravity = gravity_interval_ms(self.state.level)
-            if gravity <= 0:
-                return int(self.invalid_action_penalty)
-            moves_per_row = max(1, int(gravity // HORIZONTAL_MOVE_INTERVAL_MS))
-            while piece.position[1] != placement.column:
-                if not can_move(board, piece, 0, 1):
-                    return int(self.invalid_action_penalty)
-                piece.move(0, 1)
-                direction = 1 if placement.column > piece.position[1] else -1
-                steps = min(moves_per_row, abs(placement.column - piece.position[1]))
-                for _ in range(steps):
-                    if not can_move(board, piece, direction, 0):
-                        return int(self.invalid_action_penalty)
-                    piece.move(direction, 0)
-
-        # Hard drop to the final resting row
-        final_row = _drop_row(board, piece)
-        if final_row is None:
-            # Should not happen if action came from enumerate; treat as invalid
+        if not can_move(board, piece, 0, 0):
             return int(self.invalid_action_penalty)
-        cur_row, cur_col = piece.position
-        piece.position = (final_row, cur_col)
 
         # Lock and clear
         self.state.board.lock_piece(piece)
