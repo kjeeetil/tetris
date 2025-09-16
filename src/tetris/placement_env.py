@@ -42,6 +42,7 @@ Notes
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import random
@@ -50,6 +51,7 @@ from .board import Board
 from .bitboard import board_key, board_to_bitmask, cached_placements
 from .tetromino import Tetromino, TetrominoType
 from .utils import can_move
+from .perf import PerformanceTracker
 
 
 # Fixed upper bound on the number of placement actions: 4 rotations * 10 cols
@@ -62,7 +64,22 @@ class Placement:
     row: int
 
 
-def _enumerate_placements(board: Board, shape: TetrominoType, level: int) -> List[Placement]:
+@contextmanager
+def _profile_section(profiler: PerformanceTracker | None, label: str):
+    if profiler is None:
+        yield
+    else:
+        with profiler.section(label):
+            yield
+
+
+def _enumerate_placements(
+    board: Board,
+    shape: TetrominoType,
+    level: int,
+    *,
+    profiler: PerformanceTracker | None = None,
+) -> List[Placement]:
     """Enumerate all valid (rotation, column) placements for ``shape``.
 
     A placement is considered valid if the piece can be moved to the target
@@ -71,10 +88,16 @@ def _enumerate_placements(board: Board, shape: TetrominoType, level: int) -> Lis
     rest without collision.
     """
 
-    board_masks = board_to_bitmask(board)
-    key = board_key(board_masks)
-    cached = cached_placements(key, shape, level)
-    return [Placement(rotation=r, column=c, row=row) for (r, c, row) in cached]
+    with _profile_section(profiler, "placements.enumerate"):
+        with _profile_section(profiler, "placements.bitmask"):
+            board_masks = board_to_bitmask(board)
+        key = board_key(board_masks)
+        with _profile_section(profiler, "placements.cache_lookup"):
+            cached = cached_placements(key, shape, level)
+        placements = [
+            Placement(rotation=r, column=c, row=row) for (r, c, row) in cached
+        ]
+    return placements
 
 
 class PlacementEnv:
@@ -93,6 +116,8 @@ class PlacementEnv:
       piece.
     - Observation: dictionary containing the binary occupancy grid and piece
       identifiers for active/upcoming/held.
+    - Instrumentation: pass a :class:`~tetris.perf.PerformanceTracker` via
+      ``profiler`` to record timing information for key environment helpers.
     """
 
     def __init__(
@@ -104,6 +129,7 @@ class PlacementEnv:
         deterministic_bag: bool = False,
         step_penalty: float = 0.0,
         single_line_penalty: float = 0.0,
+        profiler: PerformanceTracker | None = None,
     ) -> None:
         self.reward_per_line = reward_per_line
         self.invalid_action_penalty = invalid_action_penalty
@@ -115,6 +141,10 @@ class PlacementEnv:
         self._cached_actions: List[Placement] = []
         self._done = False
         self._deterministic_bag = deterministic_bag
+        self._profiler = profiler
+
+    def _profile(self, label: str):
+        return _profile_section(self._profiler, label)
 
     # Lazy import to avoid circulars at module import time
     @property
@@ -140,14 +170,15 @@ class PlacementEnv:
 
         from .game_state import GameState  # local import
 
-        self.seed(seed)
-        self._state = GameState()
-        self._state.reset_game()
-        # Replace random choice if deterministic 7-bag is requested
-        if self._deterministic_bag:
-            self._install_7bag(self._state_random)
-        self._done = False
-        obs, info = self._observe()
+        with self._profile("PlacementEnv.reset"):
+            self.seed(seed)
+            self._state = GameState()
+            self._state.reset_game()
+            # Replace random choice if deterministic 7-bag is requested
+            if self._deterministic_bag:
+                self._install_7bag(self._state_random)
+            self._done = False
+            obs, info = self._observe()
         return obs, info
 
     def _install_7bag(self, rng: random.Random) -> None:
@@ -173,36 +204,42 @@ class PlacementEnv:
         self._state._random_type = _bag_choice.__get__(self._state, GameState)  # type: ignore[attr-defined]
 
     def _observe(self) -> Tuple[Dict, Dict]:
-        assert self.state.active is not None
-        # Binary occupancy grid (0/1)
-        board_mask = [[1 if v else 0 for v in row] for row in self.state.board.grid]
-        # Map piece types to stable indices 0..6
-        types = list(TetrominoType)
-        idx_map = {t: i for i, t in enumerate(types)}
-        active_idx = idx_map[self.state.active.shape]
-        upc_idx = idx_map[self.state.upcoming] if self.state.upcoming else -1
-        held_idx = idx_map[self.state.held] if self.state.held else -1
+        with self._profile("PlacementEnv.observe"):
+            assert self.state.active is not None
+            # Binary occupancy grid (0/1)
+            board_mask = [
+                [1 if v else 0 for v in row] for row in self.state.board.grid
+            ]
+            # Map piece types to stable indices 0..6
+            types = list(TetrominoType)
+            idx_map = {t: i for i, t in enumerate(types)}
+            active_idx = idx_map[self.state.active.shape]
+            upc_idx = idx_map[self.state.upcoming] if self.state.upcoming else -1
+            held_idx = idx_map[self.state.held] if self.state.held else -1
 
-        actions = _enumerate_placements(
-            self.state.board, self.state.active.shape, self.state.level
-        )
-        self._cached_actions = actions
-        mask = [False] * MAX_PLACEMENT_ACTIONS
-        for i in range(min(len(actions), MAX_PLACEMENT_ACTIONS)):
-            mask[i] = True
+            actions = _enumerate_placements(
+                self.state.board,
+                self.state.active.shape,
+                self.state.level,
+                profiler=self._profiler,
+            )
+            self._cached_actions = actions
+            mask = [False] * MAX_PLACEMENT_ACTIONS
+            for i in range(min(len(actions), MAX_PLACEMENT_ACTIONS)):
+                mask[i] = True
 
-        obs = {
-            "board": board_mask,
-            "active_type": active_idx,
-            "upcoming_type": upc_idx,
-            "held_type": held_idx,
-            "score": self.state.score,
-        }
-        info = {
-            "action_mask": mask,
-            "action_list": actions,
-        }
-        return obs, info
+            obs = {
+                "board": board_mask,
+                "active_type": active_idx,
+                "upcoming_type": upc_idx,
+                "held_type": held_idx,
+                "score": self.state.score,
+            }
+            info = {
+                "action_mask": mask,
+                "action_list": actions,
+            }
+            return obs, info
 
     def step(self, action: int) -> Tuple[Dict, float, bool, Dict]:
         """Apply placement action and return ``(obs, reward, done, info)``.
@@ -212,38 +249,43 @@ class PlacementEnv:
         done.
         """
 
-        if self._done:
-            # Episode already terminated; return zero reward and done
-            obs, info = self._observe()
-            return obs, 0.0, True, info
+        with self._profile("PlacementEnv.step"):
+            if self._done:
+                # Episode already terminated; return zero reward and done
+                obs, info = self._observe()
+                result = (obs, 0.0, True, info)
+            else:
+                # Ensure action cache corresponds to current state
+                if not self._cached_actions:
+                    _ = self._observe()
 
-        # Ensure action cache corresponds to current state
-        if not self._cached_actions:
-            _ = self._observe()
+                if action < 0 or action >= len(self._cached_actions):
+                    # Invalid index -> penalty and keep state
+                    obs, info = self._observe()
+                    result = (obs, float(self.invalid_action_penalty), False, info)
+                else:
+                    placement = self._cached_actions[action]
+                    reward = self._apply_placement(placement)
+                    reward += float(self.step_penalty)
 
-        if action < 0 or action >= len(self._cached_actions):
-            # Invalid index -> penalty and keep state
-            obs, info = self._observe()
-            return obs, float(self.invalid_action_penalty), False, info
+                    # Check termination: if next piece has no valid placements
+                    next_actions = (
+                        _enumerate_placements(
+                            self.state.board,
+                            self.state.active.shape,
+                            self.state.level,
+                            profiler=self._profiler,
+                        )
+                        if self.state.active
+                        else []
+                    )
+                    self._done = len(next_actions) == 0
+                    if self._done and self.top_out_penalty:
+                        reward += float(self.top_out_penalty)
 
-        placement = self._cached_actions[action]
-        reward = self._apply_placement(placement)
-        reward += float(self.step_penalty)
-
-        # Check termination: if next piece has no valid placements
-        next_actions = (
-            _enumerate_placements(
-                self.state.board, self.state.active.shape, self.state.level
-            )
-            if self.state.active
-            else []
-        )
-        self._done = len(next_actions) == 0
-        if self._done and self.top_out_penalty:
-            reward += float(self.top_out_penalty)
-
-        obs, info = self._observe()
-        return obs, float(reward), self._done, info
+                    obs, info = self._observe()
+                    result = (obs, float(reward), self._done, info)
+        return result
 
     def _apply_placement(self, placement: Placement) -> int:
         """Apply a placement, clear rows, update score and spawn next piece.
@@ -251,38 +293,42 @@ class PlacementEnv:
         Returns the reward (score delta) from this placement.
         """
 
-        assert self.state.active is not None
-        board = self.state.board
-        piece = self.state.active
+        with self._profile("PlacementEnv.apply"):
+            assert self.state.active is not None
+            board = self.state.board
+            piece = self.state.active
 
-        piece.rotation = placement.rotation
-        piece.position = (placement.row, placement.column)
+            piece.rotation = placement.rotation
+            piece.position = (placement.row, placement.column)
 
-        if not can_move(board, piece, 0, 0):
-            return int(self.invalid_action_penalty)
+            if not can_move(board, piece, 0, 0):
+                return int(self.invalid_action_penalty)
 
-        # Lock and clear
-        self.state.board.lock_piece(piece)
-        cleared = self.state.board.clear_full_rows()
-        multiplier = cleared if cleared > 1 else 1
-        score_delta = cleared * self.reward_per_line * multiplier
-        if cleared == 1:
-            score_delta += int(self.single_line_penalty)
-        self.state.score += score_delta
-        self.state.piece_locked()
+            # Lock and clear
+            self.state.board.lock_piece(piece)
+            cleared = self.state.board.clear_full_rows()
+            multiplier = cleared if cleared > 1 else 1
+            score_delta = cleared * self.reward_per_line * multiplier
+            if cleared == 1:
+                score_delta += int(self.single_line_penalty)
+            self.state.score += score_delta
+            self.state.piece_locked()
 
-        # Spawn next piece
-        self.state.spawn_tetromino()
+            # Spawn next piece
+            self.state.spawn_tetromino()
 
-        # Refresh action cache for the new piece
-        self._cached_actions = (
-            _enumerate_placements(
-                self.state.board, self.state.active.shape, self.state.level
+            # Refresh action cache for the new piece
+            self._cached_actions = (
+                _enumerate_placements(
+                    self.state.board,
+                    self.state.active.shape,
+                    self.state.level,
+                    profiler=self._profiler,
+                )
+                if self.state.active
+                else []
             )
-            if self.state.active
-            else []
-        )
-        return score_delta
+            return score_delta
 
     # Convenience helpers -------------------------------------------------
 

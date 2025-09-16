@@ -6,6 +6,7 @@ from .game_state import GameState
 from .placement_env import PlacementEnv
 from .gym_env import TetrisPlacementGymEnv
 from .utils import can_move, render_grid
+from .perf import PerfStat, PerformanceTracker
 
 __all__ = [
     "Board",
@@ -17,4 +18,6 @@ __all__ = [
     "can_move",
     "render_grid",
     "shape_blocks",
+    "PerfStat",
+    "PerformanceTracker",
 ]
