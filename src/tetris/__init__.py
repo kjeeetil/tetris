@@ -7,6 +7,7 @@ from .placement_env import PlacementEnv
 from .gym_env import TetrisPlacementGymEnv
 from .utils import can_move, render_grid
 from .perf import PerfStat, PerformanceTracker
+from .headless_model import SimplifiedHeadlessModel, HeadlessPlacement
 
 __all__ = [
     "Board",
@@ -15,6 +16,8 @@ __all__ = [
     "GameState",
     "PlacementEnv",
     "TetrisPlacementGymEnv",
+    "SimplifiedHeadlessModel",
+    "HeadlessPlacement",
     "can_move",
     "render_grid",
     "shape_blocks",
