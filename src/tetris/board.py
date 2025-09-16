@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
+import numpy as np
+from numpy.typing import NDArray
 
 from .tetromino import Tetromino, TetrominoType
 
@@ -11,7 +12,7 @@ from .tetromino import Tetromino, TetrominoType
 WIDTH = 10
 HEIGHT = 20
 
-Grid = List[List[int]]
+Grid = NDArray[np.uint8]
 
 # Mapping from ``TetrominoType`` to the integer stored in the grid.  The
 # specific numeric values are not important as long as ``0`` represents an empty
@@ -21,7 +22,8 @@ PIECE_VALUES = {t: i + 1 for i, t in enumerate(TetrominoType)}
 
 def create_empty_grid() -> Grid:
     """Return a new empty board grid filled with zeros."""
-    return [[0 for _ in range(WIDTH)] for _ in range(HEIGHT)]
+
+    return np.zeros((HEIGHT, WIDTH), dtype=np.uint8)
 
 
 class Board:
@@ -40,7 +42,7 @@ class Board:
             IndexError: If the coordinates are outside the board.
         """
         if 0 <= row < self.height and 0 <= col < self.width:
-            return self.grid[row][col]
+            return int(self.grid[row, col])
         raise IndexError("Cell out of bounds")
 
     def set_cell(self, row: int, col: int, value: int) -> None:
@@ -50,7 +52,7 @@ class Board:
             IndexError: If the coordinates are outside the board.
         """
         if 0 <= row < self.height and 0 <= col < self.width:
-            self.grid[row][col] = value
+            self.grid[row, col] = np.uint8(value)
         else:
             raise IndexError("Cell out of bounds")
 
@@ -63,25 +65,36 @@ class Board:
         """
 
         if 0 <= row < self.height and 0 <= col < self.width:
-            return self.grid[row][col] == 0
+            return bool(self.grid[row, col] == 0)
         return False
 
     def lock_piece(self, tetromino: Tetromino) -> None:
         """Lock the tetromino's blocks into the board grid."""
 
-        for r, c in tetromino.blocks():
-            if 0 <= r < self.height and 0 <= c < self.width:
-                self.grid[r][c] = PIECE_VALUES[tetromino.shape]
-            else:
-                raise IndexError("Block out of bounds")
+        coordinates = np.asarray(tetromino.blocks(), dtype=np.int16)
+        if coordinates.size == 0:
+            return
+
+        rows, cols = coordinates.T
+        if (
+            np.any(rows < 0)
+            or np.any(rows >= self.height)
+            or np.any(cols < 0)
+            or np.any(cols >= self.width)
+        ):
+            raise IndexError("Block out of bounds")
+
+        value = np.uint8(PIECE_VALUES[tetromino.shape])
+        self.grid[rows, cols] = value
 
     def clear_full_rows(self) -> int:
         """Clear completed rows and return how many were removed."""
 
-        new_grid: Grid = [row for row in self.grid if any(cell == 0 for cell in row)]
-        cleared = self.height - len(new_grid)
-        for _ in range(cleared):
-            new_grid.insert(0, [0] * self.width)
-        self.grid = new_grid
+        full_rows = np.all(self.grid != 0, axis=1)
+        cleared = int(np.count_nonzero(full_rows))
+        if cleared:
+            remaining = self.grid[~full_rows]
+            new_rows = np.zeros((cleared, self.width), dtype=self.grid.dtype)
+            self.grid = np.vstack((new_rows, remaining))
         return cleared
 
