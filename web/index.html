@@ -326,6 +326,20 @@
             Hide Game
           </button>
         </div>
+        <div
+          id="mlp-config"
+          class="glass-panel hidden w-full max-w-3xl flex flex-col items-center gap-4 px-4 py-4 text-sm text-plum/70"
+        >
+          <div class="flex flex-wrap items-center justify-center gap-3">
+            <label for="mlp-hidden-count" class="text-xs uppercase tracking-[0.35em] text-plum/70">Hidden Layers</label>
+            <select id="mlp-hidden-count" class="bg-transparent text-base font-display">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+          <div id="mlp-layer-controls" class="flex flex-wrap items-center justify-center gap-4"></div>
+        </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
           <label for="speed" id="speed-label" class="text-xs uppercase tracking-[0.35em] text-plum/70">
             Speed: <span id="speed-display" class="text-citron">1x</span>
@@ -436,6 +450,9 @@
         const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
         const networkVizEl = document.getElementById('network-viz');
+        const mlpConfigEl = document.getElementById('mlp-config');
+        const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
+        const mlpLayerControlsEl = document.getElementById('mlp-layer-controls');
         const scoreEl = document.getElementById('score');
         const levelEl = document.getElementById('level');
         const ctx = canvas.getContext('2d');
@@ -893,8 +910,47 @@
           const SCORE_WEIGHT = 3.0; // emphasize final score in fitness
 
           // MLP architecture (when selected)
-          const MLP_H1 = 8; // hidden units (small for speed)
-          const MLP_PARAM_DIM = FEAT_DIM*MLP_H1 + MLP_H1 + MLP_H1*1 + 1; // W1 + b1 + W2 + b2
+          const DEFAULT_MLP_HIDDEN = [8];
+          const MLP_MIN_HIDDEN_LAYERS = 1;
+          const MLP_MAX_HIDDEN_LAYERS = 3;
+          const MLP_MIN_UNITS = 1;
+          const MLP_MAX_UNITS = 32;
+          let mlpHiddenLayers = DEFAULT_MLP_HIDDEN.slice();
+          let currentModelType = 'linear';
+
+          function sanitizeHiddenUnits(value, idx, fallback){
+            const fallbackSource = Number.isFinite(fallback)
+              ? Math.round(fallback)
+              : (DEFAULT_MLP_HIDDEN[Math.min(idx, DEFAULT_MLP_HIDDEN.length - 1)] ?? DEFAULT_MLP_HIDDEN[0] ?? 8);
+            const n = Number(value);
+            if(!Number.isFinite(n)){
+              return Math.max(MLP_MIN_UNITS, Math.min(MLP_MAX_UNITS, fallbackSource));
+            }
+            const rounded = Math.round(n);
+            return Math.max(MLP_MIN_UNITS, Math.min(MLP_MAX_UNITS, rounded));
+          }
+
+          function mlpParamDim(layers = mlpHiddenLayers){
+            const count = Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, layers.length || 0));
+            let dim = 0;
+            let prev = FEAT_DIM;
+            for(let i = 0; i < count; i++){
+              const size = sanitizeHiddenUnits(layers[i], i, mlpHiddenLayers[i]);
+              dim += prev * size + size;
+              prev = size;
+            }
+            dim += prev + 1; // output layer (1 unit + bias)
+            return dim;
+          }
+
+          function currentMlpLayerSizes(){
+            const count = Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, mlpHiddenLayers.length || 0));
+            const sizes = [];
+            for(let i = 0; i < count; i++){
+              sizes.push(sanitizeHiddenUnits(mlpHiddenLayers[i], i, mlpHiddenLayers[i]));
+            }
+            return [FEAT_DIM, ...sizes, 1];
+          }
 
           // Numeric dtype for weight arrays
           const HAS_F16 = (typeof Float16Array !== 'undefined');
@@ -907,13 +963,171 @@
           // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
           const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.1, 0.1, 0.2];
           const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
-          const INITIAL_MEAN_MLP_BASE    = new Array(MLP_PARAM_DIM).fill(0.0);
-          const INITIAL_STD_MLP_BASE     = new Array(MLP_PARAM_DIM).fill(0.2);
 
-          function paramDim(){ return (train && train.modelType === 'mlp') ? MLP_PARAM_DIM : FEAT_DIM; }
+          function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
           function makeTyped(vals){ const arr = newWeightArray(vals.length); for(let i=0;i<vals.length;i++) arr[i]=vals[i]; return arr; }
-          function initialMean(model){ return model === 'mlp' ? makeTyped(INITIAL_MEAN_MLP_BASE) : makeTyped(INITIAL_MEAN_LINEAR_BASE); }
-          function initialStd(model){ return model === 'mlp' ? makeTyped(INITIAL_STD_MLP_BASE) : makeTyped(INITIAL_STD_LINEAR_BASE); }
+          function initialMean(model, layers = mlpHiddenLayers){
+            if(model === 'mlp'){
+              const dim = mlpParamDim(layers);
+              const base = new Array(dim).fill(0.0);
+              return makeTyped(base);
+            }
+            return makeTyped(INITIAL_MEAN_LINEAR_BASE);
+          }
+          function initialStd(model, layers = mlpHiddenLayers){
+            if(model === 'mlp'){
+              const dim = mlpParamDim(layers);
+              const base = new Array(dim).fill(0.2);
+              return makeTyped(base);
+            }
+            return makeTyped(INITIAL_STD_LINEAR_BASE);
+          }
+
+          function describeModelArchitecture(){
+            if(currentModelType === 'mlp'){
+              const sizes = currentMlpLayerSizes();
+              if(!sizes.length) return 'Architecture: unavailable';
+              const parts = sizes.map((size, idx) => {
+                if(idx === 0) return `${size} in`;
+                if(idx === sizes.length - 1) return `${size} out`;
+                return `${size}`;
+              });
+              return `Architecture: ${parts.join(' → ')}`;
+            }
+            return `Linear policy with ${FEAT_DIM} inputs`;
+          }
+
+          function applyMlpHiddenLayers(newLayers, options = {}){
+            const desiredLength = Math.max(
+              MLP_MIN_HIDDEN_LAYERS,
+              Math.min(MLP_MAX_HIDDEN_LAYERS, newLayers.length || 0),
+            );
+            const sanitized = [];
+            for(let i = 0; i < desiredLength; i++){
+              const fallback = mlpHiddenLayers[i];
+              sanitized.push(sanitizeHiddenUnits(newLayers[i], i, fallback));
+            }
+            if(sanitized.length === 0){
+              sanitized.push(sanitizeHiddenUnits(DEFAULT_MLP_HIDDEN[0], 0, DEFAULT_MLP_HIDDEN[0]));
+            }
+            const prevLayers = mlpHiddenLayers.slice();
+            mlpHiddenLayers = sanitized;
+            if(mlpHiddenCountSel){
+              mlpHiddenCountSel.value = String(sanitized.length);
+            }
+            if(options.rerenderControls){
+              renderMlpLayerControls();
+            } else if(options.syncInputs !== false){
+              for(let i = 0; i < sanitized.length; i++){
+                const input = document.getElementById(`mlp-layer-${i}`);
+                if(input && Number(input.value) !== sanitized[i]){
+                  input.value = sanitized[i];
+                }
+              }
+            }
+            const changed = sanitized.length !== prevLayers.length
+              || sanitized.some((val, idx) => val !== prevLayers[idx]);
+            if(train){
+              train.mlpHiddenLayers = sanitized.slice();
+              if(changed){
+                if(train.modelType === 'mlp'){
+                  const wasRunning = train.enabled;
+                  resetTraining();
+                  if(wasRunning){
+                    startTraining();
+                  }
+                } else {
+                  updateTrainStatus();
+                }
+              }
+            }
+            return sanitized;
+          }
+
+          function renderMlpLayerControls(){
+            if(!mlpLayerControlsEl) return;
+            mlpLayerControlsEl.innerHTML = '';
+            for(let i = 0; i < mlpHiddenLayers.length; i++){
+              const wrapper = document.createElement('div');
+              wrapper.className = 'flex items-center gap-3';
+              const inputId = `mlp-layer-${i}`;
+              const label = document.createElement('label');
+              label.setAttribute('for', inputId);
+              label.className = 'text-xs uppercase tracking-[0.35em] text-plum/70';
+              label.textContent = `Layer ${i + 1} Nodes`;
+              const input = document.createElement('input');
+              input.type = 'number';
+              input.id = inputId;
+              input.min = String(MLP_MIN_UNITS);
+              input.max = String(MLP_MAX_UNITS);
+              input.step = '1';
+              input.value = mlpHiddenLayers[i];
+              input.className = 'w-20 rounded-2xl border border-white/20 bg-white/10 px-3 py-1 text-center text-shell focus:outline-none focus:ring-2 focus:ring-citron/60';
+              input.setAttribute('aria-label', `Hidden layer ${i + 1} nodes`);
+              input.addEventListener('change', (e) => {
+                const sanitized = sanitizeHiddenUnits(e.target.value, i, mlpHiddenLayers[i]);
+                if(mlpHiddenLayers[i] === sanitized){
+                  e.target.value = sanitized;
+                  return;
+                }
+                const layers = mlpHiddenLayers.slice();
+                layers[i] = sanitized;
+                applyMlpHiddenLayers(layers, { syncInputs: false });
+                e.target.value = sanitized;
+              });
+              wrapper.appendChild(label);
+              wrapper.appendChild(input);
+              mlpLayerControlsEl.appendChild(wrapper);
+            }
+          }
+
+          function handleHiddenCountChange(value){
+            const parsed = Math.round(Number(value));
+            const desired = Number.isFinite(parsed)
+              ? Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, parsed))
+              : mlpHiddenLayers.length;
+            if(desired === mlpHiddenLayers.length){
+              if(mlpHiddenCountSel){
+                mlpHiddenCountSel.value = String(mlpHiddenLayers.length);
+              }
+              return;
+            }
+            const layers = mlpHiddenLayers.slice();
+            if(desired > layers.length){
+              const seed = layers.length
+                ? layers[layers.length - 1]
+                : sanitizeHiddenUnits(DEFAULT_MLP_HIDDEN[0], layers.length, DEFAULT_MLP_HIDDEN[0]);
+              while(layers.length < desired){
+                layers.push(seed);
+              }
+            } else {
+              layers.length = desired;
+            }
+            applyMlpHiddenLayers(layers, { rerenderControls: true });
+          }
+
+          function syncMlpConfigVisibility(){
+            if(!mlpConfigEl) return;
+            if(train && train.modelType === 'mlp'){
+              mlpConfigEl.classList.remove('hidden');
+            } else {
+              mlpConfigEl.classList.add('hidden');
+            }
+          }
+
+          function initMlpConfigUi(){
+            if(mlpHiddenCountSel){
+              mlpHiddenCountSel.value = String(mlpHiddenLayers.length);
+              mlpHiddenCountSel.addEventListener('change', (e) => {
+                handleHiddenCountChange(e.target.value);
+              });
+            }
+            renderMlpLayerControls();
+            if(train){
+              train.mlpHiddenLayers = mlpHiddenLayers.slice();
+            }
+            syncMlpConfigVisibility();
+          }
 
           function sliceSegment(arr, start, end){
             if(!arr) return null;
@@ -1145,6 +1359,7 @@
             popSize: 16,
             eliteFrac: 0.25,
             modelType: 'linear',
+            mlpHiddenLayers: mlpHiddenLayers.slice(),
             dtype: DEFAULT_DTYPE,
             mean: initialMean('linear'),
             std: initialStd('linear'),
@@ -1203,8 +1418,13 @@
             } else if(train.mean){
               currentWeights = train.mean;
             }
+
+            if(weightsEl){
+              weightsEl.textContent = describeModelArchitecture();
+            }
             try {
-              renderNetworkD3(currentWeights);
+              const override = (train.modelType === 'mlp') ? currentMlpLayerSizes() : null;
+              renderNetworkD3(currentWeights, override);
             } catch (_) {
               /* ignore render failures */
             }
@@ -1278,6 +1498,8 @@
           }
           function resetTraining(){
             stopTraining();
+            currentModelType = train.modelType;
+            train.mlpHiddenLayers = mlpHiddenLayers.slice();
             // Reset mean/std based on selected model
             train.mean = initialMean(train.modelType);
             train.std = initialStd(train.modelType);
@@ -1508,21 +1730,44 @@
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
           function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
           function mlpScore(weights, feats){
-            // weights layout: [W1 (FEAT_DIM*H1), b1 (H1), W2 (H1), b2 (1)]
-            const H = MLP_H1;
-            const W1 = weights.subarray(0, FEAT_DIM*H);
-            const b1 = weights.subarray(FEAT_DIM*H, FEAT_DIM*H + H);
-            const W2 = weights.subarray(FEAT_DIM*H + H, FEAT_DIM*H + H + H);
-            const b2 = weights[FEAT_DIM*H + H + H];
-            // Manual forward (faster than tf.js per-placement)
-            const h = new Float64Array(H);
-            for(let j=0;j<H;j++){
-              let sum = b1[j];
-              for(let i=0;i<FEAT_DIM;i++) sum += feats[i] * W1[i*H + j];
-              h[j] = sum > 0 ? sum : 0;
+            if(!weights || !weights.length){
+              return 0;
             }
-            let y = b2;
-            for(let j=0;j<H;j++) y += h[j] * W2[j];
+            const hiddenLayers = mlpHiddenLayers.length ? mlpHiddenLayers : DEFAULT_MLP_HIDDEN;
+            let offset = 0;
+            let prevSize = FEAT_DIM;
+            let activations = feats;
+            for(let layerIdx = 0; layerIdx < hiddenLayers.length; layerIdx++){
+              const layerSize = hiddenLayers[layerIdx];
+              const nextActivations = new Float64Array(layerSize);
+              const weightBase = offset;
+              const biasBase = weightBase + prevSize * layerSize;
+              for(let j = 0; j < layerSize; j++){
+                let sum = (biasBase + j < weights.length) ? weights[biasBase + j] : 0;
+                for(let i = 0; i < prevSize; i++){
+                  const wIdx = weightBase + i * layerSize + j;
+                  if(wIdx < weights.length){
+                    sum += activations[i] * weights[wIdx];
+                  }
+                }
+                nextActivations[j] = sum > 0 ? sum : 0;
+              }
+              offset = biasBase + layerSize;
+              activations = nextActivations;
+              prevSize = layerSize;
+            }
+            let y = 0;
+            const outWeightsBase = offset;
+            const outBiasIndex = outWeightsBase + prevSize;
+            if(outBiasIndex < weights.length){
+              y = weights[outBiasIndex];
+            }
+            for(let i = 0; i < prevSize; i++){
+              const wIdx = outWeightsBase + i;
+              if(wIdx < weights.length){
+                y += activations[i] * weights[wIdx];
+              }
+            }
             return y;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
@@ -1862,12 +2107,15 @@
             });
           }
           updateRenderToggleBtn();
+          initMlpConfigUi();
           const modelSel = document.getElementById('model-select');
           function setModelType(mt){
             if(mt !== 'linear' && mt !== 'mlp') return;
             const wasRunning = train.enabled;
             if(wasRunning) stopTraining();
             train.modelType = mt;
+            currentModelType = mt;
+            train.mlpHiddenLayers = mlpHiddenLayers.slice();
             // Prefer f16 for MLP if available, else f32
             train.dtype = (mt==='mlp' && HAS_F16) ? 'f16' : 'f32';
             // Re-init mean/std to the appropriate initial values for this model
@@ -1876,6 +2124,7 @@
             updateTrainStatus();
             // Reset training state
             resetTraining();
+            syncMlpConfigVisibility();
             if(wasRunning) startTraining();
           }
           if(modelSel){ modelSel.addEventListener('change', (e) => setModelType(modelSel.value)); }
