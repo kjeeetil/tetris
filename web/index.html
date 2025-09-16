@@ -211,6 +211,52 @@
         padding: 0 1.8rem;
         font-size: 18px;
       }
+      .control-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.65rem;
+        padding: 0.55rem 1.1rem;
+        border-radius: 9999px;
+        border: 1px solid rgba(249, 245, 255, 0.18);
+        background: rgba(12, 59, 46, 0.12);
+        box-shadow: inset 0 0 0 1px rgba(249, 245, 255, 0.05);
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        color: rgba(249, 245, 255, 0.72);
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
+      }
+      .control-toggle:hover {
+        border-color: rgba(192, 159, 228, 0.45);
+        background: rgba(94, 74, 227, 0.16);
+      }
+      .control-toggle[data-active="true"] {
+        background: rgba(94, 74, 227, 0.2);
+        border-color: rgba(192, 159, 228, 0.55);
+        box-shadow: 0 18px 36px rgba(17, 17, 31, 0.34);
+        color: rgba(249, 245, 255, 0.88);
+      }
+      .control-checkbox {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        accent-color: #5e4ae3;
+        border-radius: 6px;
+        border: 1px solid rgba(192, 159, 228, 0.45);
+        background: rgba(249, 245, 255, 0.06);
+        box-shadow: inset 0 1px 2px rgba(15, 19, 35, 0.4);
+        cursor: pointer;
+      }
+      .control-checkbox:focus-visible {
+        outline: 2px solid rgba(244, 247, 121, 0.65);
+        outline-offset: 2px;
+      }
+      .control-toggle__text {
+        font-family: "Instrument Serif", serif;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+      }
       select,
       input[type='range'] {
         font-family: "Instrument Serif", serif;
@@ -317,14 +363,37 @@
             <option value="linear" selected>Linear (ES)</option>
             <option value="mlp">MLP (tf.js)</option>
           </select>
-          <button
-            id="render-toggle"
-            class="icon-btn icon-btn--violet icon-btn--wide"
-            title="Show/Hide Game During Training"
-            aria-label="Show or Hide Game"
+          <label
+            id="render-toggle-label"
+            class="control-toggle"
+            title="Show the training board and preview during evolution (slower)"
+            data-active="false"
           >
-            Hide Game
-          </button>
+            <input
+              id="render-toggle"
+              type="checkbox"
+              class="control-checkbox"
+              aria-label="Show training (slow)"
+            />
+            <span class="control-toggle__text">Show training (slow)</span>
+          </label>
+        </div>
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <label
+            id="simplified-model-label"
+            class="control-toggle"
+            title="Use the simplified headless engine for faster training"
+            data-active="true"
+          >
+            <input
+              id="simplified-model-toggle"
+              type="checkbox"
+              class="control-checkbox"
+              checked
+              aria-label="Use simplified headless tetris model"
+            />
+            <span class="control-toggle__text">Simplified (fast) tetris model</span>
+          </label>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
           <button
@@ -493,6 +562,7 @@
         const pctx = preview.getContext('2d');
         const WIDTH = 10;
         const HEIGHT = 20;
+        const FULL_ROW_MASK = (1 << WIDTH) - 1;
         const DEFAULT_CELL = 30;
         const DEFAULT_PREVIEW_CELL = 28; // slightly smaller cell for preview
         const MIN_CELL_SIZE = 12;
@@ -1720,8 +1790,9 @@
             reevalAccum: 0,
             reevalTarget: -1,
             // Visualization + speed controls for training
-            visualizeBoard: true,      // if false: skip board/preview rendering
+            visualizeBoard: false,     // if false: skip board/preview rendering
             fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
+            useSimplifiedModel: true,
             currentWeightsOverride: null,
             ai: { plan: null, acc: 0 },
             clearCounts: {1:0,2:0,3:0,4:0},
@@ -1750,10 +1821,11 @@
 
           function updateTrainStatus(){
             if(trainStatus){
+              const engineLabel = train.useSimplifiedModel ? 'Simplified headless' : 'Full board';
               if(train.enabled){
-                trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${train.modelType.toUpperCase()}`;
+                trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${train.modelType.toUpperCase()} · Engine: ${engineLabel}`;
               } else {
-                trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()}`;
+                trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()} · Engine: ${engineLabel}`;
               }
             }
             let currentWeights = null;
@@ -1974,6 +2046,182 @@
           window.__onGameOver = onGameOver;
 
           function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
+          const HEADLESS_PROFILES = {};
+          const HEADLESS_PROFILE_LOOKUP = {};
+          (function initHeadlessProfiles(){
+            const shapes = Object.keys(SHAPES);
+            for(const shape of shapes){
+              const rotations = SHAPES[shape];
+              const seen = new Set();
+              const profiles = [];
+              const lookup = {};
+              for(let rotIndex=0; rotIndex<rotations.length; rotIndex++){
+                const cells = rotations[rotIndex];
+                const key = cells.map(([r,c]) => `${r},${c}`).sort().join('|');
+                if(seen.has(key)) continue;
+                seen.add(key);
+                let width = 0;
+                let height = 0;
+                for(const [dr,dc] of cells){
+                  if(dc > width) width = dc;
+                  if(dr > height) height = dr;
+                }
+                width += 1;
+                height += 1;
+                const columnMask = new Array(width).fill(false);
+                const bottomOffsets = new Array(width).fill(0);
+                for(let localCol=0; localCol<width; localCol++){
+                  let maxOffset = -1;
+                  for(const [dr,dc] of cells){
+                    if(dc === localCol){
+                      columnMask[localCol] = true;
+                      if(dr > maxOffset) maxOffset = dr;
+                    }
+                  }
+                  bottomOffsets[localCol] = maxOffset >= 0 ? maxOffset : 0;
+                }
+                const rowMasks = new Array(height).fill(0);
+                for(let localRow=0; localRow<height; localRow++){
+                  let mask = 0;
+                  for(const [dr,dc] of cells){
+                    if(dr === localRow){
+                      mask |= (1 << dc);
+                    }
+                  }
+                  rowMasks[localRow] = mask;
+                }
+                const profile = {
+                  rotation: rotIndex,
+                  width,
+                  height,
+                  bottomOffsets,
+                  rowMasks,
+                  columnMask,
+                };
+                profiles.push(profile);
+                lookup[rotIndex] = profile;
+              }
+              HEADLESS_PROFILES[shape] = profiles;
+              HEADLESS_PROFILE_LOOKUP[shape] = lookup;
+            }
+          })();
+          function gridToRowMasks(grid){
+            const rows = new Array(HEIGHT);
+            for(let r=0; r<HEIGHT; r++){
+              let mask = 0;
+              const row = grid[r];
+              for(let c=0; c<WIDTH; c++){
+                if(row[c]) mask |= (1 << c);
+              }
+              rows[r] = mask;
+            }
+            return rows;
+          }
+          function columnHeightsFromRows(rows){
+            const heights = new Array(WIDTH);
+            for(let c=0; c<WIDTH; c++){
+              let height = 0;
+              for(let r=0; r<HEIGHT; r++){
+                if(rows[r] & (1 << c)){
+                  height = HEIGHT - r;
+                  break;
+                }
+              }
+              heights[c] = height;
+            }
+            return heights;
+          }
+          function createHeadlessBoard(grid){
+            const rows = gridToRowMasks(grid);
+            return { rows, columnHeights: columnHeightsFromRows(rows) };
+          }
+          function headlessFits(rows, profile, row, column){
+            if(row < 0 || row + profile.height > HEIGHT) return false;
+            for(let localRow=0; localRow<profile.height; localRow++){
+              const boardRow = row + localRow;
+              const shifted = profile.rowMasks[localRow] << column;
+              if(rows[boardRow] & shifted) return false;
+            }
+            return true;
+          }
+          function headlessLandingRow(board, profile, column){
+            if(column < 0 || column + profile.width > WIDTH) return null;
+            let candidate = HEIGHT - profile.height;
+            for(let localCol=0; localCol<profile.width; localCol++){
+              if(!profile.columnMask[localCol]) continue;
+              const boardCol = column + localCol;
+              const colHeight = board.columnHeights[boardCol];
+              const slot = HEIGHT - colHeight - 1 - profile.bottomOffsets[localCol];
+              if(slot < candidate) candidate = slot;
+            }
+            if(candidate < 0) return null;
+            let row = candidate;
+            while(row >= 0){
+              if(headlessFits(board.rows, profile, row, column)) return row;
+              row -= 1;
+            }
+            return null;
+          }
+          function headlessEnumerate(board, shape){
+            const placements = [];
+            const profiles = HEADLESS_PROFILES[shape];
+            if(!profiles) return placements;
+            for(const profile of profiles){
+              const maxCol = WIDTH - profile.width;
+              for(let column=0; column<=maxCol; column++){
+                const row = headlessLandingRow(board, profile, column);
+                if(row !== null){
+                  placements.push({ rotation: profile.rotation, column, row });
+                }
+              }
+            }
+            return placements;
+          }
+          function rowsToGrid(rows){
+            const grid = new Array(HEIGHT);
+            for(let r=0; r<HEIGHT; r++){
+              const mask = rows[r];
+              const row = new Array(WIDTH);
+              for(let c=0; c<WIDTH; c++){
+                row[c] = (mask >> c) & 1 ? 1 : 0;
+              }
+              grid[r] = row;
+            }
+            return grid;
+          }
+          function headlessApplyPlacement(board, shape, placement){
+            const lookup = HEADLESS_PROFILE_LOOKUP[shape];
+            if(!lookup) return null;
+            const profile = lookup[placement.rotation];
+            if(!profile) return null;
+            let landingRow = (typeof placement.row === 'number' && Number.isFinite(placement.row))
+              ? placement.row
+              : headlessLandingRow(board, profile, placement.column);
+            if(landingRow === null || landingRow === undefined) return null;
+            if(!headlessFits(board.rows, profile, landingRow, placement.column)) return null;
+            const rows = board.rows.slice();
+            for(let localRow=0; localRow<profile.height; localRow++){
+              const boardRow = landingRow + localRow;
+              const shifted = profile.rowMasks[localRow] << placement.column;
+              rows[boardRow] |= shifted;
+            }
+            let cleared = 0;
+            const remaining = [];
+            for(let r=0; r<HEIGHT; r++){
+              if(rows[r] === FULL_ROW_MASK){
+                cleared += 1;
+              } else {
+                remaining.push(rows[r]);
+              }
+            }
+            while(remaining.length < HEIGHT) remaining.unshift(0);
+            const newRows = remaining;
+            const newBoard = {
+              rows: newRows,
+              columnHeights: columnHeightsFromRows(newRows),
+            };
+            return { board: newBoard, lines: cleared };
+          }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function copyGrid(g){ return g.map(r=>r.slice()); }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
@@ -2158,8 +2406,76 @@
               if(s>bestS){ bestS=s; best=sims[i].a; }
             }
             return best; }
+          function planForCurrentPieceHeadless(weights){
+            if(!state.active) return null;
+            const shape = state.active.shape;
+            const board = createHeadlessBoard(state.grid);
+            const placements = headlessEnumerate(board, shape);
+            if(!placements.length) return null;
+            const sims = [];
+            for(const placement of placements){
+              const sim = headlessApplyPlacement(board, shape, placement);
+              if(!sim) continue;
+              const feats = featuresFromGrid(rowsToGrid(sim.board.rows), sim.lines);
+              sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
+            }
+            if(!sims.length) return null;
+            sims.sort((a,b) => b.s1 - a.s1);
+            const nextShape = state.next;
+            const beam = Math.min(LOOKAHEAD_BEAM, sims.length);
+            const acts2Cache = typeof WeakMap === 'function' ? new WeakMap() : new Map();
+            let best = null;
+            let bestScore = -Infinity;
+            for(let i=0; i<sims.length; i++){
+              let score = sims[i].s1;
+              if(nextShape && i < beam){
+                let acts2 = acts2Cache.get(sims[i].sim.board);
+                if(!acts2){
+                  acts2 = headlessEnumerate(sims[i].sim.board, nextShape);
+                  acts2Cache.set(sims[i].sim.board, acts2);
+                }
+                if(acts2 && acts2.length){
+                  let best2 = -Infinity;
+                  for(const placement2 of acts2){
+                    const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
+                    if(!sim2) continue;
+                    const feats2 = featuresFromGrid(rowsToGrid(sim2.board.rows), sim2.lines);
+                    const score2 = scoreFeats(weights, feats2);
+                    if(score2 > best2) best2 = score2;
+                  }
+                  if(Number.isFinite(best2)){
+                    score += LOOKAHEAD_LAMBDA * best2;
+                  }
+                }
+              }
+              if(score > bestScore){
+                bestScore = score;
+                best = sims[i];
+              }
+            }
+            if(!best) return null;
+            const placement = best.placement;
+            if(!pathClear(state.grid, shape, placement.rotation, placement.column, state.level)){
+              return null;
+            }
+            const len = SHAPES[shape].length;
+            const cur = state.active.rot % len;
+            const needRot = (placement.rotation - cur + len) % len;
+            return { targetRot: placement.rotation, targetCol: placement.column, rotLeft: needRot, stage: 'rotate' };
+          }
 
-          function planForCurrentPiece(){ if(!state.active) return null; const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean; const a=choosePlacement2(w, state.grid, state.active.shape, state.next); if(!a){ return null; } const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len; return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' }; }
+          function planForCurrentPiece(){
+            if(!state.active) return null;
+            const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
+            if(train.enabled && train.useSimplifiedModel){
+              const headlessPlan = planForCurrentPieceHeadless(w);
+              if(headlessPlan) return headlessPlan;
+            }
+            const a = choosePlacement2(w, state.grid, state.active.shape, state.next);
+            if(!a){ return null; }
+            const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len;
+            return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' };
+          }
 
           // Scatter plot of raw score per game (all candidates)
         function updateScorePlot(){
@@ -2495,28 +2811,46 @@
           if(trainBtn){ trainBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
           const trainResetBtn = document.getElementById('train-reset');
           if(trainResetBtn){ trainResetBtn.addEventListener('click', resetTraining); }
-          const renderToggleBtn = document.getElementById('render-toggle');
-          function updateRenderToggleBtn(){
-            if(!renderToggleBtn) return;
-            const label = train.visualizeBoard ? 'Hide Game' : 'Show Game';
-            renderToggleBtn.textContent = label;
-            renderToggleBtn.setAttribute('aria-label', label);
-            renderToggleBtn.title = train.visualizeBoard
-              ? 'Hide Game During Training'
-              : 'Show Game During Training';
+          const renderToggleInput = document.getElementById('render-toggle');
+          const renderToggleLabel = document.getElementById('render-toggle-label');
+          function syncRenderToggle(){
+            if(!renderToggleInput) return;
+            renderToggleInput.checked = !!train.visualizeBoard;
+            if(renderToggleLabel){
+              renderToggleLabel.dataset.active = renderToggleInput.checked ? 'true' : 'false';
+            }
           }
-          if(renderToggleBtn){
-            renderToggleBtn.addEventListener('click', () => {
-              train.visualizeBoard = !train.visualizeBoard;
-              updateRenderToggleBtn();
-              // When re-enabling visualization, draw current state immediately
+          if(renderToggleInput){
+            renderToggleInput.checked = !!train.visualizeBoard;
+            renderToggleInput.addEventListener('change', () => {
+              train.visualizeBoard = renderToggleInput.checked;
+              syncRenderToggle();
               if(train.visualizeBoard){
                 try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
                 updateScore(true); updateLevel(true);
               }
             });
           }
-          updateRenderToggleBtn();
+          syncRenderToggle();
+          const simplifiedToggle = document.getElementById('simplified-model-toggle');
+          const simplifiedLabel = document.getElementById('simplified-model-label');
+          function syncSimplifiedToggle(){
+            if(!simplifiedToggle) return;
+            simplifiedToggle.checked = !!train.useSimplifiedModel;
+            if(simplifiedLabel){
+              simplifiedLabel.dataset.active = simplifiedToggle.checked ? 'true' : 'false';
+            }
+          }
+          if(simplifiedToggle){
+            simplifiedToggle.checked = !!train.useSimplifiedModel;
+            simplifiedToggle.addEventListener('change', () => {
+              train.useSimplifiedModel = simplifiedToggle.checked;
+              train.ai.plan = null;
+              syncSimplifiedToggle();
+              updateTrainStatus();
+            });
+          }
+          syncSimplifiedToggle();
           initMlpConfigUi();
           const modelSel = document.getElementById('model-select');
           function setModelType(mt){
