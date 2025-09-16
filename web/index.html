@@ -422,6 +422,10 @@
               <dd class="text-sm text-plum/80">Deepest left or right edge indentation relative to its lone neighbor.</dd>
             </div>
             <div>
+              <dt class="font-semibold text-shell">Tetris Well</dt>
+              <dd class="text-sm text-plum/80">Depth of the single deepest well when it is unique, scaled by board height.</dd>
+            </div>
+            <div>
               <dt class="font-semibold text-shell">Contact</dt>
               <dd class="text-sm text-plum/80">Normalized surface area where blocks touch neighbors or the floor.</dd>
             </div>
@@ -898,6 +902,7 @@
             'Max Height',
             'Well Sum',
             'Edge Wells',
+            'Tetris Well',
             'Contact',
             'Row Transitions',
             'Col Transitions',
@@ -960,8 +965,8 @@
           let newWeightArray = (n) => allocWeights(n, DEFAULT_DTYPE);
 
           // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
-          // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
-          const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.1, 0.1, 0.2];
+          // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
+          const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
           const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
           function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
@@ -1712,7 +1717,34 @@
           function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
           function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
           function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
-          function wellMetrics(heights){ let wellSum=0; let edgeWell=0; for(let c=0;c<WIDTH;c++){ let left = (c>0)?heights[c-1]:Infinity; let right = (c<WIDTH-1)?heights[c+1]:Infinity; let minNbr = Math.min(left,right); let depth = minNbr - heights[c]; if(depth>0) wellSum += depth; if(c===0) edgeWell = Math.max(edgeWell, right - heights[0]); if(c===WIDTH-1) edgeWell = Math.max(edgeWell, left - heights[WIDTH-1]); } return {wellSum, edgeWell: Math.max(0, edgeWell)}; }
+          function wellMetrics(heights){
+            let wellSum=0;
+            let edgeWell=0;
+            let maxWellDepth=0;
+            let wellCount=0;
+            for(let c=0;c<WIDTH;c++){
+              const left = (c>0)?heights[c-1]:Infinity;
+              const right = (c<WIDTH-1)?heights[c+1]:Infinity;
+              const minNbr = Math.min(left,right);
+              const depth = minNbr - heights[c];
+              if(depth>0){
+                wellSum += depth;
+                wellCount++;
+                if(depth>maxWellDepth){
+                  maxWellDepth = depth;
+                }
+              }
+              if(c===0){
+                edgeWell = Math.max(edgeWell, right - heights[0]);
+              }
+              if(c===WIDTH-1){
+                edgeWell = Math.max(edgeWell, left - heights[WIDTH-1]);
+              }
+            }
+            const safeEdge = Math.max(0, edgeWell);
+            const tetrisWell = (wellCount === 1) ? maxWellDepth : 0;
+            return {wellSum, edgeWell: safeEdge, maxWellDepth, wellCount, tetrisWell};
+          }
           function contactArea(g){ let contact=0; for(let r=0;r<HEIGHT;r++){ for(let c=0;c<WIDTH;c++){ if(!g[r][c]) continue; // bottom
                 if(r===HEIGHT-1 || g[r+1][c]) contact++; // left
                 if(c>0 && g[r][c-1]) contact++; // right
@@ -1720,11 +1752,11 @@
           function rowTransitions(g){ let t=0; for(let r=0;r<HEIGHT;r++){ let prev=0; for(let c=0;c<WIDTH;c++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function simulateAfterPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); return {grid:g, lines}; }
-          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const {wellSum, edgeWell}=wellMetrics(h); const Contact=contactArea(g); const rT=rowTransitions(g); const cT=colTransitions(g); const aggH=h.reduce((a,b)=>a+b,0);
+          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const {wellSum, edgeWell, tetrisWell}=wellMetrics(h); const Contact=contactArea(g); const rT=rowTransitions(g); const cT=colTransitions(g); const aggH=h.reduce((a,b)=>a+b,0);
             // Scaling
-            const sLines = lines/4; const sLines2=(lines*lines)/16; const sHoles=Holes/(WIDTH*HEIGHT); const sBump=Bump/((WIDTH-1)*HEIGHT); const sMaxH=maxH/HEIGHT; const sWell=wellSum/(WIDTH*HEIGHT); const sEdge=edgeWell/HEIGHT; const sContact=Contact/(WIDTH*HEIGHT*2); const sRT=rT/(WIDTH*HEIGHT); const sCT=cT/(WIDTH*HEIGHT); const sAgg=aggH/(WIDTH*HEIGHT);
+            const sLines = lines/4; const sLines2=(lines*lines)/16; const sHoles=Holes/(WIDTH*HEIGHT); const sBump=Bump/((WIDTH-1)*HEIGHT); const sMaxH=maxH/HEIGHT; const sWell=wellSum/(WIDTH*HEIGHT); const sEdge=edgeWell/HEIGHT; const sTetris=tetrisWell/HEIGHT; const sContact=Contact/(WIDTH*HEIGHT*2); const sRT=rT/(WIDTH*HEIGHT); const sCT=cT/(WIDTH*HEIGHT); const sAgg=aggH/(WIDTH*HEIGHT);
             const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0;
-            return [sLines, sLines2, is1, is2, is3, is4, sHoles, sBump, sMaxH, sWell, sEdge, sContact, sRT, sCT, sAgg]; }
+            return [sLines, sLines2, is1, is2, is3, is4, sHoles, sBump, sMaxH, sWell, sEdge, sTetris, sContact, sRT, sCT, sAgg]; }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
