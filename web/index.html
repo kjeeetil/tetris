@@ -634,7 +634,7 @@
               }
 
               const maxNext = Math.floor(remaining / (prev + 1));
-              for(let next = 1; next <= maxNext; next++){
+              for(let next = maxNext; next >= 1; next--){
                 const need = prev * next + next;
                 if(need > remaining) continue;
                 const rest = dfs(offset + need, next);
