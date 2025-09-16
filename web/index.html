@@ -491,8 +491,15 @@
         const levelEl = document.getElementById('level');
         const ctx = canvas.getContext('2d');
         const pctx = preview.getContext('2d');
-        const CELL = 30, WIDTH = 10, HEIGHT = 20;
-        const PREV_CELL = 28; // slightly smaller cell for preview
+        const WIDTH = 10;
+        const HEIGHT = 20;
+        const DEFAULT_CELL = 30;
+        const DEFAULT_PREVIEW_CELL = 28; // slightly smaller cell for preview
+        const MIN_CELL_SIZE = 12;
+        const SCALE_STEPS = [42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12];
+        const MAX_BOARD_WIDTH = SCALE_STEPS[0] * WIDTH;
+        let CELL = DEFAULT_CELL;
+        let PREV_CELL = DEFAULT_PREVIEW_CELL;
         const BOARD_BG = '#1b1839';
         const GRID_LINE = 'rgba(255, 255, 255, 0.08)';
         const PREVIEW_STROKE = 'rgba(249, 245, 255, 0.6)';
@@ -511,6 +518,73 @@
             }
           });
         }
+
+        const computeEffectiveBoardWidth = () => {
+          if (!canvas) return DEFAULT_CELL * WIDTH;
+          const parent = canvas.parentElement;
+          const viewportWidth = Math.max(
+            0,
+            Math.min(window.innerWidth || 0, document.documentElement ? document.documentElement.clientWidth : 0),
+          );
+          let effectiveWidth = parent && parent.clientWidth ? parent.clientWidth : 0;
+          if (viewportWidth > 0) {
+            effectiveWidth = effectiveWidth > 0 ? Math.min(effectiveWidth, viewportWidth) : viewportWidth;
+          }
+          if (!effectiveWidth || !Number.isFinite(effectiveWidth)) {
+            return DEFAULT_CELL * WIDTH;
+          }
+          return Math.max(MIN_CELL_SIZE * WIDTH, Math.min(MAX_BOARD_WIDTH, effectiveWidth));
+        };
+
+        const snapCellSize = (rawCell) => {
+          if (!Number.isFinite(rawCell) || rawCell <= 0) {
+            return CELL;
+          }
+          for (const step of SCALE_STEPS) {
+            if (rawCell >= step) {
+              return step;
+            }
+          }
+          const fallback = Math.max(MIN_CELL_SIZE, Math.floor(rawCell));
+          return fallback > 0 ? fallback : MIN_CELL_SIZE;
+        };
+
+        const applyCanvasScale = () => {
+          if (!canvas || !preview) {
+            return false;
+          }
+          const effectiveWidth = computeEffectiveBoardWidth();
+          const rawCell = Math.max(MIN_CELL_SIZE, Math.floor(effectiveWidth / WIDTH));
+          const nextCell = snapCellSize(rawCell);
+          if (!Number.isFinite(nextCell) || nextCell <= 0) {
+            return false;
+          }
+          const boardChanged = nextCell !== CELL;
+          CELL = nextCell;
+          PREV_CELL = Math.max(MIN_CELL_SIZE - 2, Math.round(CELL * 0.9));
+          const boardWidth = CELL * WIDTH;
+          const boardHeight = CELL * HEIGHT;
+          if (canvas.width !== boardWidth) {
+            canvas.width = boardWidth;
+          }
+          if (canvas.height !== boardHeight) {
+            canvas.height = boardHeight;
+          }
+          canvas.style.width = `${boardWidth}px`;
+          canvas.style.height = `${boardHeight}px`;
+
+          const previewExtent = PREV_CELL * 4 + Math.max(PREV_CELL, 24);
+          if (preview.width !== previewExtent) {
+            preview.width = previewExtent;
+          }
+          if (preview.height !== previewExtent) {
+            preview.height = previewExtent;
+          }
+          preview.style.width = `${previewExtent}px`;
+          preview.style.height = `${previewExtent}px`;
+
+          return boardChanged;
+        };
 
         const log = (t) => {
           if (!diag) return;
@@ -743,6 +817,38 @@
         }
 
         const state = { grid: emptyGrid(), active: null, next: null, score: 0, level:0, pieces:0, running:false, paused:false, last:0, acc:0, gravity:gravityForLevel(0), raf:null, wdAcc:0, lastSig:'', renderEvery:1, renderCounter:0 };
+
+        applyCanvasScale();
+        draw(state.grid, state.active);
+        drawNext(state.next);
+
+        requestAnimationFrame(() => {
+          if (applyCanvasScale()) {
+            draw(state.grid, state.active);
+            drawNext(state.next);
+          }
+        });
+
+        const scheduleScaleUpdate = (() => {
+          let rafId = null;
+          return () => {
+            if (rafId !== null) {
+              cancelAnimationFrame(rafId);
+            }
+            rafId = requestAnimationFrame(() => {
+              rafId = null;
+              if (applyCanvasScale()) {
+                draw(state.grid, state.active);
+                drawNext(state.next);
+              }
+            });
+          };
+        })();
+
+        window.addEventListener('resize', scheduleScaleUpdate, { passive: true });
+        if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+          window.visualViewport.addEventListener('resize', scheduleScaleUpdate, { passive: true });
+        }
 
         const shapes = Object.keys(SHAPES);
         function shuffle(arr){ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=arr[i]; arr[i]=arr[j]; arr[j]=t; } return arr; }
