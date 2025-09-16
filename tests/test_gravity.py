@@ -6,10 +6,10 @@ from tetris.utils import gravity_interval_ms
 
 def test_gravity_speed_increases_with_level():
     assert gravity_interval_ms(1) < gravity_interval_ms(0)
-    assert gravity_interval_ms(29) == 0
+    assert gravity_interval_ms(10) == 0
 
 
-def test_level_29_drops_piece_immediately(monkeypatch):
+def test_level_10_drops_piece_immediately(monkeypatch):
     class DummyWindow:
         def requestAnimationFrame(self, _):
             return 0
@@ -36,7 +36,7 @@ def test_level_29_drops_piece_immediately(monkeypatch):
     runner.state = GameState()
     runner.state.reset_game()
     runner.running = True
-    runner.state.level = 29
+    runner.state.level = 10
     active_before = runner.state.active
     pieces_before = runner.state.pieces
     runner._tick(500)
