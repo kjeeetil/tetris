@@ -270,7 +270,7 @@
         </div>
       </noscript>
       <div class="game relative flex w-full max-w-5xl flex-col items-center gap-10">
-        <div class="flex w-full max-w-5xl flex-col items-center gap-6 md:flex-row md:items-start md:justify-center md:gap-12">
+        <div class="flex w-full max-w-5xl flex-col items-center gap-4 md:flex-row md:items-start md:justify-center md:gap-6">
           <canvas id="canvas" width="300" height="600" tabindex="0" class="shadow-glow"></canvas>
           <div class="flex w-full max-w-sm flex-col items-start gap-6 md:w-auto md:items-start md:gap-8">
             <div class="flex flex-col items-start gap-3 md:items-start">
@@ -358,7 +358,6 @@
       </section>
       <section class="mt-6 w-full max-w-5xl space-y-6">
         <div id="train-status" class="text-center text-xs uppercase tracking-[0.45em] text-mint/70"></div>
-        <div id="weights-display" class="text-center text-sm text-plum/70"></div>
         <div id="network-viz" aria-label="Network weight visualization" class="glass-panel mx-auto h-[260px] w-full overflow-hidden p-6"></div>
         <div
           id="diagnostics"
@@ -450,7 +449,6 @@
         const diag = document.getElementById('diagnostics');
         const MAX_LOG_LINES = 200;
         const trainStatus = document.getElementById('train-status');
-        const weightsEl = document.getElementById('weights-display');
         const networkVizEl = document.getElementById('network-viz');
         const mlpConfigEl = document.getElementById('mlp-config');
         const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
@@ -1420,6 +1418,7 @@
             } else if(train.mean){
               currentWeights = train.mean;
             }
+
             if(weightsEl){
               weightsEl.textContent = describeModelArchitecture();
             }
