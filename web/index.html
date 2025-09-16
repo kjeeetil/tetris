@@ -1180,10 +1180,16 @@
             plateauGens: 8,
             stdBoost: 1.8,
             maxPlotPoints: 4000,
+            scorePlotUpdateFreq: 5,
+            scorePlotPending: 0,
+            scorePlotAxisMax: 0,
           };
           window.__train = train;
           // After `train` exists, honor train.dtype for future allocations
           newWeightArray = (n) => allocWeights(n, (train && train.dtype) ? train.dtype : DEFAULT_DTYPE);
+
+          train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
+          train.scorePlotPending = 0;
 
           function formatWeights(arr){ const MAX_SHOW = 24; const vals = Array.from(arr).slice(0, MAX_SHOW).map(v=>Number.isFinite(v)?v.toFixed(2):String(v)); const suffix = arr.length>MAX_SHOW? ' …' : ''; return vals.join(', ') + suffix; }
           function updateTrainStatus(){
@@ -1249,7 +1255,10 @@
             if(!state.running){ start(); }
             train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
             train.gameScores = [];
+            train.gameModelTypes = [];
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
+            train.scorePlotPending = 0;
+            train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
             updateTrainStatus();
             const btn = document.getElementById('train');
             if(btn){
@@ -1268,6 +1277,10 @@
               btn.classList.remove('icon-btn--emerald');
               btn.classList.add('icon-btn--violet');
             }
+            if(train.scorePlotPending && train.gameScores.length){
+              updateScorePlot();
+            }
+            train.scorePlotPending = 0;
             log('Training stopped');
             updateTrainStatus();
           }
@@ -1284,7 +1297,10 @@
             train.ai.acc = 0;
             train.clearCounts = {1:0,2:0,3:0,4:0};
             train.gameScores = [];
+            train.gameModelTypes = [];
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
+            train.scorePlotPending = 0;
+            train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
             updateScorePlot();
             updateTrainStatus();
             log('Training parameters reset');
@@ -1308,7 +1324,11 @@
                 train.gameScores.splice(0, train.gameScores.length - cap);
                 train.gameModelTypes.splice(0, train.gameModelTypes.length - cap);
               }
-              updateScorePlot();
+              const updateStride = Math.max(1, train.scorePlotUpdateFreq || 5);
+              train.scorePlotPending = (train.scorePlotPending || 0) + 1;
+              if(train.scorePlotPending >= updateStride){
+                updateScorePlot();
+              }
               // Re-evaluation phase handling
               if(train.phase === 'reeval'){
                 train.reevalAccum += fitness; train.reevalDone += 1;
@@ -1546,8 +1566,9 @@
           const axisColor = 'rgba(249, 245, 255, 0.68)';
           const gridColor = 'rgba(249, 245, 255, 0.1)';
 
-          const scores = (window.__train && window.__train.gameScores) ? window.__train.gameScores : [];
-          const types  = (window.__train && window.__train.gameModelTypes) ? window.__train.gameModelTypes : [];
+          const trainState = window.__train || null;
+          const scores = (trainState && trainState.gameScores) ? trainState.gameScores : [];
+          const types  = (trainState && trainState.gameModelTypes) ? trainState.gameModelTypes : [];
           const xw = Math.max(0, W - padL - padR);
           const yh = Math.max(0, H - padT - padB);
 
@@ -1599,14 +1620,45 @@
           });
 
           const count = scores.length;
+          if(trainState && typeof trainState.scorePlotPending !== 'number'){
+            trainState.scorePlotPending = 0;
+          }
           if(!count){
+            if(trainState){
+              trainState.scorePlotPending = 0;
+              if(!trainState.scorePlotAxisMax || trainState.scorePlotAxisMax < 1){
+                const baseline = Math.max(10, Math.ceil((trainState.popSize || 10) * 1.2));
+                const maxCap = Math.max(1, trainState.maxPlotPoints || baseline);
+                trainState.scorePlotAxisMax = Math.min(maxCap, baseline);
+              }
+            }
             return;
           }
 
-          const denom = Math.max(1, count - 1);
+          let axisMax = count;
+          if(trainState){
+            const maxCap = Math.max(count, trainState.maxPlotPoints || count);
+            let currentAxis = Number.isFinite(trainState.scorePlotAxisMax) ? trainState.scorePlotAxisMax : 0;
+            if(currentAxis < 1){
+              const baseline = Math.max(10, Math.ceil((trainState.popSize || count || 5) * 1.2));
+              currentAxis = Math.min(maxCap, baseline);
+            }
+            if(count > currentAxis){
+              let next = Math.ceil(currentAxis * 1.2);
+              if(!Number.isFinite(next) || next <= currentAxis){
+                next = currentAxis + 1;
+              }
+              currentAxis = Math.min(maxCap, Math.max(next, count));
+            }
+            trainState.scorePlotAxisMax = currentAxis;
+            trainState.scorePlotPending = 0;
+            axisMax = Math.max(count, currentAxis);
+          }
+
+          const denom = axisMax > 1 ? axisMax - 1 : 1;
           const desiredTicks = Math.min(8, Math.max(3, Math.round(xw / 70)));
           let step = 1;
-          if(count > 1){
+          if(axisMax > 1){
             const raw = denom / Math.max(1, desiredTicks - 1);
             const exponent = Math.floor(Math.log10(raw));
             const base = Math.pow(10, exponent);
@@ -1623,11 +1675,14 @@
           }
 
           const tickSet = new Set();
-          for(let tick = 1; tick <= count; tick += step){
-            tickSet.add(Math.min(count, Math.round(tick)));
+          for(let tick = 1; tick <= axisMax; tick += step){
+            tickSet.add(Math.round(tick));
           }
+          tickSet.add(axisMax);
           tickSet.add(count);
-          const xTicks = Array.from(tickSet).sort((a,b) => a - b);
+          const xTicks = Array.from(tickSet)
+            .filter((tick) => tick >= 1 && tick <= axisMax)
+            .sort((a,b) => a - b);
 
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
@@ -1635,7 +1690,7 @@
           ctx.strokeStyle = axisColor;
           ctx.lineWidth = 1;
           xTicks.forEach((tick) => {
-            const ratio = count === 1 ? 1 : (tick - 1) / denom;
+            const ratio = axisMax <= 1 ? 1 : (tick - 1) / denom;
             const x = padL + ratio * xw;
             ctx.beginPath();
             ctx.moveTo(x, H - padB);
@@ -1646,35 +1701,20 @@
 
           const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b' };
           const safeMaxY = maxY || 1;
-          const points = [];
           for(let i=0; i<count; i++){
-            const ratio = count === 1 ? 1 : (i / denom);
+            const gameNumber = i + 1;
+            const ratio = axisMax <= 1 ? 1 : (gameNumber - 1) / denom;
             const x = padL + ratio * xw;
             const y = H - padB - (scores[i] / safeMaxY) * yh;
-            points.push({ x, y, type: types[i] || 'linear' });
-          }
-
-          if(points.length >= 2){
+            const color = COLORS[types[i] || 'linear'] || COLORS.linear;
             ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            for(let i=1; i<points.length; i++){
-              ctx.lineTo(points[i].x, points[i].y);
-            }
-            ctx.strokeStyle = 'rgba(249, 245, 255, 0.25)';
-            ctx.lineWidth = 1.25;
-            ctx.stroke();
-          }
-
-          points.forEach((pt) => {
-            const color = COLORS[pt.type] || COLORS.linear;
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
             ctx.fillStyle = color;
             ctx.fill();
             ctx.lineWidth = 1.2;
             ctx.strokeStyle = 'rgba(12, 17, 32, 0.85)';
             ctx.stroke();
-          });
+          }
         }
 
           function runAiMicroStep(){
