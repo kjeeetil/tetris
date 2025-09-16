@@ -162,6 +162,7 @@
         <option value="linear" selected>Linear (ES)</option>
         <option value="mlp">MLP (tf.js)</option>
       </select>
+      <button id="render-toggle" class="icon-btn" title="Show/Hide Board During Training" aria-label="Show/Hide Board">Hide</button>
     </div>
     <div class="controls">
       <label for="speed" id="speed-label">Speed: <span id="speed-display">1x</span></label>
@@ -283,6 +284,11 @@
         };
 
         function draw(grid, active){
+          try {
+            if(window.__train && window.__train.enabled && window.__train.visualizeBoard === false){
+              return; // skip board rendering in training fast mode
+            }
+          } catch(_) {}
           ctx.fillStyle = '#000'; ctx.fillRect(0,0,WIDTH*CELL,HEIGHT*CELL);
           // locked
           for(let r=0;r<HEIGHT;r++){
@@ -297,6 +303,11 @@
         }
 
         function drawNext(shape){
+          try {
+            if(window.__train && window.__train.enabled && window.__train.visualizeBoard === false){
+              return; // skip preview rendering in training fast mode
+            }
+          } catch(_) {}
           const W = preview.width, H = preview.height;
           pctx.fillStyle = '#ffffff'; pctx.fillRect(0,0,W,H);
           pctx.strokeStyle = '#f0f0f0'; pctx.strokeRect(0,0,W,H);
@@ -538,6 +549,9 @@ function tick(ts){
             reevalDone: 0,
             reevalAccum: 0,
             reevalTarget: -1,
+            // Visualization + speed controls for training
+            visualizeBoard: true,      // if false: skip board/preview rendering
+            fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
             currentWeightsOverride: null,
             ai: { plan: null, acc: 0 },
             clearCounts: {1:0,2:0,3:0,4:0},
@@ -914,7 +928,9 @@ function tick(ts){
 
             // Execute as many micro-steps as fit into accumulated time
             let __aiSteps = 0;
-            while (train.ai.acc >= AI_STEP_MS && __aiSteps < MAX_AI_STEPS_PER_FRAME) {
+            // Allow larger bursts when visualization is off to reduce wall-clock time.
+            const __limit = (train && train.enabled && train.visualizeBoard === false) ? train.fastStepsPerFrame : MAX_AI_STEPS_PER_FRAME;
+            while (train.ai.acc >= AI_STEP_MS && __aiSteps < __limit) {
               train.ai.acc -= AI_STEP_MS;
               __aiSteps += 1;
 
@@ -990,6 +1006,19 @@ function tick(ts){
           if(trainBtn){ trainBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
           const trainResetBtn = document.getElementById('train-reset');
           if(trainResetBtn){ trainResetBtn.addEventListener('click', resetTraining); }
+          const renderToggleBtn = document.getElementById('render-toggle');
+          function updateRenderToggleBtn(){ if(renderToggleBtn) renderToggleBtn.textContent = (train.visualizeBoard ? 'Hide' : 'Show'); }
+          if(renderToggleBtn){
+            renderToggleBtn.addEventListener('click', () => {
+              train.visualizeBoard = !train.visualizeBoard;
+              updateRenderToggleBtn();
+              // When re-enabling visualization, draw current state immediately
+              if(train.visualizeBoard){
+                try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
+              }
+            });
+          }
+          updateRenderToggleBtn();
           const modelSel = document.getElementById('model-select');
           function setModelType(mt){
             if(mt !== 'linear' && mt !== 'mlp') return;
