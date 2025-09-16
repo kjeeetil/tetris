@@ -339,6 +339,25 @@
 
         const spawn = () => { const s = state.next || drawFromBag(); state.active = new Piece(s); state.next = drawFromBag(); drawNext(state.next); updateScore(); updateLevel(); };
 
+        // Robust game-over trigger used by outer loop/inputs.
+        // Delegates to window.__onGameOver if available; otherwise, performs a minimal safe reset.
+        function triggerGameOver(){
+          try {
+            if (typeof window.__onGameOver === 'function') {
+              return window.__onGameOver();
+            }
+          } catch (_) { /* fall through to fallback */ }
+          // Fallback: minimal reset so the loop can continue gracefully
+          try {
+            log('Game over (fallback). Resetting.');
+          } catch(_) {}
+          Object.assign(state, { grid: emptyGrid(), active: null, next: null, score: 0, level: 0, pieces: 0 });
+          state.gravity = gravityForLevel(0);
+          updateLevel();
+          updateScore();
+          spawn();
+        }
+
         const scheduleNext = () => {
           // Run the main loop at a steady ~60 FPS; speed multiplier is applied
           // inside the loop by scaling the effective delta time.
@@ -361,18 +380,18 @@ function tick(ts){
             // Watchdog: detect lack of progress for > 2s wall time and reset
             const curSig = state.active ? `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}:${state.pieces}` : `none:${state.score}:${state.pieces}`;
             if(curSig === state.lastSig){ state.wdAcc += dt; } else { state.wdAcc = 0; state.lastSig = curSig; }
-            if(state.wdAcc > 2000 && !state.paused){ log('Watchdog: no progress for 2s -> game over'); window.__onGameOver(); state.wdAcc = 0; }
+            if(state.wdAcc > 2000 && !state.paused){ log('Watchdog: no progress for 2s -> game over'); triggerGameOver(); state.wdAcc = 0; }
             // Fallback: ensure there is always an active piece when running
             if(!state.paused && !state.active){
               spawn();
-              if(!canMove(state.grid, state.active, 0, 0)) { log('Tick: spawned into block -> game over'); window.__onGameOver(); return; }
+              if(!canMove(state.grid, state.active, 0, 0)) { log('Tick: spawned into block -> game over'); triggerGameOver(); return; }
             }
             if(!state.paused && state.active){
               // Global guard: if the active piece cannot exist at its current
               // position (e.g., spawn collision), trigger game over/reset.
               if(!canMove(state.grid, state.active, 0, 0)){
                 log('Tick: spawn blocked -> game over');
-                window.__onGameOver();
+                triggerGameOver();
                 return;
               }
               if(window.__train && window.__train.enabled){
@@ -393,18 +412,18 @@ function tick(ts){
                     const cleared = clearRows(state.grid);
                     if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); recordClear(cleared); }
                     // Top-out guard after lock/clear in manual mode
-                    if(state.grid[0].some(v => v !== 0)) { window.__onGameOver(); }
-                    else {
-                      spawn();
-                      if(!canMove(state.grid, state.active, 0, 0)){ window.__onGameOver(); }
-                    }
+                    if(state.grid[0].some(v => v !== 0)) { triggerGameOver(); }
+                else {
+                  spawn();
+                      if(!canMove(state.grid, state.active, 0, 0)){ triggerGameOver(); }
+                  }
                   }
                 }
               }
             }
           } catch (e) {
             try { log(`Tick error: ${e && e.message ? e.message : e}`); } catch(_) {}
-            try { window.__onGameOver(); } catch(_) {}
+            try { triggerGameOver(); } catch(_) {}
           } finally {
             try {
               if(state.renderEvery <= 1){
@@ -455,8 +474,8 @@ function tick(ts){
             }
             const cleared = clearRows(state.grid);
             if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); recordClear(cleared);} 
-            if(state.grid[0].some(v => v !== 0)) { onGameOver(); }
-            else { spawn(); if(!canMove(state.grid, state.active, 0, 0)) onGameOver(); }
+            if(state.grid[0].some(v => v !== 0)) { triggerGameOver(); }
+            else { spawn(); if(!canMove(state.grid, state.active, 0, 0)) triggerGameOver(); }
           }
           draw(state.grid, state.active);
         });
