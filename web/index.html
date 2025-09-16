@@ -349,6 +349,81 @@
           class="glass-panel mx-auto h-[240px] w-full max-w-5xl overflow-y-auto p-6 text-left text-sm leading-relaxed text-shell/80"
         ></div>
       </section>
+      <section class="w-full max-w-5xl">
+        <div class="glass-panel mx-auto mt-8 w-full space-y-6 rounded-3xl px-6 py-8 text-left">
+          <div>
+            <span class="text-xs uppercase tracking-[0.45em] text-plum/70">Feature Engineering</span>
+            <h2 class="mt-2 text-2xl font-display text-citron">Model Inputs Explained</h2>
+            <p class="mt-3 text-sm leading-relaxed text-plum/80">
+              Each candidate placement is simulated and summarized by handcrafted features before being scored by the linear or
+              MLP policy. These descriptors capture board safety, line clears, and surface texture so the agent can balance
+              clearing lines with maintaining a stable stack.
+            </p>
+          </div>
+          <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="font-semibold text-shell">Lines</dt>
+              <dd class="text-sm text-plum/80">Normalized count of cleared lines after the drop (lines ÷ 4).</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Lines²</dt>
+              <dd class="text-sm text-plum/80">Square of cleared lines scaled by 16, rewarding multi-line clears.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Single Clear</dt>
+              <dd class="text-sm text-plum/80">Indicator that exactly one row was removed by the placement.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Double Clear</dt>
+              <dd class="text-sm text-plum/80">Indicator for clearing exactly two lines at once.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Triple Clear</dt>
+              <dd class="text-sm text-plum/80">Indicator for clearing exactly three simultaneous lines.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Tetris</dt>
+              <dd class="text-sm text-plum/80">Indicator capturing a four-line clear produced by the move.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Holes</dt>
+              <dd class="text-sm text-plum/80">Fraction of empty cells trapped beneath blocks within each column.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Bumpiness</dt>
+              <dd class="text-sm text-plum/80">Normalized sum of height differences between adjacent columns.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Max Height</dt>
+              <dd class="text-sm text-plum/80">Tallest column height scaled by the board height.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Well Sum</dt>
+              <dd class="text-sm text-plum/80">Total depth of wells (columns lower than both neighbors) normalized by board area.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Edge Wells</dt>
+              <dd class="text-sm text-plum/80">Deepest left or right edge indentation relative to its lone neighbor.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Contact</dt>
+              <dd class="text-sm text-plum/80">Normalized surface area where blocks touch neighbors or the floor.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Row Transitions</dt>
+              <dd class="text-sm text-plum/80">Horizontal filled-to-empty transitions counted across each row.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Col Transitions</dt>
+              <dd class="text-sm text-plum/80">Vertical filled-to-empty transitions counted down each column.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">Aggregate Height</dt>
+              <dd class="text-sm text-plum/80">Sum of all column heights normalized by the playable area.</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
     </main>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
