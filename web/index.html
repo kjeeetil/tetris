@@ -3,197 +3,353 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://pyscript.net; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net data: blob:; img-src 'self' data:;" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://pyscript.net https://fonts.googleapis.com; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;"
+    />
     <title>Tetris</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.18.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-    
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: '#161629',
+              iris: '#5E4AE3',
+              plum: '#C09FE4',
+              citron: '#F4F779',
+              fern: '#2F6B49',
+              spruce: '#0C3B2E',
+              rosewood: '#8C2F39',
+              mint: '#8DE1AD',
+              shell: '#F9F5FF',
+            },
+            fontFamily: {
+              display: ['"Instrument Serif"', 'serif'],
+              body: ['"Instrument Serif"', 'serif'],
+            },
+            boxShadow: {
+              glow: '0 30px 60px rgba(32, 19, 72, 0.4)',
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
     <style>
+      :root {
+        color-scheme: dark;
+      }
       body {
-        font-family: Arial, sans-serif;
+        position: relative;
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Instrument Serif", serif;
         text-align: center;
-        margin: 0;
-        padding: 0;
+        color: #f9f5ff;
+        background:
+          radial-gradient(120% 120% at 16% 20%, rgba(244, 247, 121, 0.18) 0%, transparent 56%),
+          radial-gradient(130% 110% at 84% 12%, rgba(94, 74, 227, 0.28) 0%, transparent 62%),
+          radial-gradient(120% 120% at 82% 82%, rgba(141, 225, 173, 0.24) 0%, transparent 68%),
+          linear-gradient(135deg, #161629 0%, #241b4b 48%, #0f3b2e 100%);
+        overflow-x: hidden;
       }
-      #canvas {
-        margin: 0;
-        border: 2px solid #000;
-        display: block;
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(135deg, rgba(192, 159, 228, 0.16), rgba(22, 22, 41, 0.62));
+        opacity: 0.85;
+        mix-blend-mode: screen;
+        z-index: -2;
       }
-      .game {
-        margin: 24px auto 0 auto;
-        display: flex;
-        gap: 16px;
-        justify-content: center;
-        align-items: flex-start;
-        max-width: 560px;
+      .aura-shape {
+        position: absolute;
+        border-radius: 48px;
+        filter: drop-shadow(0 30px 60px rgba(17, 17, 31, 0.36));
+        z-index: -1;
       }
-      .sidebar {
-        width: 180px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 12px;
+      .aura-shape--1 {
+        top: -96px;
+        left: -56px;
+        width: 280px;
+        height: 320px;
+        background: linear-gradient(135deg, rgba(94, 74, 227, 0.82), rgba(192, 159, 228, 0.55));
       }
-      .panel {
-        width: 160px;
-        padding: 8px;
-        border: 1px solid #ccc;
-        background: #fdfdfd;
-      }
-      .panel-title {
-        font-size: 12px;
-        color: #555;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin-bottom: 6px;
-      }
-      #preview {
-        display: block;
-        width: 160px;
-        height: 160px;
-        border: 1px solid #eee;
-        background: #fff;
-      }
-      #score {
-        font-family: Georgia, "Times New Roman", "Palatino Linotype", "Book Antiqua", serif;
-        font-size: 22px;
-        line-height: 1.2;
-        color: #222;
-      }
-      .controls {
-        margin: 12px auto;
-        display: flex;
-        gap: 12px;
-        justify-content: center;
-        align-items: center;
-      }
-      .icon-btn {
-        width: 44px;
-        height: 44px;
-        border-radius: 50%;
-        border: 1px solid #bbb;
-        background: #fff;
-        font-size: 20px;
-        line-height: 44px;
-        cursor: pointer;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-      }
-      .icon-btn:active { transform: translateY(1px); }
-      #network-viz {
-        width: 320px;
+      .aura-shape--2 {
+        top: 180px;
+        right: 8%;
+        width: 220px;
         height: 220px;
-        margin: 12px auto 0 auto;
+        border-radius: 50%;
+        border: 6px solid rgba(244, 247, 121, 0.55);
+        background: transparent;
+      }
+      .aura-shape--3 {
+        bottom: -140px;
+        left: 12%;
+        width: 190px;
+        height: 320px;
+        background: linear-gradient(180deg, rgba(15, 59, 46, 0.8), rgba(141, 225, 173, 0.45));
+        transform: rotate(-12deg);
+      }
+      .aura-shape--4 {
+        bottom: -170px;
+        right: -96px;
+        width: 360px;
+        height: 280px;
+        background: linear-gradient(135deg, rgba(140, 47, 57, 0.78), rgba(94, 74, 227, 0.5));
+        transform: rotate(18deg);
+        border-radius: 60px;
+      }
+      canvas {
+        display: block;
+        margin: 0 auto;
+        border-radius: 32px;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+        background: #1c1b32;
+      }
+      #preview,
+      #score-plot {
+        display: block;
+        border-radius: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(12, 59, 46, 0.08);
+      }
+      #network-viz {
+        border-radius: 32px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(12, 59, 46, 0.12);
       }
       #network-viz svg {
         width: 100%;
         height: 100%;
-        border: 1px solid #eee;
-        background: #fff;
+        border-radius: 30px;
       }
       #network-viz text {
         font-size: 10px;
-        fill: #444;
+        fill: rgba(249, 245, 255, 0.82);
         pointer-events: none;
       }
       #diagnostics {
-        width: 320px;
-        height: 140px;
-        margin: 12px auto 24px auto;
-        padding: 8px;
-        border: 1px solid #ccc;
-        background: #fafafa;
-        text-align: left;
-        overflow: auto;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 12px;
+        border-radius: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(12, 59, 46, 0.12);
+        box-shadow: inset 0 0 0 1px rgba(249, 245, 255, 0.05);
+        overflow-y: auto;
+        font-family: "Instrument Serif", serif;
       }
-      @media (max-width: 600px) {
-        .game {
-          flex-direction: column;
-          max-width: 100%;
-          align-items: center;
-        }
-        #canvas {
-          width: 90vw;
+      .glass-panel {
+        border-radius: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: linear-gradient(135deg, rgba(249, 245, 255, 0.18), rgba(94, 74, 227, 0.08));
+        box-shadow: 0 20px 45px rgba(10, 10, 26, 0.35);
+      }
+      .noscript-alert {
+        background: linear-gradient(135deg, rgba(140, 47, 57, 0.24), rgba(249, 245, 255, 0.12));
+        border-color: rgba(140, 47, 57, 0.45);
+        color: #8c2f39;
+        text-shadow: 0 1px 12px rgba(249, 245, 255, 0.35);
+      }
+      .icon-btn {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 62px;
+        height: 62px;
+        border-radius: 22px;
+        border: none;
+        background: linear-gradient(135deg, #f4f779, #8de1ad);
+        color: #1b1839;
+        font-size: 26px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        box-shadow: 0 14px 30px rgba(17, 17, 31, 0.35), inset 0 2px 0 rgba(255, 255, 255, 0.6);
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.2s ease;
+      }
+      .icon-btn::before {
+        content: "";
+        position: absolute;
+        inset: 4px;
+        border-radius: 18px;
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0));
+        opacity: 0.85;
+        pointer-events: none;
+      }
+      .icon-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 18px 36px rgba(17, 17, 31, 0.38);
+      }
+      .icon-btn:active {
+        transform: translateY(1px) scale(0.97);
+        box-shadow: 0 8px 18px rgba(17, 17, 31, 0.4) inset;
+      }
+      .icon-btn--violet {
+        background: linear-gradient(135deg, #5e4ae3, #c09fe4);
+        color: #f9f5ff;
+      }
+      .icon-btn--emerald {
+        background: linear-gradient(135deg, #8de1ad, #2f6b49);
+        color: #0f3b2e;
+      }
+      .icon-btn--wide {
+        width: auto;
+        min-width: 132px;
+        padding: 0 1.8rem;
+        font-size: 18px;
+      }
+      select,
+      input[type='range'] {
+        font-family: "Instrument Serif", serif;
+      }
+      select {
+        background: rgba(249, 245, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: 18px;
+        color: #f9f5ff;
+        padding: 0.6rem 1rem;
+      }
+      select:focus {
+        outline: none;
+        border-color: rgba(244, 247, 121, 0.7);
+        box-shadow: 0 0 0 3px rgba(244, 247, 121, 0.25);
+      }
+      input[type='range'] {
+        width: 240px;
+        accent-color: #f4f779;
+      }
+      canvas:focus {
+        outline: none;
+      }
+      @media (max-width: 768px) {
+        canvas {
+          width: min(88vw, 320px);
           height: auto;
-          max-width: 300px;
-          margin: 0 auto;
-        }
-        .sidebar {
-          width: 100%;
-          flex-direction: row;
-          justify-content: center;
-        }
-        .panel {
-          width: auto;
-        }
-        #preview {
-          width: 80px;
-          height: 80px;
-        }
-        .controls {
-          flex-wrap: wrap;
         }
         .icon-btn {
           width: 56px;
           height: 56px;
-          font-size: 24px;
-          line-height: 56px;
+          font-size: 22px;
         }
-        #network-viz {
-          width: 90vw;
-          max-width: 360px;
-          height: 220px;
+        .icon-btn--wide {
+          min-width: 120px;
+          padding: 0 1.5rem;
         }
       }
       /* No external runtimes required; pure JS renderer */
     </style>
   </head>
-  <body>
-    <h1>Tetris</h1>
-    <noscript>
-      <div style="color:#b00020;margin:12px;">JavaScript is disabled. Enable it to play.</div>
-    </noscript>
-    <div class="game">
-      <canvas id="canvas" width="300" height="600" tabindex="0"></canvas>
-      <div class="sidebar">
-        <div class="panel">
-          <div class="panel-title">Next</div>
-          <canvas id="preview" width="160" height="160"></canvas>
+  <body class="relative min-h-screen overflow-x-hidden font-body antialiased text-shell">
+    <div class="aura-shape aura-shape--1"></div>
+    <div class="aura-shape aura-shape--2"></div>
+    <div class="aura-shape aura-shape--3"></div>
+    <div class="aura-shape aura-shape--4"></div>
+    <main class="relative z-10 flex flex-col items-center px-6 py-12 md:py-16 gap-12">
+      <header class="max-w-3xl text-center">
+        <p class="text-xs uppercase tracking-[0.45em] text-plum/70">Neural Arcade</p>
+        <h1 class="mt-5 text-4xl md:text-6xl font-display text-citron drop-shadow-[0_18px_40px_rgba(94,74,227,0.35)]">
+          Tetris Intelligence Lab
+        </h1>
+        <p class="mt-4 text-lg md:text-xl text-plum/80">
+          Fine-tune the falling blocks while the AI learns to groove with a synth-inspired palette.
+        </p>
+      </header>
+      <noscript>
+        <div class="glass-panel noscript-alert px-6 py-4 text-base rounded-3xl">
+          JavaScript is disabled. Enable it to play.
         </div>
-        <div class="panel">
-          <div class="panel-title">Training Progress</div>
-          <canvas id="score-plot" width="160" height="120"></canvas>
+      </noscript>
+      <div
+        class="game relative flex w-full max-w-6xl flex-col items-center gap-10 lg:flex-row lg:items-start lg:justify-center"
+      >
+        <canvas id="canvas" width="300" height="600" tabindex="0" class="shadow-glow"></canvas>
+        <div class="sidebar flex w-full max-w-sm flex-col items-stretch gap-6">
+          <div class="panel glass-panel px-6 py-6 text-left">
+            <span class="panel-title block text-[0.65rem] uppercase tracking-[0.45em] text-plum/80">Next</span>
+            <canvas id="preview" width="160" height="160" class="mx-auto mt-4"></canvas>
+          </div>
+          <div class="panel glass-panel px-6 py-6 text-left">
+            <span class="panel-title block text-[0.65rem] uppercase tracking-[0.45em] text-plum/80">Training Progress</span>
+            <canvas id="score-plot" width="160" height="120" class="mx-auto mt-4"></canvas>
+          </div>
+          <div class="glass-panel px-6 py-6 text-center">
+            <div id="level" class="text-xs uppercase tracking-[0.45em] text-plum/70">Level: 0</div>
+            <div
+              id="score"
+              class="mt-3 text-4xl font-display text-citron drop-shadow-[0_14px_35px_rgba(244,247,121,0.35)]"
+            >
+              Score: 0
+            </div>
+          </div>
         </div>
-        <div id="level">Level: 0</div>
-        <div id="score">Score: 0</div>
       </div>
-    </div>
-    <div class="controls">
-      <button id="toggle" class="icon-btn" title="Play/Pause" aria-label="Play/Pause">▶</button>
-      <button id="reset" class="icon-btn" title="Reset" aria-label="Reset">⟲</button>
-    </div>
-    <div class="controls">
-      <button id="train" class="icon-btn" title="Start/Stop Training" aria-label="Start/Stop Training">AI</button>
-      <button id="train-reset" class="icon-btn" title="Reset Training" aria-label="Reset Training">♻️</button>
-    </div>
-    <div class="controls">
-      <label for="model-select">Model:</label>
-      <select id="model-select">
-        <option value="linear" selected>Linear (ES)</option>
-        <option value="mlp">MLP (tf.js)</option>
-      </select>
-      <button id="render-toggle" class="icon-btn" title="Show/Hide Board During Training" aria-label="Show/Hide Board">Hide</button>
-    </div>
-    <div class="controls">
-      <label for="speed" id="speed-label">Speed: <span id="speed-display">1x</span></label>
-      <input id="speed" type="range" min="1" max="50" value="1" />
-    </div>
-    <div id="train-status"></div>
-    <div id="weights-display"></div>
-    <div id="network-viz" aria-label="Network weight visualization"></div>
-    <div id="diagnostics" aria-live="polite"></div>
+      <section class="flex w-full max-w-3xl flex-col items-center gap-5">
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <button id="toggle" class="icon-btn" title="Play/Pause" aria-label="Play/Pause">▶</button>
+          <button id="reset" class="icon-btn icon-btn--emerald" title="Reset" aria-label="Reset">⟲</button>
+        </div>
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <button
+            id="train"
+            class="icon-btn icon-btn--violet"
+            title="Start/Stop Training"
+            aria-label="Start/Stop Training"
+          >
+            AI
+          </button>
+          <button
+            id="train-reset"
+            class="icon-btn icon-btn--emerald"
+            title="Reset Training"
+            aria-label="Reset Training"
+          >
+            ♻️
+          </button>
+        </div>
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <label for="model-select" class="text-xs uppercase tracking-[0.35em] text-plum/70">Model:</label>
+          <select id="model-select" class="bg-transparent text-base font-display">
+            <option value="linear" selected>Linear (ES)</option>
+            <option value="mlp">MLP (tf.js)</option>
+          </select>
+          <button
+            id="render-toggle"
+            class="icon-btn icon-btn--violet icon-btn--wide"
+            title="Show/Hide Board During Training"
+            aria-label="Show/Hide Board"
+          >
+            Hide
+          </button>
+        </div>
+        <div class="controls flex flex-wrap items-center justify-center gap-4">
+          <label for="speed" id="speed-label" class="text-xs uppercase tracking-[0.35em] text-plum/70">
+            Speed: <span id="speed-display" class="text-citron">1x</span>
+          </label>
+          <input id="speed" type="range" min="1" max="50" value="1" class="w-60 md:w-72 accent-citron" />
+        </div>
+      </section>
+      <section class="mt-6 w-full max-w-5xl space-y-6">
+        <div id="train-status" class="text-center text-xs uppercase tracking-[0.45em] text-mint/70"></div>
+        <div id="weights-display" class="text-center text-sm text-plum/70"></div>
+        <div id="network-viz" aria-label="Network weight visualization" class="glass-panel mx-auto h-[260px] w-full overflow-hidden p-6"></div>
+        <div
+          id="diagnostics"
+          aria-live="polite"
+          class="glass-panel mx-auto h-[240px] w-full max-w-5xl overflow-y-auto p-6 text-left text-sm leading-relaxed text-shell/80"
+        ></div>
+      </section>
+    </main>
     <script>
       // --- Minimal Tetris in plain JavaScript (no PyScript) ---
       (function () {
@@ -210,6 +366,11 @@
         const pctx = preview.getContext('2d');
         const CELL = 30, WIDTH = 10, HEIGHT = 20;
         const PREV_CELL = 28; // slightly smaller cell for preview
+        const BOARD_BG = '#1b1839';
+        const GRID_LINE = 'rgba(255, 255, 255, 0.08)';
+        const PREVIEW_BG = '#1f1b3d';
+        const PREVIEW_BORDER = 'rgba(255, 255, 255, 0.18)';
+        const PREVIEW_GRID = 'rgba(255, 255, 255, 0.16)';
         // Performance tuning caps
         const MAX_AI_STEPS_PER_FRAME = 64;
         const speedSlider = document.getElementById('speed');
@@ -304,7 +465,73 @@
         };
 
         const SHAPE_COLORS = {
-          I: '#00ffff', O: '#ffff00', T: '#800080', S: '#00ff00', Z: '#ff0000', J: '#0000ff', L: '#ffa500'
+          I: '#4cc9f0',
+          O: '#f2e963',
+          T: '#7a5bff',
+          S: '#7ae48b',
+          Z: '#ff6f76',
+          J: '#4a6cff',
+          L: '#ff9f66',
+        };
+
+        const hexToRgb = (hex) => {
+          if (!hex) return null;
+          const normalized = hex.replace('#', '');
+          const expand = normalized.length === 3
+            ? normalized.split('').map((c) => c + c).join('')
+            : normalized;
+          if (expand.length !== 6) return null;
+          const r = parseInt(expand.slice(0, 2), 16);
+          const g = parseInt(expand.slice(2, 4), 16);
+          const b = parseInt(expand.slice(4, 6), 16);
+          if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+          return [r, g, b];
+        };
+
+        const rgbToHex = (rgb) => {
+          if (!rgb) return null;
+          return (
+            '#'
+            + rgb
+                .map((v) => {
+                  const clamped = Math.max(0, Math.min(255, Math.round(v)));
+                  return clamped.toString(16).padStart(2, '0');
+                })
+                .join('')
+          );
+        };
+
+        const mixColor = (hex, mixHex, weight = 0.5) => {
+          const base = hexToRgb(hex);
+          const mix = hexToRgb(mixHex);
+          if (!base || !mix) return hex;
+          const w = Math.max(0, Math.min(1, weight));
+          const blended = base.map((v, idx) => v * (1 - w) + mix[idx] * w);
+          return rgbToHex(blended) || hex;
+        };
+
+        const lightenHex = (hex, amount = 0.25) => mixColor(hex, '#ffffff', amount);
+        const darkenHex = (hex, amount = 0.25) => mixColor(hex, '#000000', amount);
+
+        const paintBlock = (context, color, x, y, size, options = {}) => {
+          const { shadow = true, stroke = GRID_LINE } = options;
+          const gradient = context.createLinearGradient(x, y, x + size, y + size);
+          gradient.addColorStop(0, lightenHex(color, 0.35));
+          gradient.addColorStop(0.5, color);
+          gradient.addColorStop(1, darkenHex(color, 0.2));
+          context.save();
+          context.fillStyle = gradient;
+          if (shadow) {
+            context.shadowColor = lightenHex(color, 0.35);
+            context.shadowBlur = 8;
+          }
+          context.fillRect(x, y, size, size);
+          if (shadow) {
+            context.shadowBlur = 0;
+          }
+          context.strokeStyle = stroke;
+          context.strokeRect(x, y, size, size);
+          context.restore();
         };
 
         function draw(grid, active){
@@ -313,17 +540,31 @@
               return; // skip board rendering in training fast mode
             }
           } catch(_) {}
-          ctx.fillStyle = '#000'; ctx.fillRect(0,0,WIDTH*CELL,HEIGHT*CELL);
+          ctx.fillStyle = BOARD_BG;
+          ctx.fillRect(0,0,WIDTH*CELL,HEIGHT*CELL);
+          ctx.lineWidth = 1.2;
           // locked
           for(let r=0;r<HEIGHT;r++){
             for(let c=0;c<WIDTH;c++){
               const val = grid[r][c];
-              if(val){ ctx.fillStyle = SHAPE_COLORS[val] || '#444'; ctx.fillRect(c*CELL,r*CELL,CELL,CELL); }
-              ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);
+              const x = c*CELL;
+              const y = r*CELL;
+              if(val){
+                const color = SHAPE_COLORS[val] || '#6c7dd9';
+                paintBlock(ctx, color, x, y, CELL, { shadow: false });
+              } else {
+                ctx.strokeStyle = GRID_LINE;
+                ctx.strokeRect(x, y, CELL, CELL);
+              }
             }
           }
           // active
-          if(active){ ctx.fillStyle = SHAPE_COLORS[active.shape] || '#6cf'; for(const [r,c] of active.blocks()){ ctx.fillRect(c*CELL,r*CELL,CELL,CELL); ctx.strokeStyle = '#333'; ctx.strokeRect(c*CELL,r*CELL,CELL,CELL);} }
+          if(active){
+            const color = SHAPE_COLORS[active.shape] || '#6c7dd9';
+            for(const [r,c] of active.blocks()){
+              paintBlock(ctx, color, c*CELL, r*CELL, CELL, { shadow: true });
+            }
+          }
         }
 
         function drawNext(shape){
@@ -333,21 +574,21 @@
             }
           } catch(_) {}
           const W = preview.width, H = preview.height;
-          pctx.fillStyle = '#ffffff'; pctx.fillRect(0,0,W,H);
-          pctx.strokeStyle = '#f0f0f0'; pctx.strokeRect(0,0,W,H);
+          pctx.fillStyle = PREVIEW_BG;
+          pctx.fillRect(0,0,W,H);
+          pctx.strokeStyle = PREVIEW_BORDER;
+          pctx.strokeRect(0,0,W,H);
           if(!shape) return;
           const state = SHAPES[shape][0];
           let minR=Infinity, minC=Infinity, maxR=-Infinity, maxC=-Infinity;
           for(const [r,c] of state){ minR=Math.min(minR,r); minC=Math.min(minC,c); maxR=Math.max(maxR,r); maxC=Math.max(maxC,c); }
           const w = (maxC-minC+1)*PREV_CELL; const h = (maxR-minR+1)*PREV_CELL;
           const offX = Math.floor((W - w)/2); const offY = Math.floor((H - h)/2);
-          pctx.fillStyle = SHAPE_COLORS[shape] || '#6cf';
           for(const [r,c] of state){
             const x = offX + (c-minC)*PREV_CELL;
             const y = offY + (r-minR)*PREV_CELL;
-            pctx.fillRect(x, y, PREV_CELL, PREV_CELL);
-            pctx.strokeStyle = '#dddddd';
-            pctx.strokeRect(x, y, PREV_CELL, PREV_CELL);
+            const color = SHAPE_COLORS[shape] || '#6c7dd9';
+            paintBlock(pctx, color, x, y, PREV_CELL, { shadow: false, stroke: PREVIEW_GRID });
           }
         }
 
