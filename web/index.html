@@ -513,10 +513,12 @@ function tick(ts){
           const MLP_H1 = 8; // hidden units (small for speed)
           const MLP_PARAM_DIM = FEAT_DIM*MLP_H1 + MLP_H1 + MLP_H1*1 + 1; // W1 + b1 + W2 + b2
 
-          // Numeric dtype for weight arrays: prefer f16 if available
+          // Numeric dtype for weight arrays
           const HAS_F16 = (typeof Float16Array !== 'undefined');
           const DEFAULT_DTYPE = HAS_F16 ? 'f16' : 'f32';
-          function newWeightArray(n){ const useF16 = HAS_F16 && ((typeof train === 'undefined') ? (DEFAULT_DTYPE==='f16') : (train && train.dtype==='f16')); return useF16 ? new Float16Array(n) : new Float32Array(n); }
+          function allocWeights(n, dtype){ return (dtype==='f16' && HAS_F16) ? new Float16Array(n) : new Float32Array(n); }
+          // Safe default allocator before `train` exists (avoid TDZ issues)
+          let newWeightArray = (n) => allocWeights(n, DEFAULT_DTYPE);
 
           // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
           // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, contact, rowTrans, colTrans, aggH]
@@ -569,6 +571,8 @@ function tick(ts){
             maxPlotPoints: 4000,
           };
           window.__train = train;
+          // After `train` exists, honor train.dtype for future allocations
+          newWeightArray = (n) => allocWeights(n, (train && train.dtype) ? train.dtype : DEFAULT_DTYPE);
 
           function formatWeights(arr){ const MAX_SHOW = 24; const vals = Array.from(arr).slice(0, MAX_SHOW).map(v=>Number.isFinite(v)?v.toFixed(2):String(v)); const suffix = arr.length>MAX_SHOW? ' …' : ''; return vals.join(', ') + suffix; }
           function updateTrainStatus(){
