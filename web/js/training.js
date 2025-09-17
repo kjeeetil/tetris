@@ -1,6 +1,8 @@
 import { HEIGHT, MAX_AI_STEPS_PER_FRAME, WIDTH } from './constants.js';
 import { Piece, SHAPES, UNIQUE_ROTATIONS, canMove, clearRows, emptyGrid, gravityForLevel, lock } from './engine.js';
 
+let randnSpare = null;
+
 function createTrainingProfiler() {
   const stats = new Map();
   const stack = [];
@@ -1096,7 +1098,19 @@ export function initTraining(game, renderer) {
       }
     }
 
-    function randn(){ let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+    function randn(){
+      if(randnSpare !== null){
+        const cached = randnSpare;
+        randnSpare = null;
+        return cached;
+      }
+      let u=0,v=0; while(u===0) u=Math.random(); while(v===0) v=Math.random();
+      const mag = Math.sqrt(-2*Math.log(u));
+      const angle = 2*Math.PI*v;
+      const sample = mag*Math.cos(angle);
+      randnSpare = mag*Math.sin(angle);
+      return sample;
+    }
     function samplePopulation(){
       const dim = paramDim();
       train.candWeights = [];
