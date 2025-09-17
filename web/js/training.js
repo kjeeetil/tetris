@@ -140,6 +140,16 @@ export function initTraining(game, renderer) {
   const draw = renderer.draw;
   const drawNext = renderer.drawNext;
 
+  const trainStatus = document.getElementById('train-status');
+  const architectureEl = document.getElementById('model-architecture');
+  const networkVizEl = document.getElementById('network-viz');
+  const historySlider = document.getElementById('model-history-slider');
+  const historyLabel = document.getElementById('model-history-label');
+  const historyMeta = document.getElementById('model-history-meta');
+  const mlpConfigEl = document.getElementById('mlp-config');
+  const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
+  const mlpLayerControlsEl = document.getElementById('mlp-layer-controls');
+
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
 
