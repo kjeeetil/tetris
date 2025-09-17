@@ -1285,12 +1285,21 @@ export function initTraining(game, renderer) {
           }
           train.bestFitness = bestThisGen;
           const bestWeights = train.candWeights[bestIdx];
+          const snapshot = {
+            gen: train.gen + 1,
+            fitness: bestThisGen,
+            modelType: train.modelType,
+            layerSizes: train.modelType === 'mlp' ? currentMlpLayerSizes() : [FEAT_DIM, 1],
+            weights: bestWeights ? cloneWeightsArray(bestWeights) : null,
+            scoreIndex: Math.max(0, train.totalGamesPlayed - train.popSize + bestIdx),
+          };
           train.mean = newMean;
           train.std = newStd;
           if(bestWeights && Number.isFinite(bestThisGen) && bestThisGen > (train.bestEverFitness ?? -Infinity)){
             train.bestEverFitness = bestThisGen;
             train.bestEverWeights = cloneWeightsArray(bestWeights);
           }
+          recordGenerationSnapshot(snapshot);
           train.gen += 1;
           train.currentWeightsOverride = null;
           log(`Gen ${train.gen} complete. Best score: ${bestThisGen}`);
