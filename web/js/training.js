@@ -1026,7 +1026,7 @@ export function initTraining(game, renderer) {
     const columnHeightScratch = new Array(WIDTH).fill(0);
     const featureScratch = new Float32Array(FEAT_DIM);
     const pooledPiece = new Piece('I');
-    const simulateResultScratch = { lines: 0, grid: gridScratch };
+    const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0 };
     const placementScratch = { feats: featureScratch, lines: 0, grid: gridScratch };
     window.__train = train;
     // After `train` exists, honor train.dtype for future allocations
@@ -1458,6 +1458,7 @@ export function initTraining(game, renderer) {
         const lines = clearLinesInScratch(g);
         simulateResultScratch.lines = lines;
         simulateResultScratch.grid = g;
+        simulateResultScratch.dropRow = fr;
         return simulateResultScratch;
       });
     }
@@ -1626,8 +1627,12 @@ export function initTraining(game, renderer) {
         for(const a of acts){
           const sim = simulateAfterPlacement(grid, curShape, a.rot, a.col);
           if(!sim) continue;
-          const baseFeats = featuresFromGrid(sim.grid, sim.lines);
+          const lines = sim.lines;
+          const dropRow = sim.dropRow;
+          const baseFeats = featuresFromGrid(sim.grid, lines);
           const score = scoreFeats(weights, baseFeats);
+          a.dropRow = dropRow;
+          a.lines = lines;
           if(score > bestScore){
             bestScore = score;
             best = a;
@@ -1648,7 +1653,8 @@ export function initTraining(game, renderer) {
         const len = SHAPES[state.active.shape].length;
         const cur = state.active.rot % len;
         const needRot = (placement.rot - cur + len) % len;
-        return { targetRot: placement.rot, targetCol: placement.col, rotLeft: needRot, stage: 'rotate' };
+        const targetRow = Number.isFinite(placement.dropRow) ? placement.dropRow : null;
+        return { targetRot: placement.rot, targetCol: placement.col, targetRow, rotLeft: needRot, stage: 'rotate' };
       });
     }
 
@@ -1910,15 +1916,29 @@ export function initTraining(game, renderer) {
           return forceDropActive();
         }
 
-        const piece = new Piece(state.active.shape);
-        piece.rot = plan.targetRot;
-        piece.col = plan.targetCol;
-        piece.row = 0;
-        const landingRow = dropRowSim(state.grid, piece);
-        if(landingRow === null){
+        const { targetRot, targetCol, targetRow } = plan;
+        if(!Number.isFinite(targetRot) || !Number.isFinite(targetCol) || !Number.isFinite(targetRow)){
           return forceDropActive();
         }
-        piece.row = landingRow;
+
+        const piece = state.active;
+        const prevRot = piece.rot;
+        const prevCol = piece.col;
+        const prevRow = piece.row;
+
+        piece.rot = targetRot;
+        piece.col = targetCol;
+        piece.row = targetRow;
+
+        const fits = canMove(state.grid, piece, 0, 0);
+        const settled = fits && !canMove(state.grid, piece, 0, 1);
+        if(!fits || !settled){
+          piece.rot = prevRot;
+          piece.col = prevCol;
+          piece.row = prevRow;
+          return forceDropActive();
+        }
+
         return finalizePlacement(piece, 'AI: top-out after drop');
       });
     }
