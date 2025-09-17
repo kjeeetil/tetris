@@ -1579,6 +1579,7 @@
               modelType: snapshot.modelType,
               layerSizes: Array.isArray(snapshot.layerSizes) ? snapshot.layerSizes.slice() : null,
               weights: snapshot.weights,
+              scoreIndex: Number.isFinite(snapshot.scoreIndex) ? snapshot.scoreIndex : null,
               recordedAt: snapshot.recordedAt || Date.now(),
             });
             if(train.historySelection !== null){
@@ -2181,6 +2182,8 @@
             clearCounts: {1:0,2:0,3:0,4:0},
             gameScores: [],
             gameModelTypes: [],
+            gameScoresOffset: 0,
+            totalGamesPlayed: 0,
             bestFitness: -Infinity,
             bestEverFitness: -Infinity,
             bestEverWeights: null,
@@ -2360,6 +2363,8 @@
             train.ai.staleMs = 0;
             train.gameScores = [];
             train.gameModelTypes = [];
+            train.gameScoresOffset = 0;
+            train.totalGamesPlayed = 0;
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
             train.scorePlotPending = 0;
             train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
@@ -2412,6 +2417,8 @@
             train.clearCounts = {1:0,2:0,3:0,4:0};
             train.gameScores = [];
             train.gameModelTypes = [];
+            train.gameScoresOffset = 0;
+            train.totalGamesPlayed = 0;
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
             train.bestByGeneration = [];
             train.historySelection = null;
@@ -2437,11 +2444,20 @@
               // Append raw score for progress plot and mark model type
               train.gameScores.push(state.score);
               train.gameModelTypes.push(train.modelType);
+              if(!Number.isFinite(train.totalGamesPlayed)){
+                train.totalGamesPlayed = 0;
+              }
+              if(!Number.isFinite(train.gameScoresOffset)){
+                train.gameScoresOffset = 0;
+              }
+              train.totalGamesPlayed += 1;
               // Cap data arrays to bound memory
               const cap = train.maxPlotPoints;
-              if (train.gameScores.length > cap) {
-                train.gameScores.splice(0, train.gameScores.length - cap);
-                train.gameModelTypes.splice(0, train.gameModelTypes.length - cap);
+              const overflow = train.gameScores.length - cap;
+              if (overflow > 0) {
+                train.gameScores.splice(0, overflow);
+                train.gameModelTypes.splice(0, overflow);
+                train.gameScoresOffset += overflow;
               }
               const updateStride = Math.max(1, train.scorePlotUpdateFreq || 5);
               train.scorePlotPending = (train.scorePlotPending || 0) + 1;
@@ -2491,6 +2507,9 @@
                     modelType: train.modelType,
                     layerSizes: layerSnapshot,
                     weights: snapshotWeights,
+                    scoreIndex: (Number.isFinite(train.totalGamesPlayed) && train.totalGamesPlayed > 0)
+                      ? train.totalGamesPlayed - 1
+                      : null,
                   });
                   if(bestThisGen > (train.bestEverFitness ?? -Infinity)){
                     train.bestEverFitness = bestThisGen;
@@ -3412,12 +3431,14 @@
 
           const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b' };
           const safeMaxY = maxY || 1;
+          const pointPositions = [];
           for(let i=0; i<count; i++){
             const gameNumber = i + 1;
             const ratio = axisMax <= 1 ? 1 : (gameNumber - 1) / denom;
             const x = padL + ratio * xw;
             const y = H - padB - (scores[i] / safeMaxY) * yh;
             const color = COLORS[types[i] || 'linear'] || COLORS.linear;
+            pointPositions.push({ x, y });
             ctx.beginPath();
             ctx.arc(x, y, 4, 0, Math.PI * 2);
             ctx.fillStyle = color;
@@ -3425,6 +3446,41 @@
             ctx.lineWidth = 1.2;
             ctx.strokeStyle = 'rgba(12, 17, 32, 0.85)';
             ctx.stroke();
+          }
+
+          if(trainState && Array.isArray(trainState.bestByGeneration) && trainState.bestByGeneration.length){
+            const offset = Number.isFinite(trainState.gameScoresOffset) ? trainState.gameScoresOffset : 0;
+            let selection = trainState.historySelection;
+            if(selection !== null && selection !== undefined){
+              selection = Math.max(0, Math.min(trainState.bestByGeneration.length - 1, Math.round(selection)));
+              const snapshot = trainState.bestByGeneration[selection];
+              const hasIndex = snapshot && Number.isFinite(snapshot.scoreIndex);
+              if(hasIndex){
+                const relative = Math.round(snapshot.scoreIndex - offset);
+                if(relative >= 0 && relative < pointPositions.length){
+                  const point = pointPositions[relative];
+                  if(point && Number.isFinite(point.x) && Number.isFinite(point.y)){
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(59, 130, 246, 0.25)';
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+                    ctx.fillStyle = '#3b82f6';
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = '#1d4ed8';
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 2.5, 0, Math.PI * 2);
+                    ctx.fillStyle = '#bfdbfe';
+                    ctx.fill();
+                    ctx.restore();
+                  }
+                }
+              }
+            }
           }
         }
 
@@ -3657,6 +3713,7 @@
             }
             syncHistoryControls();
             updateTrainStatus();
+            updateScorePlot();
           };
           if(historySlider){
             historySlider.addEventListener('input', handleHistorySliderInput);
