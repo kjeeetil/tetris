@@ -280,6 +280,13 @@
       canvas:focus {
         outline: none;
       }
+      @media (min-width: 768px) {
+        #canvas,
+        #preview {
+          margin-left: 0;
+          margin-right: 0;
+        }
+      }
       @media (max-width: 768px) {
         canvas {
           width: min(88vw, 320px);
