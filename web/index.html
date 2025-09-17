@@ -2152,12 +2152,6 @@
             bestEverWeights: null,
             bestByGeneration: [],
             historySelection: null,
-            // exploration config
-            diversityFrac: 0.3,
-            diversityScale: 4.0,
-            diversityBaseScale: 4.0,
-            diversityMaxScale: 12.0,
-            diversityBoost: 1.35,
             maxPlotPoints: 4000,
             scorePlotUpdateFreq: 5,
             scorePlotPending: 0,
@@ -2233,57 +2227,15 @@
           function samplePopulation(){
             const dim = paramDim();
             train.candWeights = [];
-            let diversityCount = Math.floor(train.diversityFrac * train.popSize);
-            diversityCount = Math.min(train.popSize, Math.max(0, diversityCount));
-            if(train.popSize >= 4){
-              diversityCount = Math.max(2, diversityCount);
-            }
-            let baseCount = train.popSize - diversityCount;
-            if(baseCount < 0){ baseCount = 0; diversityCount = train.popSize; }
-            if(baseCount % 2 !== 0){
-              if(baseCount > 0){
-                baseCount -= 1;
-                diversityCount += 1;
-              }
-            }
-            const baseHalf = Math.floor(baseCount / 2);
-            const baseNoises = new Array(baseHalf);
-            for(let j=0; j<baseHalf; j++){
-              const eps = new Float32Array(dim);
-              for(let d=0; d<dim; d++) eps[d] = randn();
-              baseNoises[j] = eps;
-            }
-            for(let pair=0; pair<baseHalf; pair++){
-              const eps = baseNoises[pair];
-              const wPos = newWeightArray(dim);
-              const wNeg = newWeightArray(dim);
-              for(let d=0; d<dim; d++){
-                const stdv = (train.std[d] || train.minStd);
-                const offset = stdv * eps[d];
-                wPos[d] = train.mean[d] + offset;
-                wNeg[d] = train.mean[d] - offset;
-              }
-              train.candWeights.push(wPos);
-              train.candWeights.push(wNeg);
-            }
-            const needDiversity = train.candWeights.length < train.popSize;
-            const baselineMean = needDiversity ? initialMean(train.modelType, train.mlpHiddenLayers) : null;
-            const baselineStd = needDiversity ? initialStd(train.modelType, train.mlpHiddenLayers) : null;
-            const haveBest = !!(train.bestEverWeights && train.bestEverWeights.length === dim);
-            while(train.candWeights.length < train.popSize){
+            for(let i=0; i<train.popSize; i++){
               const w = newWeightArray(dim);
-              const anchor = (haveBest && Math.random() < 0.5)
-                ? train.bestEverWeights
-                : baselineMean;
               for(let d=0; d<dim; d++){
-                const baseStd = baselineStd ? Math.max(train.std[d] || 0, baselineStd[d] || 0, train.minStd) : Math.max(train.std[d] || 0, train.minStd);
-                const baseValue = anchor ? anchor[d] : 0;
-                w[d] = baseValue + randn() * baseStd * train.diversityScale;
+                const mean = (train.mean && Number.isFinite(train.mean[d])) ? train.mean[d] : 0;
+                const rawStd = (train.std && Number.isFinite(train.std[d])) ? train.std[d] : 0;
+                const scale = Math.max(train.minStd, Math.abs(rawStd));
+                w[d] = mean + randn() * scale;
               }
               train.candWeights.push(w);
-            }
-            if(train.candWeights.length > train.popSize){
-              train.candWeights.length = train.popSize;
             }
             // Ensure the very first attempt (gen 0, cand 0) uses the mean weights (intentionally poor)
             if(train.gen === 0 && train.candWeights.length > 0){
@@ -2363,7 +2315,6 @@
             train.bestEverWeights = null;
             train.bestByGeneration = [];
             train.historySelection = null;
-            train.diversityScale = train.diversityBaseScale;
             train.scorePlotPending = 0;
             train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
             updateScorePlot();
@@ -2434,6 +2385,9 @@
                       const diff = wCand[d] - newMean[d];
                       newStd[d] += diff * diff;
                     }
+
+                    train.bestFitness = bestThisGen;
+
                   }
                 }
                 for(let d = 0; d < dim; d++){
