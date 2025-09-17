@@ -2463,67 +2463,13 @@
           function copyGrid(g){ return g.map(r=>r.slice()); }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
 
-          // Approximate delay between horizontal moves in ms, used to estimate
-          // how many sideways shifts are possible before a gravity drop.
-          const HORIZONTAL_MOVE_INTERVAL_MS = 100;
-
-          // Return true if a piece can reach (rot, col) from spawn under gravity.
-          function pathClear(grid, shape, rot, col, level){
-            // Start from spawn
-            const spawnCol = Math.floor(WIDTH/2) - 2;
+          // Return true if dropRowSim finds a valid landing row for the given rotation and column.
+          function pathClear(grid, shape, rot, col){
             const piece = new Piece(shape);
-            piece.row = 0; piece.col = spawnCol; piece.rot = 0;
-
-            // Try rotate-at-spawn step-by-step
-            const statesLen = SHAPES[shape].length;
-            const rotSteps = (rot - piece.rot + statesLen) % statesLen;
-            for(let i=0; i<rotSteps; i++){
-              piece.rotate();
-              if(!canMove(grid, piece, 0, 0)) return false;
-            }
-
-            // Compute the final resting row from the target column/rotation
-            const target = new Piece(shape);
-            target.row = 0; target.col = col; target.rot = rot;
-            const finalRow = dropRowSim(grid, target);
-            if(finalRow === null) return false;
-
-            // If already in the right column, ensure vertical path is clear
-            if(col === piece.col){
-              while(piece.row < finalRow){
-                if(!canMove(grid, piece, 0, 1)) return false;
-                piece.move(0, 1);
-              }
-              return true;
-            }
-
-            // Level 10: treat as instant drop (no horizontal movement)
-            if(level >= 10) return false;
-
-            // Estimate how many horizontal moves fit per gravity tick
-            const gravity = gravityForLevel(level);
-            const movesPerRow = Math.max(1, Math.floor(gravity / HORIZONTAL_MOVE_INTERVAL_MS));
-
-            // Translate toward target column under gravity
-            while(piece.col !== col){
-              // Gravity first
-              if(!canMove(grid, piece, 0, 1)) return false;
-              piece.move(0, 1);
-
-              const dir = (col > piece.col) ? 1 : -1;
-              const steps = Math.min(movesPerRow, Math.abs(col - piece.col));
-              for(let s=0; s<steps; s++){
-                if(!canMove(grid, piece, dir, 0)) return false;
-                piece.move(dir, 0);
-              }
-            }
-
-            // Finish dropping to the final row
-            while(piece.row < finalRow){
-              if(!canMove(grid, piece, 0, 1)) return false;
-              piece.move(0, 1);
-            }
-            return true;
+            piece.rot = rot;
+            piece.row = 0;
+            piece.col = col;
+            return dropRowSim(grid, piece) !== null;
           }
 
           function enumeratePlacements(grid, shape){
@@ -2533,12 +2479,7 @@
               for(const rot of rotIdx){
                 const width = stateWidth(SHAPES[shape][rot]);
                 for(let col=0; col<=WIDTH-width; col++){
-                  const p = new Piece(shape);
-                  p.rot = rot;
-                  p.row = 0;
-                  p.col = col;
-                  const fr = dropRowSim(grid, p);
-                  if(fr !== null && pathClear(grid, shape, rot, col, state.level)){
+                  if(pathClear(grid, shape, rot, col)){
                     actions.push({ rot, col });
                   }
                 }
