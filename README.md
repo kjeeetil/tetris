@@ -5,9 +5,9 @@
 This project packages a playable Tetris clone together with a lightweight
 reinforcement-learning lab. The web front end renders the game with
 vanilla JavaScript and HTML canvas while exposing controls that let you train
-heuristic agents directly in the browser. The `src/tetris` Python package mirrors
-the same rules and placement logic so you can export experiments to Gym-compatible
-workflows or offline research scripts.
+heuristic agents directly in the browser. All gameplay and learning logic runs
+in JavaScript; the repository intentionally omits mirrored Python modules to keep
+the codebase focused on the shipped experience.
 
 ## Site build-up
 
@@ -46,8 +46,7 @@ workflows or offline research scripts.
   progress occurs for two real-time seconds, protecting the loop from animation
   stalls or stuck AI actions.
 - Valid placements are enumerated with a gravity-aware feasibility check so the
-  AI only chooses moves reachable under natural falling motion; the same logic is
-  reused in the Python placement environment through cached bitboard searches.
+  AI only chooses moves reachable under natural falling motion.
 
 ## Training mechanics and theory
 
@@ -70,20 +69,6 @@ workflows or offline research scripts.
   encourage multi-line clears and penalise singles, yielding faster convergence
   towards policies that stack for tetrises.
 
-## Python toolkit
-
-- `src/tetris/placement_env.py` implements the same placement-level decision loop
-  found in the browser, including gravity-aware reachability, scoring, and
-  optional deterministic 7-bag generation for reproducible experiments.
-- `src/tetris/bitboard.py` accelerates placement enumeration by caching bitmask
-  representations of board states and precomputed rotation metadata, reducing the
-  cost of feasibility checks during search.
-- `src/tetris/gym_env.py` exposes a Gymnasium-compatible wrapper that converts
-  placement observations into flat vectors with optional action masks for RL
-  libraries such as Stable-Baselines3.
-- Example scripts in `examples/` demonstrate profiling of placement caches and a
-  PPO training stub that integrates with the Gym wrapper.
-
 ## Running the site
 
 1. Open `web/index.html` directly in any modern browser; no build or bundler is
@@ -95,7 +80,5 @@ workflows or offline research scripts.
 
 ## Further exploration
 
-- Install the Python dependencies from `requirements.txt` to experiment with the
-  Gym environment or integrate the engine into custom trainers.
 - The code is intentionally modular: extend the feature vector, plug in tf.js
   optimisers, or swap the fitness shaping logic to explore alternate heuristics.
