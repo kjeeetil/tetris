@@ -1846,6 +1846,74 @@ export function initTraining(game, renderer) {
     }
   }
 
+    function runHeadlessPlacement(){
+      return trainingProfiler.section('train.ai.headless_placement', () => {
+        if(!state.active){
+          return false;
+        }
+
+        const resetPlanState = () => {
+          train.ai.plan = null;
+          train.ai.staleMs = 0;
+          train.ai.lastSig = '';
+        };
+
+        const finalizePlacement = (piece, topOutLog) => {
+          state.active = piece;
+          lock(state.grid, piece);
+          state.pieces++;
+          if(state.pieces % 20 === 0){
+            state.level++;
+            state.gravity = gravityForLevel(state.level);
+            updateLevel();
+          }
+          const cleared = clearRows(state.grid);
+          if(cleared){
+            state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
+            updateScore();
+            recordClear(cleared);
+          }
+          const topOut = state.grid[0].some((v) => v !== 0);
+          if(topOut){
+            if(topOutLog){
+              log(topOutLog);
+            }
+            resetPlanState();
+            onGameOver();
+            return false;
+          }
+          spawn();
+          resetPlanState();
+          if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
+          return false;
+        };
+
+        const forceDropActive = () => {
+          while(canMove(state.grid, state.active, 0, 1)){
+            state.active.move(0, 1);
+          }
+          return finalizePlacement(state.active, 'AI: top-out after forced drop');
+        };
+
+        const plan = planForCurrentPiece();
+        train.ai.plan = plan || null;
+        if(!plan){
+          return forceDropActive();
+        }
+
+        const piece = new Piece(state.active.shape);
+        piece.rot = plan.targetRot;
+        piece.col = plan.targetCol;
+        piece.row = 0;
+        const landingRow = dropRowSim(state.grid, piece);
+        if(landingRow === null){
+          return forceDropActive();
+        }
+        piece.row = landingRow;
+        return finalizePlacement(piece, 'AI: top-out after drop');
+      });
+    }
+
     function runAiMicroStep(){
       return trainingProfiler.section('train.ai.micro_step', () => {
         if(!state.active){
@@ -1996,9 +2064,7 @@ export function initTraining(game, renderer) {
       const headlessTraining = train && train.enabled && train.visualizeBoard === false;
       if(headlessTraining){
         train.ai.acc = 0;
-        while(runAiMicroStep()){
-          // continue stepping until the micro step signals to pause
-        }
+        runHeadlessPlacement();
         return;
       }
 
