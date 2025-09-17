@@ -1518,14 +1518,15 @@
             const total = train && Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
             const hasHistory = total > 0;
             historySlider.min = 0;
-            historySlider.max = total;
+            const sliderMax = hasHistory ? total : 0;
+            historySlider.max = sliderMax;
             historySlider.step = 1;
             const selection = train && train.historySelection !== null ? Math.max(0, Math.min(total - 1, train.historySelection)) : null;
-            const sliderValue = (selection !== null && hasHistory) ? selection + 1 : 0;
+            const sliderValue = hasHistory ? (selection !== null ? selection : sliderMax) : 0;
             historySlider.value = String(sliderValue);
             historySlider.disabled = !hasHistory;
             if(hasHistory){
-              const fill = total > 0 ? Math.max(0, Math.min(100, (sliderValue / total) * 100)) : 0;
+              const fill = sliderMax > 0 ? Math.max(0, Math.min(100, (sliderValue / sliderMax) * 100)) : 0;
               const active = 'rgba(141, 225, 173, 0.85)';
               const base = 'rgba(94, 74, 227, 0.25)';
               historySlider.style.background = `linear-gradient(90deg, ${active} 0%, ${active} ${fill}%, ${base} ${fill}%, ${base} 100%)`;
@@ -1533,11 +1534,15 @@
               historySlider.style.background = 'linear-gradient(90deg, rgba(94, 74, 227, 0.35), rgba(141, 225, 173, 0.55))';
             }
 
+            const activeIndex = (!hasHistory || sliderValue >= sliderMax)
+              ? null
+              : Math.max(0, Math.min(total - 1, Math.round(sliderValue)));
+
             if(historyLabel){
-              if(!hasHistory || sliderValue === 0){
+              if(activeIndex === null){
                 historyLabel.textContent = 'Live (current training)';
               } else {
-                const entry = train.bestByGeneration[sliderValue - 1];
+                const entry = train.bestByGeneration[activeIndex];
                 historyLabel.textContent = `Gen ${entry.gen}`;
               }
             }
@@ -1545,7 +1550,7 @@
             if(historyMeta){
               if(!hasHistory){
                 historyMeta.textContent = 'Best-of-generation snapshots will appear as training progresses.';
-              } else if(sliderValue === 0){
+              } else if(activeIndex === null){
                 const latest = train.bestByGeneration[total - 1];
                 const info = [];
                 if(Number.isFinite(latest.gen)) info.push(`Latest stored: Gen ${latest.gen}`);
@@ -1553,7 +1558,7 @@
                 if(latest.modelType) info.push(latest.modelType.toUpperCase());
                 historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
               } else {
-                const entry = train.bestByGeneration[sliderValue - 1];
+                const entry = train.bestByGeneration[activeIndex];
                 const info = [];
                 if(entry.modelType) info.push(entry.modelType.toUpperCase());
                 if(Number.isFinite(entry.fitness)) info.push(`Fitness ${formatFitness(entry.fitness)}`);
@@ -3641,10 +3646,12 @@
               train.historySelection = null;
             } else {
               const raw = Number(historySlider.value);
-              if(!Number.isFinite(raw) || raw <= 0){
+              const total = train.bestByGeneration.length;
+              const sliderMax = total;
+              if(!Number.isFinite(raw) || raw >= sliderMax){
                 train.historySelection = null;
               } else {
-                const idx = Math.min(train.bestByGeneration.length - 1, Math.max(0, Math.round(raw) - 1));
+                const idx = Math.min(total - 1, Math.max(0, Math.round(raw)));
                 train.historySelection = idx;
               }
             }
