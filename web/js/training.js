@@ -1060,6 +1060,8 @@ export function initTraining(game, renderer) {
     };
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
+    const columnSeenScratch = typeof Uint8Array !== 'undefined' ? new Uint8Array(WIDTH) : new Array(WIDTH).fill(0);
+    const columnPrevStateScratch = typeof Uint8Array !== 'undefined' ? new Uint8Array(WIDTH) : new Array(WIDTH).fill(0);
     const featureScratch = new Float32Array(FEAT_DIM);
     const pooledPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0 };
@@ -1511,17 +1513,6 @@ export function initTraining(game, renderer) {
     const BOARD_AREA = WIDTH * HEIGHT;
     const BUMP_NORMALIZER = ((WIDTH - 1) * HEIGHT) || 1;
     const CONTACT_NORMALIZER = (BOARD_AREA * 2) || 1;
-    function columnHeights(grid, target){
-      const heights = target || Array(WIDTH).fill(0);
-      for(let c=0;c<WIDTH;c++){
-        let r=0;
-        while(r<HEIGHT && grid[r][c]===0) r++;
-        heights[c]=HEIGHT-r;
-      }
-      return heights;
-    }
-    function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
-    function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
     function wellMetrics(heights){
       let wellSum=0;
       let edgeWell=0;
@@ -1550,12 +1541,6 @@ export function initTraining(game, renderer) {
       const tetrisWell = (wellCount === 1) ? maxWellDepth : 0;
       return {wellSum, edgeWell: safeEdge, maxWellDepth, wellCount, tetrisWell};
     }
-    function contactArea(g){ let contact=0; for(let r=0;r<HEIGHT;r++){ for(let c=0;c<WIDTH;c++){ if(!g[r][c]) continue; // bottom
-          if(r===HEIGHT-1 || g[r+1][c]) contact++; // left
-          if(c>0 && g[r][c-1]) contact++; // right
-          if(c<WIDTH-1 && g[r][c+1]) contact++; } } return contact; }
-    function rowTransitions(g){ let t=0; for(let r=0;r<HEIGHT;r++){ let prev=0; for(let c=0;c<WIDTH;c++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
-    function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
     function simulateAfterPlacement(grid, shape, rot, col){
       return trainingProfiler.section('train.full.simulate', () => {
         const g = resetGridScratchFrom(grid);
@@ -1599,24 +1584,91 @@ export function initTraining(game, renderer) {
     }
     function featuresFromGrid(g, lines){
       return trainingProfiler.section('train.full.features', () => {
-        const h = columnHeights(g, columnHeightScratch);
-        const Holes = countHoles(g);
-        const Bump = bumpiness(h);
-        let maxH = 0;
-        let aggH = 0;
-        for(let i=0; i<WIDTH; i++){
-          const v = h[i] || 0;
-          aggH += v;
-          if(v > maxH) maxH = v;
+        const heights = columnHeightScratch;
+        heights.fill(0);
+        columnSeenScratch.fill(0);
+        columnPrevStateScratch.fill(0);
+
+        let holes = 0;
+        let rowTrans = 0;
+        let colTrans = 0;
+        let contact = 0;
+
+        for(let r = 0; r < HEIGHT; r++){
+          const row = g[r];
+          const nextRow = r + 1 < HEIGHT ? g[r + 1] : null;
+          let prevRowVal = 0;
+          for(let c = 0; c < WIDTH; c++){
+            const filled = row[c] ? 1 : 0;
+            if(filled !== prevRowVal){
+              rowTrans += 1;
+              prevRowVal = filled;
+            }
+            if(filled !== columnPrevStateScratch[c]){
+              colTrans += 1;
+              columnPrevStateScratch[c] = filled;
+            }
+            if(filled){
+              if(heights[c] === 0){
+                heights[c] = HEIGHT - r;
+              }
+              columnSeenScratch[c] = 1;
+              if(r === HEIGHT - 1 || (nextRow && nextRow[c])){
+                contact += 1;
+              }
+              if(c > 0 && row[c - 1]){
+                contact += 1;
+              }
+              if(c < WIDTH - 1 && row[c + 1]){
+                contact += 1;
+              }
+            } else if(columnSeenScratch[c]){
+              holes += 1;
+            }
+          }
+          if(prevRowVal !== 0){
+            rowTrans += 1;
+          }
         }
-        let {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
-        if(Holes > 0){
+
+        for(let c = 0; c < WIDTH; c++){
+          if(columnPrevStateScratch[c] !== 0){
+            colTrans += 1;
+          }
+        }
+
+        let aggregateHeight = 0;
+        let maxHeight = 0;
+        for(let c = 0; c < WIDTH; c++){
+          const h = heights[c];
+          aggregateHeight += h;
+          if(h > maxHeight) maxHeight = h;
+        }
+
+        let bump = 0;
+        for(let c = 0; c < WIDTH - 1; c++){
+          bump += Math.abs(heights[c] - heights[c + 1]);
+        }
+
+        let { wellSum, edgeWell, tetrisWell } = wellMetrics(heights);
+        if(holes > 0){
           tetrisWell = 0;
         }
-        const Contact = contactArea(g);
-        const rT = rowTransitions(g);
-        const cT = colTransitions(g);
-        return fillFeatureVector(featureScratch, lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+
+        return fillFeatureVector(
+          featureScratch,
+          lines,
+          holes,
+          bump,
+          maxHeight,
+          wellSum,
+          edgeWell,
+          tetrisWell,
+          contact,
+          rowTrans,
+          colTrans,
+          aggregateHeight
+        );
       });
     }
 
