@@ -1042,7 +1042,7 @@
         function draw(grid, active){
           try {
             if(window.__train && window.__train.enabled && window.__train.visualizeBoard === false){
-              return; // skip board rendering in training fast mode
+              return; // skip board rendering when training visualization is disabled
             }
           } catch(_) {}
           ctx.fillStyle = BOARD_BG;
@@ -1075,7 +1075,7 @@
         function drawNext(shape){
           try {
             if(window.__train && window.__train.enabled && window.__train.visualizeBoard === false){
-              return; // skip preview rendering in training fast mode
+              return; // skip preview rendering when training visualization is disabled
             }
           } catch(_) {}
           const W = preview.width, H = preview.height;
@@ -2146,7 +2146,6 @@
             reevalTarget: -1,
             // Visualization + speed controls for training
             visualizeBoard: false,     // if false: skip board/preview rendering
-            fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
             currentWeightsOverride: null,
             ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
             performanceSummary: [],
@@ -3136,23 +3135,18 @@
             if(!state.active){ return; }
             if(!canMove(state.grid, state.active, 0, 0)) { log('AI: spawn blocked -> game over'); onGameOver(); return; }
 
-            const fastMode = train && train.enabled && train.visualizeBoard === false;
-            const __limit = fastMode ? train.fastStepsPerFrame : MAX_AI_STEPS_PER_FRAME;
-            let __aiSteps = 0;
-
-            if(fastMode){
+            const headlessTraining = train && train.enabled && train.visualizeBoard === false;
+            if(headlessTraining){
               train.ai.acc = 0;
-              while(__aiSteps < __limit){
-                __aiSteps += 1;
-                if(!runAiMicroStep()){
-                  return;
-                }
+              while(runAiMicroStep()){
+                // continue stepping until the micro step signals to pause
               }
               return;
             }
 
+            let __aiSteps = 0;
             train.ai.acc += dt;
-            while (train.ai.acc >= AI_STEP_MS && __aiSteps < __limit) {
+            while (train.ai.acc >= AI_STEP_MS && __aiSteps < MAX_AI_STEPS_PER_FRAME) {
               train.ai.acc -= AI_STEP_MS;
               __aiSteps += 1;
               if(!runAiMicroStep()){
