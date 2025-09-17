@@ -203,6 +203,7 @@ export function initTraining(game, renderer) {
       'Triple Clear',
       'Tetris',
       'Holes',
+      'New Holes',
       'Bumpiness',
       'Max Height',
       'Well Sum',
@@ -297,8 +298,8 @@ export function initTraining(game, renderer) {
     }
 
     // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
-    // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
-    const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
+    // Order: [lines, lines2, is1, is2, is3, is4, holes, newHoles, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
+    const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.6, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
     function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
@@ -1575,7 +1576,7 @@ export function initTraining(game, renderer) {
         return simulateResultScratch;
       });
     }
-    function fillFeatureVector(target, lines, holes, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
+    function fillFeatureVector(target, lines, holes, newHoles, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
       let cleared = (typeof lines === 'number' && Number.isFinite(lines)) ? lines : 0;
       if(cleared < 0) cleared = 0;
       target[0] = cleared / 4;
@@ -1586,21 +1587,24 @@ export function initTraining(game, renderer) {
       target[5] = cleared === 4 ? 1 : 0;
       const area = BOARD_AREA || 1;
       target[6] = holes / area;
-      target[7] = bump / BUMP_NORMALIZER;
-      target[8] = HEIGHT ? maxHeight / HEIGHT : 0;
-      target[9] = wellSum / area;
-      target[10] = HEIGHT ? edgeWell / HEIGHT : 0;
-      target[11] = HEIGHT ? tetrisWell / HEIGHT : 0;
-      target[12] = contact / CONTACT_NORMALIZER;
-      target[13] = rowTransitions / area;
-      target[14] = colTransitions / area;
-      target[15] = aggregateHeight / area;
+      target[7] = newHoles / area;
+      target[8] = bump / BUMP_NORMALIZER;
+      target[9] = HEIGHT ? maxHeight / HEIGHT : 0;
+      target[10] = wellSum / area;
+      target[11] = HEIGHT ? edgeWell / HEIGHT : 0;
+      target[12] = HEIGHT ? tetrisWell / HEIGHT : 0;
+      target[13] = contact / CONTACT_NORMALIZER;
+      target[14] = rowTransitions / area;
+      target[15] = colTransitions / area;
+      target[16] = aggregateHeight / area;
       return target;
     }
-    function featuresFromGrid(g, lines){
+    function featuresFromGrid(g, lines, prevHoleCount = null){
       return trainingProfiler.section('train.full.features', () => {
         const h = columnHeights(g, columnHeightScratch);
         const Holes = countHoles(g);
+        const baseHoleCount = Number.isFinite(prevHoleCount) ? Math.max(0, prevHoleCount) : null;
+        const NewHoles = baseHoleCount === null ? 0 : Math.max(0, Holes - baseHoleCount);
         const Bump = bumpiness(h);
         let maxH = 0;
         let aggH = 0;
@@ -1616,14 +1620,15 @@ export function initTraining(game, renderer) {
         const Contact = contactArea(g);
         const rT = rowTransitions(g);
         const cT = colTransitions(g);
-        return fillFeatureVector(featureScratch, lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+        return fillFeatureVector(featureScratch, lines, Holes, NewHoles, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
       });
     }
 
     function featuresForPlacement(grid, shape, rot, col){
       const sim = simulateAfterPlacement(grid, shape, rot, col);
       if(!sim) return null;
-      const feats = featuresFromGrid(sim.grid, sim.lines);
+      const baseHoles = countHoles(grid);
+      const feats = featuresFromGrid(sim.grid, sim.lines, baseHoles);
       placementScratch.lines = sim.lines;
       placementScratch.grid = sim.grid;
       placementScratch.feats = feats;
@@ -1729,13 +1734,14 @@ export function initTraining(game, renderer) {
         if(acts.length === 0) return null;
         let best = null;
         let bestScore = -Infinity;
+        const priorHoles = countHoles(grid);
         // Evaluate each valid placement exactly once.
         for(const a of acts){
           const sim = simulateAfterPlacement(grid, curShape, a.rot, a.col);
           if(!sim) continue;
           const lines = sim.lines;
           const dropRow = sim.dropRow;
-          const baseFeats = featuresFromGrid(sim.grid, lines);
+          const baseFeats = featuresFromGrid(sim.grid, lines, priorHoles);
           const score = scoreFeats(weights, baseFeats);
           a.dropRow = dropRow;
           a.lines = lines;

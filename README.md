@@ -52,11 +52,11 @@ the codebase focused on the shipped experience.
 
 - Each candidate move is scored by simulating the resulting board and computing
   handcrafted features: cleared-line count, indicator flags for singles through
-  tetrises, normalized hole count, column bumpiness, maximum stack height,
-  well depth, edge wells, contact area, row/column transitions, and aggregate
-  height.
+  tetrises, normalized hole count, newly created holes, column bumpiness,
+  maximum stack height, well depth, edge wells, contact area, row/column
+  transitions, and aggregate height.
 - Policies can be linear or a tiny one-hidden-layer MLP (ReLU activations). Both
-  operate on the 15-dimensional feature vector; the MLP runs with hand-written
+  operate on the 17-dimensional feature vector; the MLP runs with hand-written
   matrix multiplies to avoid tf.js overhead during search.
 - A shallow beam-search lookahead (depth 1 with next-piece preview) combines the
   immediate feature score with a discounted estimate (`λ = 0.7`) of the best
