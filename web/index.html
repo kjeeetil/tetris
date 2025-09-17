@@ -1370,8 +1370,6 @@
           ];
           const FEAT_DIM = FEATURE_NAMES.length;
           const AI_STEP_MS = 28; // ms between AI animation steps
-          const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
-          const LOOKAHEAD_BEAM = 6; // evaluate next-piece lookahead only for top-K first moves
           const SCORE_WEIGHT = 3.0; // emphasize final score in fitness
 
           // MLP architecture (when selected)
@@ -3159,51 +3157,24 @@
             return outputScratch[0] + bias;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
-          function choosePlacement2(weights, grid, curShape, nextShape){
-            return trainingProfiler.section('train.plan.full.lookahead', () => {
+          function choosePlacement2(weights, grid, curShape){
+            return trainingProfiler.section('train.plan.full.single', () => {
               const acts = enumeratePlacements(grid, curShape);
               if(acts.length === 0) return null;
-              let best = acts[0];
-              let bestS = -Infinity;
-              const sims = [];
-              // precompute first-ply sims and scores
+              let bestPlacement = null;
+              let bestScore = -Infinity;
+              // Single-ply evaluation: score each legal placement once.
               for(const a of acts){
-                const sim = simulateAfterPlacement(grid, curShape, a.rot, a.col);
-                if(!sim) continue;
-                const baseFeats = featuresFromGrid(sim.grid, sim.lines);
-                const s1 = scoreFeats(weights, baseFeats);
-                sims.push({ a, sim, s1 });
-              }
-              if(sims.length === 0) return null;
-              // Beam: consider lookahead only for top-K first-ply moves
-              sims.sort((u, v) => v.s1 - u.s1);
-              const K = Math.min(LOOKAHEAD_BEAM, sims.length);
-              const acts2Cache = new WeakMap();
-              for(let i=0; i<sims.length; i++){
-                let s = sims[i].s1;
-                if(nextShape && i < K){
-                  let acts2 = acts2Cache.get(sims[i].sim.grid);
-                  if(!acts2){
-                    acts2 = enumeratePlacements(sims[i].sim.grid, nextShape);
-                    acts2Cache.set(sims[i].sim.grid, acts2);
-                  }
-                  if(acts2.length > 0){
-                    let best2 = -Infinity;
-                    for(const a2 of acts2){
-                      const ff2 = featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col);
-                      if(!ff2) continue;
-                      const s2 = scoreFeats(weights, ff2.feats);
-                      if(s2 > best2) best2 = s2;
-                    }
-                    if(Number.isFinite(best2)) s += LOOKAHEAD_LAMBDA * best2;
-                  }
-                }
-                if(s > bestS){
-                  bestS = s;
-                  best = sims[i].a;
+                const result = featuresForPlacement(grid, curShape, a.rot, a.col);
+                if(!result) continue;
+                const score = scoreFeats(weights, result.feats);
+                if(!Number.isFinite(score)) continue;
+                if(score > bestScore){
+                  bestScore = score;
+                  bestPlacement = a;
                 }
               }
-              return best;
+              return bestPlacement;
             });
           }
           function planForCurrentPieceHeadless(weights){
@@ -3213,61 +3184,26 @@
               const board = createHeadlessBoard(state.grid);
               const placements = headlessEnumerate(board, shape);
               if(!placements.length) return null;
-              const sims = [];
+              let bestPlacement = null;
+              let bestScore = -Infinity;
               for(const placement of placements){
                 const sim = headlessApplyPlacement(board, shape, placement);
                 if(!sim) continue;
                 const feats = featuresFromHeadlessBoard(sim.board, sim.lines);
-                sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
-              }
-              if(!sims.length) return null;
-              sims.sort((a,b) => b.s1 - a.s1);
-              const nextShape = state.next;
-              const beam = Math.min(LOOKAHEAD_BEAM, sims.length);
-              const acts2Cache = typeof WeakMap === 'function' ? new WeakMap() : new Map();
-              let best = null;
-              let bestScore = -Infinity;
-              for(let i=0; i<sims.length; i++){
-                let score = sims[i].s1;
-                if(nextShape && i < beam){
-                  let acts2 = acts2Cache.get(sims[i].sim.board);
-                  if(!acts2){
-                    acts2 = headlessEnumerate(sims[i].sim.board, nextShape);
-                    acts2Cache.set(sims[i].sim.board, acts2);
-                  }
-                  if(acts2 && acts2.length){
-                    let best2 = -Infinity;
-                    for(const placement2 of acts2){
-                      const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
-                      if(!sim2) continue;
-                      const feats2 = featuresFromHeadlessBoard(sim2.board, sim2.lines);
-                      const score2 = scoreFeats(weights, feats2);
-                      if(score2 > best2) best2 = score2;
-                    }
-                    if(Number.isFinite(best2)){
-                      score += LOOKAHEAD_LAMBDA * best2;
-                    }
-                  }
-                }
-                if(!Number.isFinite(score)){
-                  continue;
-                }
-                if(score <= bestScore){
-                  continue;
-                }
-                const placementCandidate = sims[i].placement;
-                if(!pathClear(state.grid, shape, placementCandidate.rotation, placementCandidate.column, state.level)){
+                const score = scoreFeats(weights, feats);
+                // Single-ply evaluation mirrors the on-screen planner.
+                if(!Number.isFinite(score) || score <= bestScore) continue;
+                if(!pathClear(state.grid, shape, placement.rotation, placement.column, state.level)){
                   continue;
                 }
                 bestScore = score;
-                best = sims[i];
+                bestPlacement = placement;
               }
-              if(!best) return null;
-              const placement = best.placement;
+              if(!bestPlacement) return null;
               const len = SHAPES[shape].length;
               const cur = state.active.rot % len;
-              const needRot = (placement.rotation - cur + len) % len;
-              return { targetRot: placement.rotation, targetCol: placement.column, rotLeft: needRot, stage: 'rotate' };
+              const needRot = (bestPlacement.rotation - cur + len) % len;
+              return { targetRot: bestPlacement.rotation, targetCol: bestPlacement.column, rotLeft: needRot, stage: 'rotate' };
             });
           }
 
@@ -3284,8 +3220,9 @@
                   console.warn(warnMsg);
                 }
               }
+              // On-screen planner also performs a single-ply placement evaluation.
               const placement = trainingProfiler.section('train.plan.full', () =>
-                choosePlacement2(w, state.grid, state.active.shape, state.next),
+                choosePlacement2(w, state.grid, state.active.shape),
               );
               if(!placement){
                 return null;
