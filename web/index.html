@@ -2048,6 +2048,14 @@
           function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
           const HEADLESS_PROFILES = {};
           const HEADLESS_PROFILE_LOOKUP = {};
+          const HEADLESS_POPCOUNT = (() => {
+            const size = 1 << WIDTH;
+            const table = new Uint8Array(size);
+            for (let i = 1; i < size; i++) {
+              table[i] = table[i >> 1] + (i & 1);
+            }
+            return table;
+          })();
           (function initHeadlessProfiles(){
             const shapes = Object.keys(SHAPES);
             for(const shape of shapes){
@@ -2131,6 +2139,68 @@
             }
             return heights;
           }
+          function countHolesFromRows(rows, heights){
+            let holes = 0;
+            for(let c=0; c<WIDTH; c++){
+              const height = heights[c] || 0;
+              const startRow = Math.max(0, HEIGHT - height);
+              for(let r = startRow; r < HEIGHT; r++){
+                const rowMask = rows[r] || 0;
+                if(!(rowMask & (1 << c))){
+                  holes += 1;
+                }
+              }
+            }
+            return holes;
+          }
+          function contactAreaFromRows(rows){
+            let contact = 0;
+            for(let r=0; r<HEIGHT; r++){
+              const mask = rows[r] || 0;
+              if(!mask) continue;
+              if(r === HEIGHT - 1){
+                contact += HEADLESS_POPCOUNT[mask];
+              } else {
+                contact += HEADLESS_POPCOUNT[mask & rows[r+1]];
+              }
+              const horizontal = mask & (mask << 1);
+              if(horizontal){
+                contact += HEADLESS_POPCOUNT[horizontal] * 2;
+              }
+            }
+            return contact;
+          }
+          function rowTransitionsFromRows(rows){
+            let transitions = 0;
+            for(let r=0; r<HEIGHT; r++){
+              const mask = rows[r] || 0;
+              if(!mask) continue;
+              const starts = mask & ~(mask << 1);
+              if(starts){
+                transitions += HEADLESS_POPCOUNT[starts] * 2;
+              }
+            }
+            return transitions;
+          }
+          function columnTransitionsFromRows(rows){
+            let transitions = 0;
+            for(let c=0; c<WIDTH; c++){
+              const bit = 1 << c;
+              let prev = 0;
+              for(let r=0; r<HEIGHT; r++){
+                const rowMask = rows[r] || 0;
+                const cur = (rowMask & bit) ? 1 : 0;
+                if(cur !== prev){
+                  transitions += 1;
+                  prev = cur;
+                }
+              }
+              if(prev !== 0){
+                transitions += 1;
+              }
+            }
+            return transitions;
+          }
           function createHeadlessBoard(grid){
             const rows = gridToRowMasks(grid);
             return { rows, columnHeights: columnHeightsFromRows(rows) };
@@ -2176,18 +2246,6 @@
               }
             }
             return placements;
-          }
-          function rowsToGrid(rows){
-            const grid = new Array(HEIGHT);
-            for(let r=0; r<HEIGHT; r++){
-              const mask = rows[r];
-              const row = new Array(WIDTH);
-              for(let c=0; c<WIDTH; c++){
-                row[c] = (mask >> c) & 1 ? 1 : 0;
-              }
-              grid[r] = row;
-            }
-            return grid;
           }
           function headlessApplyPlacement(board, shape, placement){
             const lookup = HEADLESS_PROFILE_LOOKUP[shape];
@@ -2303,6 +2361,9 @@
           }
           function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
           function clearRowsSim(grid){ let remaining = grid.filter(row => row.some(v => v===0)); const cleared = HEIGHT - remaining.length; while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0)); for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r]; return cleared; }
+          const BOARD_AREA = WIDTH * HEIGHT;
+          const BUMP_NORMALIZER = ((WIDTH - 1) * HEIGHT) || 1;
+          const CONTACT_NORMALIZER = (BOARD_AREA * 2) || 1;
           function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
           function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
           function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
@@ -2341,11 +2402,69 @@
           function rowTransitions(g){ let t=0; for(let r=0;r<HEIGHT;r++){ let prev=0; for(let c=0;c<WIDTH;c++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function simulateAfterPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); return {grid:g, lines}; }
-          function featuresFromGrid(g, lines){ const h=columnHeights(g); const Holes=countHoles(g); const Bump=bumpiness(h); const maxH=Math.max(...h); const {wellSum, edgeWell, tetrisWell}=wellMetrics(h); const Contact=contactArea(g); const rT=rowTransitions(g); const cT=colTransitions(g); const aggH=h.reduce((a,b)=>a+b,0);
-            // Scaling
-            const sLines = lines/4; const sLines2=(lines*lines)/16; const sHoles=Holes/(WIDTH*HEIGHT); const sBump=Bump/((WIDTH-1)*HEIGHT); const sMaxH=maxH/HEIGHT; const sWell=wellSum/(WIDTH*HEIGHT); const sEdge=edgeWell/HEIGHT; const sTetris=tetrisWell/HEIGHT; const sContact=Contact/(WIDTH*HEIGHT*2); const sRT=rT/(WIDTH*HEIGHT); const sCT=cT/(WIDTH*HEIGHT); const sAgg=aggH/(WIDTH*HEIGHT);
-            const is1=lines===1?1:0, is2=lines===2?1:0, is3=lines===3?1:0, is4=lines===4?1:0;
-            return [sLines, sLines2, is1, is2, is3, is4, sHoles, sBump, sMaxH, sWell, sEdge, sTetris, sContact, sRT, sCT, sAgg]; }
+          function fillFeatureVector(target, lines, holes, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
+            let cleared = (typeof lines === 'number' && Number.isFinite(lines)) ? lines : 0;
+            if(cleared < 0) cleared = 0;
+            target[0] = cleared / 4;
+            target[1] = (cleared * cleared) / 16;
+            target[2] = cleared === 1 ? 1 : 0;
+            target[3] = cleared === 2 ? 1 : 0;
+            target[4] = cleared === 3 ? 1 : 0;
+            target[5] = cleared === 4 ? 1 : 0;
+            const area = BOARD_AREA || 1;
+            target[6] = holes / area;
+            target[7] = bump / BUMP_NORMALIZER;
+            target[8] = HEIGHT ? maxHeight / HEIGHT : 0;
+            target[9] = wellSum / area;
+            target[10] = HEIGHT ? edgeWell / HEIGHT : 0;
+            target[11] = HEIGHT ? tetrisWell / HEIGHT : 0;
+            target[12] = contact / CONTACT_NORMALIZER;
+            target[13] = rowTransitions / area;
+            target[14] = colTransitions / area;
+            target[15] = aggregateHeight / area;
+            return target;
+          }
+          function featuresFromGrid(g, lines){
+            const h = columnHeights(g);
+            const Holes = countHoles(g);
+            const Bump = bumpiness(h);
+            let maxH = 0;
+            let aggH = 0;
+            for(let i=0; i<h.length; i++){
+              const v = h[i] || 0;
+              aggH += v;
+              if(v > maxH) maxH = v;
+            }
+            const {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
+            const Contact = contactArea(g);
+            const rT = rowTransitions(g);
+            const cT = colTransitions(g);
+            return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+          }
+          function featuresFromHeadlessBoard(board, lines){
+            if(!board || !board.rows || board.rows.length !== HEIGHT){
+              return fillFeatureVector(new Float64Array(FEAT_DIM), lines, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            }
+            const rows = board.rows;
+            let heights = board.columnHeights;
+            if(!Array.isArray(heights) || heights.length !== WIDTH){
+              heights = columnHeightsFromRows(rows);
+            }
+            const Holes = countHolesFromRows(rows, heights);
+            const Bump = bumpiness(heights);
+            let maxH = 0;
+            let aggH = 0;
+            for(let i=0; i<heights.length; i++){
+              const v = heights[i] || 0;
+              aggH += v;
+              if(v > maxH) maxH = v;
+            }
+            const {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
+            const Contact = contactAreaFromRows(rows);
+            const rT = rowTransitionsFromRows(rows);
+            const cT = columnTransitionsFromRows(rows);
+            return fillFeatureVector(new Float64Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+          }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
@@ -2416,7 +2535,7 @@
             for(const placement of placements){
               const sim = headlessApplyPlacement(board, shape, placement);
               if(!sim) continue;
-              const feats = featuresFromGrid(rowsToGrid(sim.board.rows), sim.lines);
+              const feats = featuresFromHeadlessBoard(sim.board, sim.lines);
               sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
             }
             if(!sims.length) return null;
@@ -2439,7 +2558,7 @@
                   for(const placement2 of acts2){
                     const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
                     if(!sim2) continue;
-                    const feats2 = featuresFromGrid(rowsToGrid(sim2.board.rows), sim2.lines);
+                    const feats2 = featuresFromHeadlessBoard(sim2.board, sim2.lines);
                     const score2 = scoreFeats(weights, feats2);
                     if(score2 > best2) best2 = score2;
                   }
