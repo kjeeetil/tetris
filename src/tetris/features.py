@@ -161,6 +161,7 @@ def features_from_grid(grid: GridLike, lines: int) -> list[float]:
     bump = bumpiness(heights)
     max_height = max(heights) if heights else 0
     wells = well_metrics(heights)
+    tetris_well_depth = wells.tetris_well if holes == 0 else 0
     contact = contact_area(grid)
     row_trans = row_transitions(grid)
     col_trans = col_transitions(grid)
@@ -175,7 +176,7 @@ def features_from_grid(grid: GridLike, lines: int) -> list[float]:
     s_max_h = max_height / HEIGHT if HEIGHT else 0.0
     s_well = wells.well_sum / denom_area
     s_edge = wells.edge_well / HEIGHT if HEIGHT else 0.0
-    s_tetris = wells.tetris_well / HEIGHT if HEIGHT else 0.0
+    s_tetris = tetris_well_depth / HEIGHT if HEIGHT else 0.0
     s_contact = contact / (WIDTH * HEIGHT * 2) if WIDTH and HEIGHT else 0.0
     s_row = row_trans / denom_area
     s_col = col_trans / denom_area
