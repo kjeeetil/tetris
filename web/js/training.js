@@ -262,9 +262,39 @@ export function initTraining(game, renderer) {
     // Numeric dtype for weight arrays
     const HAS_F16 = (typeof Float16Array !== 'undefined');
     const DEFAULT_DTYPE = HAS_F16 ? 'f16' : 'f32';
-    function allocWeights(n, dtype){ return (dtype==='f16' && HAS_F16) ? new Float16Array(n) : new Float32Array(n); }
-    // Safe default allocator before `train` exists (avoid TDZ issues)
-    let newWeightArray = (n) => allocWeights(n, DEFAULT_DTYPE);
+    let dtypePreference = DEFAULT_DTYPE;
+    function allocFloat32(n){ return new Float32Array(n); }
+    function copyValues(source, target){
+      const src = source || [];
+      const srcLength = (typeof src.length === 'number') ? src.length : 0;
+      const limit = Math.min(target.length, srcLength);
+      for(let i = 0; i < limit; i++){
+        const value = src[i];
+        target[i] = Number.isFinite(value) ? value : 0;
+      }
+      for(let i = limit; i < target.length; i++){
+        target[i] = 0;
+      }
+    }
+    function createFloat32ArrayFrom(values){
+      if(!values || !values.length){
+        return new Float32Array(0);
+      }
+      const arr = allocFloat32(values.length);
+      copyValues(values, arr);
+      return arr;
+    }
+    function createDisplayView(master, existing){
+      if(!master){
+        return null;
+      }
+      if(dtypePreference !== 'f16' || !HAS_F16){
+        return master;
+      }
+      const view = existing && existing.length === master.length ? existing : new Float16Array(master.length);
+      copyValues(master, view);
+      return view;
+    }
 
     // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
     // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
@@ -272,7 +302,7 @@ export function initTraining(game, renderer) {
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
     function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
-    function makeTyped(vals){ const arr = newWeightArray(vals.length); for(let i=0;i<vals.length;i++) arr[i]=vals[i]; return arr; }
+    function makeStatsArray(vals){ return createFloat32ArrayFrom(vals); }
     function cloneWeightsArray(source){
       if(!source || !source.length){
         return new Float64Array(0);
@@ -287,17 +317,17 @@ export function initTraining(game, renderer) {
       if(model === 'mlp'){
         const dim = mlpParamDim(layers);
         const base = new Array(dim).fill(0.0);
-        return makeTyped(base);
+        return makeStatsArray(base);
       }
-      return makeTyped(INITIAL_MEAN_LINEAR_BASE);
+      return makeStatsArray(INITIAL_MEAN_LINEAR_BASE);
     }
     function initialStd(model, layers = mlpHiddenLayers){
       if(model === 'mlp'){
         const dim = mlpParamDim(layers);
         const base = new Array(dim).fill(0.2);
-        return makeTyped(base);
+        return makeStatsArray(base);
       }
-      return makeTyped(INITIAL_STD_LINEAR_BASE);
+      return makeStatsArray(INITIAL_STD_LINEAR_BASE);
     }
 
     function describeModelArchitecture(){
@@ -420,6 +450,7 @@ export function initTraining(game, renderer) {
         gen: snapshot.gen,
         fitness: snapshot.fitness,
         modelType: snapshot.modelType,
+        dtype: snapshot.dtype || train.dtype || DEFAULT_DTYPE,
         layerSizes: Array.isArray(snapshot.layerSizes) ? snapshot.layerSizes.slice() : null,
         weights: snapshot.weights,
         scoreIndex: Number.isFinite(snapshot.scoreIndex) ? snapshot.scoreIndex : null,
@@ -586,11 +617,8 @@ export function initTraining(game, renderer) {
         throw new Error(`Expected ${expectedDim} weights for ${modelType.toUpperCase()} model, received ${weights.length}`);
       }
 
-      const typed = allocWeights(expectedDim, dtype);
-      for(let i = 0; i < expectedDim; i++){
-        const val = weights[i];
-        typed[i] = Number.isFinite(val) ? val : 0;
-      }
+      const masterWeights = allocFloat32(expectedDim);
+      copyValues(weights, masterWeights);
 
       const wasRunning = train && train.enabled;
       if(wasRunning){
@@ -608,19 +636,20 @@ export function initTraining(game, renderer) {
       train.modelType = modelType;
       currentModelType = modelType;
       train.dtype = dtype;
+      dtypePreference = dtype;
 
       resetTraining();
       syncMlpConfigVisibility();
 
-      train.mean = typed;
+      train.mean = masterWeights;
+      train.meanView = createDisplayView(train.mean, train.meanView);
       train.std = initialStd(modelType, mlpHiddenLayers);
+      train.stdView = createDisplayView(train.std, train.stdView);
       train.currentWeightsOverride = null;
       resetAiPlanState();
 
-      const bestCopy = new Float64Array(typed.length);
-      for(let i = 0; i < typed.length; i++){
-        bestCopy[i] = typed[i];
-      }
+      const bestCopy = new Float64Array(masterWeights.length);
+      copyValues(masterWeights, bestCopy);
       train.bestEverWeights = bestCopy;
       train.bestEverFitness = Number.isFinite(snapshot.bestEverFitness) ? snapshot.bestEverFitness : -Infinity;
       const snapGen = Number(snapshot.generation);
@@ -631,7 +660,7 @@ export function initTraining(game, renderer) {
       updateTrainStatus();
 
       const origin = context && context.fileName ? ` from ${context.fileName}` : '';
-      log(`Loaded ${modelType.toUpperCase()} weights (${typed.length} params)${origin}.`);
+      log(`Loaded ${modelType.toUpperCase()} weights (${masterWeights.length} params)${origin}.`);
       if(wasRunning){
         log('Training paused. Restart AI training to continue with imported weights.');
       }
@@ -1006,6 +1035,7 @@ export function initTraining(game, renderer) {
       minStd: 0.05,
       maxStd: 3.0,
       candWeights: [],
+      candWeightViews: [],
       candScores: [],
       candIndex: -1,
       // Visualization + speed controls for training
@@ -1025,6 +1055,8 @@ export function initTraining(game, renderer) {
       scorePlotUpdateFreq: 5,
       scorePlotPending: 0,
       scorePlotAxisMax: 0,
+      meanView: null,
+      stdView: null,
     };
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
@@ -1034,11 +1066,41 @@ export function initTraining(game, renderer) {
     const placementScratch = { feats: featureScratch, lines: 0, grid: gridScratch };
     window.__train = train;
     // After `train` exists, honor train.dtype for future allocations
-    newWeightArray = (n) => allocWeights(n, (train && train.dtype) ? train.dtype : DEFAULT_DTYPE);
+    dtypePreference = train.dtype || DEFAULT_DTYPE;
+    train.meanView = createDisplayView(train.mean, train.meanView);
+    train.stdView = createDisplayView(train.std, train.stdView);
+    train.candWeightViews = [];
 
     train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
     train.scorePlotPending = 0;
     syncHistoryControls();
+
+    function getDisplayWeightsForUi(weights, options = {}){
+      if(!weights) return weights;
+      const dtype = options.dtype || dtypePreference;
+      if(dtype !== 'f16' || !HAS_F16){
+        return weights;
+      }
+      if(weights === train.mean && train.meanView){
+        return train.meanView;
+      }
+      if(weights === train.std && train.stdView){
+        return train.stdView;
+      }
+      if(Array.isArray(train.candWeights) && Array.isArray(train.candWeightViews)){
+        const idx = train.candWeights.indexOf(weights);
+        if(idx >= 0 && train.candWeightViews[idx]){
+          return train.candWeightViews[idx];
+        }
+      }
+      const length = (typeof weights.length === 'number') ? weights.length : 0;
+      if(length === 0){
+        return weights;
+      }
+      const view = new Float16Array(length);
+      copyValues(weights, view);
+      return view;
+    }
 
     function updateTrainStatus(){
       if(trainStatus){
@@ -1091,8 +1153,14 @@ export function initTraining(game, renderer) {
           architectureEl.textContent = describeModelArchitecture();
         }
       }
+      let displayWeights = currentWeights;
+      if(snapshot && currentWeights){
+        displayWeights = getDisplayWeightsForUi(currentWeights, { dtype: snapshot.dtype || dtypePreference });
+      } else if(currentWeights){
+        displayWeights = getDisplayWeightsForUi(currentWeights);
+      }
       try {
-        renderNetworkD3(currentWeights, overrideLayers);
+        renderNetworkD3(displayWeights, overrideLayers);
       } catch (_) {
         /* ignore render failures */
       }
@@ -1114,20 +1182,36 @@ export function initTraining(game, renderer) {
     function samplePopulation(){
       const dim = paramDim();
       train.candWeights = [];
-      for(let i=0; i<train.popSize; i++){
-        const w = newWeightArray(dim);
-        for(let d=0; d<dim; d++){
+      train.candWeightViews = [];
+      const useLowPrecisionView = dtypePreference === 'f16' && HAS_F16;
+      for(let i = 0; i < train.popSize; i++){
+        const master = allocFloat32(dim);
+        for(let d = 0; d < dim; d++){
           const mean = (train.mean && Number.isFinite(train.mean[d])) ? train.mean[d] : 0;
           const rawStd = (train.std && Number.isFinite(train.std[d])) ? train.std[d] : 0;
           const scale = Math.max(train.minStd, Math.abs(rawStd));
-          w[d] = mean + randn() * scale;
+          master[d] = mean + randn() * scale;
         }
-        train.candWeights.push(w);
+        let view = master;
+        if(useLowPrecisionView){
+          view = new Float16Array(dim);
+          copyValues(master, view);
+        }
+        train.candWeights.push(master);
+        train.candWeightViews.push(view);
       }
       // Ensure the very first attempt (gen 0, cand 0) uses the mean weights (intentionally poor)
       if(train.gen === 0 && train.candWeights.length > 0){
-        const dim0 = train.mean.length; const m = newWeightArray(dim0); for(let d=0; d<dim0; d++) m[d]=train.mean[d];
-        train.candWeights[0] = m;
+        const dim0 = train.mean.length;
+        const masterMean = allocFloat32(dim0);
+        copyValues(train.mean, masterMean);
+        let view = masterMean;
+        if(dtypePreference === 'f16' && HAS_F16){
+          view = new Float16Array(dim0);
+          copyValues(masterMean, view);
+        }
+        train.candWeights[0] = masterMean;
+        train.candWeightViews[0] = view;
       }
       train.candScores = new Array(train.popSize).fill(0);
       train.candIndex = 0;
@@ -1188,8 +1272,11 @@ export function initTraining(game, renderer) {
       // Reset mean/std based on selected model
       train.mean = initialMean(train.modelType);
       train.std = initialStd(train.modelType);
+      train.meanView = createDisplayView(train.mean, train.meanView);
+      train.stdView = createDisplayView(train.std, train.stdView);
       train.gen = 0;
       train.candWeights = [];
+      train.candWeightViews = [];
       train.candScores = [];
       train.candIndex = -1;
       resetAiPlanState();
@@ -1289,7 +1376,7 @@ export function initTraining(game, renderer) {
           const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
           const elites = idx.slice(0, eliteCount);
           const dim = paramDim();
-          const newMean = newWeightArray(dim);
+          const newMean = allocFloat32(dim);
           if(elites.length > 0){
             for(let i = 0; i < elites.length; i++){
               const wCand = train.candWeights[elites[i]];
@@ -1301,7 +1388,7 @@ export function initTraining(game, renderer) {
               newMean[d] /= elites.length;
             }
           }
-          const newStd = newWeightArray(dim);
+          const newStd = allocFloat32(dim);
           if(elites.length > 0){
             for(let i = 0; i < elites.length; i++){
               const wCand = train.candWeights[elites[i]];
@@ -1323,12 +1410,15 @@ export function initTraining(game, renderer) {
             gen: train.gen + 1,
             fitness: bestThisGen,
             modelType: train.modelType,
+            dtype: train.dtype,
             layerSizes: train.modelType === 'mlp' ? currentMlpLayerSizes() : [FEAT_DIM, 1],
             weights: bestWeights ? cloneWeightsArray(bestWeights) : null,
             scoreIndex: Math.max(0, train.totalGamesPlayed - train.popSize + bestIdx),
           };
           train.mean = newMean;
+          train.meanView = createDisplayView(train.mean, train.meanView);
           train.std = newStd;
+          train.stdView = createDisplayView(train.std, train.stdView);
           if(bestWeights && Number.isFinite(bestThisGen) && bestThisGen > (train.bestEverFitness ?? -Infinity)){
             train.bestEverFitness = bestThisGen;
             train.bestEverWeights = cloneWeightsArray(bestWeights);
@@ -1543,38 +1633,37 @@ export function initTraining(game, renderer) {
     function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
     const mlpActivationScratch = [];
     let mlpOutputScratch = null;
-    let mlpScratchDtype = null;
+    let mlpInputScratch = null;
 
-    function resetMlpScratchIfNeeded(dtype){
-      if(mlpScratchDtype !== dtype){
-        mlpScratchDtype = dtype;
-        mlpActivationScratch.length = 0;
-        mlpOutputScratch = null;
-      }
-    }
-
-    function getMlpLayerScratch(layerIdx, size, dtype){
+    function getMlpLayerScratch(layerIdx, size){
       let buffer = mlpActivationScratch[layerIdx];
       if(!buffer || buffer.length !== size){
-        buffer = allocWeights(size, dtype);
+        buffer = new Float32Array(size);
         mlpActivationScratch[layerIdx] = buffer;
-      }
-      if(typeof buffer.fill === 'function'){
-        buffer.fill(0);
       } else {
-        for(let i = 0; i < size; i++){
-          buffer[i] = 0;
-        }
+        buffer.fill(0);
       }
       return buffer;
     }
 
-    function getMlpOutputScratch(dtype){
+    function getMlpOutputScratch(){
       if(!mlpOutputScratch || mlpOutputScratch.length !== 1){
-        mlpOutputScratch = allocWeights(1, dtype);
+        mlpOutputScratch = new Float32Array(1);
+      } else {
+        mlpOutputScratch[0] = 0;
       }
-      mlpOutputScratch[0] = 0;
       return mlpOutputScratch;
+    }
+
+    function ensureFloat32Activations(feats, size){
+      if(feats instanceof Float32Array && feats.length >= size){
+        return feats;
+      }
+      if(!mlpInputScratch || mlpInputScratch.length !== size){
+        mlpInputScratch = new Float32Array(size);
+      }
+      copyValues(feats, mlpInputScratch);
+      return mlpInputScratch;
     }
 
     function mlpScore(weights, feats){
@@ -1582,21 +1671,15 @@ export function initTraining(game, renderer) {
         return 0;
       }
       const hiddenLayers = mlpHiddenLayers.length ? mlpHiddenLayers : DEFAULT_MLP_HIDDEN;
-      const dtype = (train && train.dtype)
-        ? train.dtype
-        : ((HAS_F16 && typeof Float16Array !== 'undefined' && weights instanceof Float16Array)
-          ? 'f16'
-          : (weights instanceof Float32Array ? 'f32' : DEFAULT_DTYPE));
-      resetMlpScratchIfNeeded(dtype);
       let offset = 0;
       let prevSize = FEAT_DIM;
-      let activations = feats;
+      let activations = ensureFloat32Activations(feats, prevSize);
       const weightLen = weights.length;
       for(let layerIdx = 0; layerIdx < hiddenLayers.length; layerIdx++){
         const layerSize = hiddenLayers[layerIdx];
         const weightBase = offset;
         const biasBase = weightBase + prevSize * layerSize;
-        const nextActivations = getMlpLayerScratch(layerIdx, layerSize, dtype);
+        const nextActivations = getMlpLayerScratch(layerIdx, layerSize);
         const weightLimit = Math.min(biasBase, weightLen);
         for(let i = 0; i < prevSize; i++){
           const value = activations[i];
@@ -1624,7 +1707,7 @@ export function initTraining(game, renderer) {
       const outWeightsBase = offset;
       const outBiasIndex = outWeightsBase + prevSize;
       const outLimit = Math.min(outBiasIndex, weightLen);
-      const outputScratch = getMlpOutputScratch(dtype);
+      const outputScratch = getMlpOutputScratch();
       for(let i = 0; i < prevSize; i++){
         const value = activations[i];
         if(!Number.isFinite(value) || value === 0){
@@ -2238,9 +2321,12 @@ export function initTraining(game, renderer) {
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
       // Prefer f16 for MLP if available, else f32
       train.dtype = (mt==='mlp' && HAS_F16) ? 'f16' : 'f32';
+      dtypePreference = train.dtype;
       // Re-init mean/std to the appropriate initial values for this model
       train.mean = initialMean(mt);
+      train.meanView = createDisplayView(train.mean, train.meanView);
       train.std  = initialStd(mt);
+      train.stdView = createDisplayView(train.std, train.stdView);
       updateTrainStatus();
       // Reset training state
       resetTraining();
