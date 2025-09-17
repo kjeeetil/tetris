@@ -404,22 +404,10 @@
           <button id="reset" class="icon-btn icon-btn--emerald" title="Reset" aria-label="Reset">⟲</button>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
-          <button
-            id="train"
-            class="icon-btn icon-btn--violet"
-            title="Start/Stop Training"
-            aria-label="Start/Stop Training"
-          >
-            AI
-          </button>
-          <button
-            id="train-reset"
-            class="icon-btn icon-btn--emerald"
-            title="Reset Training"
-            aria-label="Reset Training"
-          >
-            ♻️
-          </button>
+          <label for="speed" id="speed-label" class="text-xs uppercase tracking-[0.35em] text-plum/70">
+            Speed: <span id="speed-display" class="text-citron">1x</span>
+          </label>
+          <input id="speed" type="range" min="1" max="50" value="1" class="w-60 md:w-72 accent-citron" />
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
           <label for="model-select" class="text-xs uppercase tracking-[0.35em] text-plum/70">Model:</label>
@@ -481,10 +469,22 @@
           <div id="mlp-layer-controls" class="flex flex-wrap items-center justify-center gap-4"></div>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
-          <label for="speed" id="speed-label" class="text-xs uppercase tracking-[0.35em] text-plum/70">
-            Speed: <span id="speed-display" class="text-citron">1x</span>
-          </label>
-          <input id="speed" type="range" min="1" max="50" value="1" class="w-60 md:w-72 accent-citron" />
+          <button
+            id="start-training"
+            class="icon-btn icon-btn--violet icon-btn--wide"
+            title="Start training"
+            aria-label="Start training"
+          >
+            Start Training
+          </button>
+          <button
+            id="reset-model"
+            class="icon-btn icon-btn--emerald icon-btn--wide"
+            title="Reset model parameters"
+            aria-label="Reset model parameters"
+          >
+            Reset Model Parameters
+          </button>
         </div>
         <div class="mt-10 flex w-full flex-col items-center gap-4">
           <span class="text-sm uppercase tracking-[0.45em] text-plum/70 md:text-base">Training Progress</span>
@@ -2261,11 +2261,13 @@
             train.scorePlotPending = 0;
             train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
             updateTrainStatus();
-            const btn = document.getElementById('train');
+            const btn = document.getElementById('start-training');
             if(btn){
-              btn.textContent = '⏹';
+              btn.textContent = 'Stop Training';
               btn.classList.remove('icon-btn--violet');
               btn.classList.add('icon-btn--emerald');
+              btn.setAttribute('title', 'Stop training');
+              btn.setAttribute('aria-label', 'Stop training');
             }
             log('Training started');
           }
@@ -2273,11 +2275,13 @@
             const wasRunning = train.enabled;
             train.enabled = false;
             train.ai.plan = null;
-            const btn = document.getElementById('train');
+            const btn = document.getElementById('start-training');
             if(btn){
-              btn.textContent = 'AI';
+              btn.textContent = 'Start Training';
               btn.classList.remove('icon-btn--emerald');
               btn.classList.add('icon-btn--violet');
+              btn.setAttribute('title', 'Start training');
+              btn.setAttribute('aria-label', 'Start training');
             }
             if(train.scorePlotPending && train.gameScores.length){
               updateScorePlot();
@@ -3130,10 +3134,10 @@
           }
 
           // Hook up training buttons
-          const trainBtn = document.getElementById('train');
-          if(trainBtn){ trainBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
-          const trainResetBtn = document.getElementById('train-reset');
-          if(trainResetBtn){ trainResetBtn.addEventListener('click', resetTraining); }
+          const startTrainingBtn = document.getElementById('start-training');
+          if(startTrainingBtn){ startTrainingBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
+          const resetModelBtn = document.getElementById('reset-model');
+          if(resetModelBtn){ resetModelBtn.addEventListener('click', resetTraining); }
           const renderToggleInput = document.getElementById('render-toggle');
           const renderToggleLabel = document.getElementById('render-toggle-label');
           function syncRenderToggle(){
