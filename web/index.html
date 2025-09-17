@@ -675,6 +675,173 @@
           }
         };
 
+        const trainingProfiler = createTrainingProfiler();
+        window.__trainingProfiler = trainingProfiler;
+
+        function createTrainingProfiler() {
+          const stats = new Map();
+          const stack = [];
+          let enabled = false;
+          const now =
+            typeof performance !== 'undefined' && typeof performance.now === 'function'
+              ? () => performance.now()
+              : () => Date.now();
+
+          function start(name) {
+            if (!enabled) return null;
+            const token = { name, start: now(), children: 0 };
+            stack.push(token);
+            return token;
+          }
+
+          function stop(token) {
+            if (!enabled || !token) return 0;
+            const end = now();
+            const last = stack.pop();
+            if (!last || last !== token) {
+              stack.length = 0;
+              if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                console.warn('Training profiler stack out of sync', token && token.name);
+              }
+              return 0;
+            }
+            const elapsed = end - token.start;
+            const child = token.children || 0;
+            const exclusive = Math.max(0, elapsed - child);
+            let stat = stats.get(token.name);
+            if (!stat) {
+              stat = { count: 0, total: 0, self: 0, min: Infinity, max: 0 };
+              stats.set(token.name, stat);
+            }
+            stat.count += 1;
+            stat.total += elapsed;
+            stat.self += exclusive;
+            if (elapsed < stat.min) stat.min = elapsed;
+            if (elapsed > stat.max) stat.max = elapsed;
+            if (stack.length) {
+              const parent = stack[stack.length - 1];
+              parent.children = (parent.children || 0) + elapsed;
+            }
+            return elapsed;
+          }
+
+          function section(name, fn) {
+            if (!enabled) return fn();
+            const token = start(name);
+            try {
+              return fn();
+            } finally {
+              stop(token);
+            }
+          }
+
+          function summary(options = {}) {
+            const sortBy = options.sortBy || 'total';
+            const descending = options.descending !== false;
+            const limit = typeof options.limit === 'number' ? options.limit : null;
+            const rows = [];
+            for (const [name, stat] of stats.entries()) {
+              const count = stat.count || 0;
+              const total = stat.total || 0;
+              const selfTime = stat.self || 0;
+              const avg = count ? total / count : 0;
+              const selfAvg = count ? selfTime / count : 0;
+              rows.push({
+                name,
+                count,
+                total,
+                self: selfTime,
+                average: avg,
+                self_average: selfAvg,
+                min: stat.min === Infinity ? 0 : stat.min,
+                max: stat.max || 0,
+              });
+            }
+            const keyMap = {
+              total: (row) => row.total,
+              self: (row) => row.self,
+              count: (row) => row.count,
+              average: (row) => row.average,
+              self_average: (row) => row.self_average,
+              max: (row) => row.max,
+              min: (row) => row.min,
+            };
+            const keyFn = keyMap[sortBy] || keyMap.total;
+            rows.sort((a, b) => {
+              const va = keyFn(a);
+              const vb = keyFn(b);
+              if (va === vb) {
+                return a.name.localeCompare(b.name);
+              }
+              return descending ? vb - va : va - vb;
+            });
+            return limit !== null && limit >= 0 ? rows.slice(0, limit) : rows;
+          }
+
+          function reset() {
+            stats.clear();
+            stack.length = 0;
+          }
+
+          function enable() {
+            enabled = true;
+          }
+
+          function disable() {
+            enabled = false;
+            stack.length = 0;
+          }
+
+          return {
+            enable,
+            disable,
+            reset,
+            summary,
+            section,
+            start,
+            stop,
+            get enabled() {
+              return enabled;
+            },
+          };
+        }
+
+        function logTrainingProfileSummary(limit = 6) {
+          const summary = trainingProfiler.summary({ sortBy: 'total', descending: true, limit });
+          const trainState = typeof window !== 'undefined' && window.__train ? window.__train : null;
+          if (trainState) {
+            trainState.performanceSummary = summary;
+          }
+          if (!summary.length) {
+            log('[Perf] No training performance samples recorded.');
+            return summary;
+          }
+          const parts = summary.map((row) =>
+            `${row.name}: total=${row.total.toFixed(2)}ms self=${row.self.toFixed(2)}ms avg=${row.average.toFixed(2)}ms count=${row.count}`,
+          );
+          log(`[Perf] Hot sections — ${parts.join(' | ')}`);
+          if (typeof console !== 'undefined') {
+            if (typeof console.table === 'function') {
+              const tableRows = summary.map((row) => ({
+                Section: row.name,
+                Count: row.count,
+                'Total (ms)': Number(row.total.toFixed(2)),
+                'Self (ms)': Number(row.self.toFixed(2)),
+                'Avg (ms)': Number(row.average.toFixed(2)),
+                'Self Avg (ms)': Number(row.self_average.toFixed(2)),
+                'Min (ms)': Number(row.min.toFixed(2)),
+                'Max (ms)': Number(row.max.toFixed(2)),
+              }));
+              console.table(tableRows);
+            } else if (typeof console.log === 'function') {
+              console.log('Training performance summary', summary);
+            }
+          }
+          return summary;
+        }
+
+        window.logTrainingProfileSummary = logTrainingProfileSummary;
+
         const Shapes = {
           I: [[0,0],[0,1],[0,2],[0,3]],
           O: [[0,0],[0,1],[1,0],[1,1]],
@@ -1801,7 +1968,8 @@
             fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
             useSimplifiedModel: true,
             currentWeightsOverride: null,
-            ai: { plan: null, acc: 0 },
+            ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
+            performanceSummary: [],
             clearCounts: {1:0,2:0,3:0,4:0},
             gameScores: [],
             gameModelTypes: [],
@@ -1890,7 +2058,12 @@
 
           function startTraining(){
             if(!state.running){ start(); }
+            trainingProfiler.reset();
+            trainingProfiler.enable();
+            train.performanceSummary = [];
             train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
+            train.ai.lastSig = '';
+            train.ai.staleMs = 0;
             train.gameScores = [];
             train.gameModelTypes = [];
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
@@ -1906,6 +2079,7 @@
             log('Training started');
           }
           function stopTraining(){
+            const wasRunning = train.enabled;
             train.enabled = false;
             train.ai.plan = null;
             const btn = document.getElementById('train');
@@ -1919,6 +2093,11 @@
             }
             train.scorePlotPending = 0;
             log('Training stopped');
+            if(wasRunning){
+              logTrainingProfileSummary();
+            }
+            trainingProfiler.disable();
+            trainingProfiler.reset();
             updateTrainStatus();
           }
           function resetTraining(){
@@ -1934,6 +2113,7 @@
             train.candIndex = -1;
             train.ai.plan = null;
             train.ai.acc = 0;
+            train.performanceSummary = [];
             train.clearCounts = {1:0,2:0,3:0,4:0};
             train.gameScores = [];
             train.gameModelTypes = [];
@@ -2240,52 +2420,56 @@
             return null;
           }
           function headlessEnumerate(board, shape){
-            const placements = [];
-            const profiles = HEADLESS_PROFILES[shape];
-            if(!profiles) return placements;
-            for(const profile of profiles){
-              const maxCol = WIDTH - profile.width;
-              for(let column=0; column<=maxCol; column++){
-                const row = headlessLandingRow(board, profile, column);
-                if(row !== null){
-                  placements.push({ rotation: profile.rotation, column, row });
+            return trainingProfiler.section('train.headless.enumerate', () => {
+              const placements = [];
+              const profiles = HEADLESS_PROFILES[shape];
+              if(!profiles) return placements;
+              for(const profile of profiles){
+                const maxCol = WIDTH - profile.width;
+                for(let column=0; column<=maxCol; column++){
+                  const row = headlessLandingRow(board, profile, column);
+                  if(row !== null){
+                    placements.push({ rotation: profile.rotation, column, row });
+                  }
                 }
               }
-            }
-            return placements;
+              return placements;
+            });
           }
           function headlessApplyPlacement(board, shape, placement){
-            const lookup = HEADLESS_PROFILE_LOOKUP[shape];
-            if(!lookup) return null;
-            const profile = lookup[placement.rotation];
-            if(!profile) return null;
-            let landingRow = (typeof placement.row === 'number' && Number.isFinite(placement.row))
-              ? placement.row
-              : headlessLandingRow(board, profile, placement.column);
-            if(landingRow === null || landingRow === undefined) return null;
-            if(!headlessFits(board.rows, profile, landingRow, placement.column)) return null;
-            const rows = board.rows.slice();
-            for(let localRow=0; localRow<profile.height; localRow++){
-              const boardRow = landingRow + localRow;
-              const shifted = profile.rowMasks[localRow] << placement.column;
-              rows[boardRow] |= shifted;
-            }
-            let cleared = 0;
-            const remaining = [];
-            for(let r=0; r<HEIGHT; r++){
-              if(rows[r] === FULL_ROW_MASK){
-                cleared += 1;
-              } else {
-                remaining.push(rows[r]);
+            return trainingProfiler.section('train.headless.apply', () => {
+              const lookup = HEADLESS_PROFILE_LOOKUP[shape];
+              if(!lookup) return null;
+              const profile = lookup[placement.rotation];
+              if(!profile) return null;
+              let landingRow = (typeof placement.row === 'number' && Number.isFinite(placement.row))
+                ? placement.row
+                : headlessLandingRow(board, profile, placement.column);
+              if(landingRow === null || landingRow === undefined) return null;
+              if(!headlessFits(board.rows, profile, landingRow, placement.column)) return null;
+              const rows = board.rows.slice();
+              for(let localRow=0; localRow<profile.height; localRow++){
+                const boardRow = landingRow + localRow;
+                const shifted = profile.rowMasks[localRow] << placement.column;
+                rows[boardRow] |= shifted;
               }
-            }
-            while(remaining.length < HEIGHT) remaining.unshift(0);
-            const newRows = remaining;
-            const newBoard = {
-              rows: newRows,
-              columnHeights: columnHeightsFromRows(newRows),
-            };
-            return { board: newBoard, lines: cleared };
+              let cleared = 0;
+              const remaining = [];
+              for(let r=0; r<HEIGHT; r++){
+                if(rows[r] === FULL_ROW_MASK){
+                  cleared += 1;
+                } else {
+                  remaining.push(rows[r]);
+                }
+              }
+              while(remaining.length < HEIGHT) remaining.unshift(0);
+              const newRows = remaining;
+              const newBoard = {
+                rows: newRows,
+                columnHeights: columnHeightsFromRows(newRows),
+              };
+              return { board: newBoard, lines: cleared };
+            });
           }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function copyGrid(g){ return g.map(r=>r.slice()); }
@@ -2355,16 +2539,24 @@
           }
 
           function enumeratePlacements(grid, shape){
-            const actions=[]; const rotIdx=uniqueRotIdx(shape);
-            for(const rot of rotIdx){
-              const width=stateWidth(SHAPES[shape][rot]);
-              for(let col=0; col<=WIDTH-width; col++){
-                const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col;
-                const fr=dropRowSim(grid,p);
-                if(fr!==null && pathClear(grid, shape, rot, col, state.level)) actions.push({rot,col});
+            return trainingProfiler.section('train.full.enumerate', () => {
+              const actions = [];
+              const rotIdx = uniqueRotIdx(shape);
+              for(const rot of rotIdx){
+                const width = stateWidth(SHAPES[shape][rot]);
+                for(let col=0; col<=WIDTH-width; col++){
+                  const p = new Piece(shape);
+                  p.rot = rot;
+                  p.row = 0;
+                  p.col = col;
+                  const fr = dropRowSim(grid, p);
+                  if(fr !== null && pathClear(grid, shape, rot, col, state.level)){
+                    actions.push({ rot, col });
+                  }
+                }
               }
-            }
-            return actions;
+              return actions;
+            });
           }
           function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
           function clearRowsSim(grid){ let remaining = grid.filter(row => row.some(v => v===0)); const cleared = HEIGHT - remaining.length; while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0)); for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r]; return cleared; }
@@ -2408,7 +2600,21 @@
                 if(c<WIDTH-1 && g[r][c+1]) contact++; } } return contact; }
           function rowTransitions(g){ let t=0; for(let r=0;r<HEIGHT;r++){ let prev=0; for(let c=0;c<WIDTH;c++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
-          function simulateAfterPlacement(grid, shape, rot, col){ const g=copyGrid(grid); const p=new Piece(shape); p.rot=rot; p.row=0; p.col=col; const fr=dropRowSim(g,p); if(fr===null) return null; p.row=fr; lockSim(g,p); const lines=clearRowsSim(g); return {grid:g, lines}; }
+          function simulateAfterPlacement(grid, shape, rot, col){
+            return trainingProfiler.section('train.full.simulate', () => {
+              const g = copyGrid(grid);
+              const p = new Piece(shape);
+              p.rot = rot;
+              p.row = 0;
+              p.col = col;
+              const fr = dropRowSim(g, p);
+              if(fr === null) return null;
+              p.row = fr;
+              lockSim(g, p);
+              const lines = clearRowsSim(g);
+              return { grid: g, lines };
+            });
+          }
           function fillFeatureVector(target, lines, holes, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
             let cleared = (typeof lines === 'number' && Number.isFinite(lines)) ? lines : 0;
             if(cleared < 0) cleared = 0;
@@ -2432,45 +2638,49 @@
             return target;
           }
           function featuresFromGrid(g, lines){
-            const h = columnHeights(g);
-            const Holes = countHoles(g);
-            const Bump = bumpiness(h);
-            let maxH = 0;
-            let aggH = 0;
-            for(let i=0; i<h.length; i++){
-              const v = h[i] || 0;
-              aggH += v;
-              if(v > maxH) maxH = v;
-            }
-            const {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
-            const Contact = contactArea(g);
-            const rT = rowTransitions(g);
-            const cT = colTransitions(g);
-            return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+            return trainingProfiler.section('train.full.features', () => {
+              const h = columnHeights(g);
+              const Holes = countHoles(g);
+              const Bump = bumpiness(h);
+              let maxH = 0;
+              let aggH = 0;
+              for(let i=0; i<h.length; i++){
+                const v = h[i] || 0;
+                aggH += v;
+                if(v > maxH) maxH = v;
+              }
+              const {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
+              const Contact = contactArea(g);
+              const rT = rowTransitions(g);
+              const cT = colTransitions(g);
+              return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+            });
           }
           function featuresFromHeadlessBoard(board, lines){
-            if(!board || !board.rows || board.rows.length !== HEIGHT){
-              return fillFeatureVector(new Float64Array(FEAT_DIM), lines, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-            }
-            const rows = board.rows;
-            let heights = board.columnHeights;
-            if(!Array.isArray(heights) || heights.length !== WIDTH){
-              heights = columnHeightsFromRows(rows);
-            }
-            const Holes = countHolesFromRows(rows, heights);
-            const Bump = bumpiness(heights);
-            let maxH = 0;
-            let aggH = 0;
-            for(let i=0; i<heights.length; i++){
-              const v = heights[i] || 0;
-              aggH += v;
-              if(v > maxH) maxH = v;
-            }
-            const {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
-            const Contact = contactAreaFromRows(rows);
-            const rT = rowTransitionsFromRows(rows);
-            const cT = columnTransitionsFromRows(rows);
-            return fillFeatureVector(new Float64Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+            return trainingProfiler.section('train.headless.features', () => {
+              if(!board || !board.rows || board.rows.length !== HEIGHT){
+                return fillFeatureVector(new Float64Array(FEAT_DIM), lines, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+              }
+              const rows = board.rows;
+              let heights = board.columnHeights;
+              if(!Array.isArray(heights) || heights.length !== WIDTH){
+                heights = columnHeightsFromRows(rows);
+              }
+              const Holes = countHolesFromRows(rows, heights);
+              const Bump = bumpiness(heights);
+              let maxH = 0;
+              let aggH = 0;
+              for(let i=0; i<heights.length; i++){
+                const v = heights[i] || 0;
+                aggH += v;
+                if(v > maxH) maxH = v;
+              }
+              const {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
+              const Contact = contactAreaFromRows(rows);
+              const rT = rowTransitionsFromRows(rows);
+              const cT = columnTransitionsFromRows(rows);
+              return fillFeatureVector(new Float64Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+            });
           }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
@@ -2575,99 +2785,142 @@
             return outputScratch[0] + bias;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
-          function choosePlacement2(weights, grid, curShape, nextShape){ const acts=enumeratePlacements(grid, curShape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; const sims=[]; // precompute first-ply sims and scores
-            for(const a of acts){ const sim=simulateAfterPlacement(grid, curShape, a.rot, a.col); if(!sim) continue; const baseFeats = featuresFromGrid(sim.grid, sim.lines); const s1 = scoreFeats(weights, baseFeats); sims.push({a, sim, s1}); }
-            if(sims.length===0) return null;
-            // Beam: consider lookahead only for top-K first-ply moves
-            sims.sort((u,v)=>v.s1 - u.s1);
-            const K = Math.min(LOOKAHEAD_BEAM, sims.length);
-            const acts2Cache = new WeakMap();
-            for(let i=0;i<sims.length;i++){
-              let s = sims[i].s1;
-              if(nextShape && i < K){ let acts2 = acts2Cache.get(sims[i].sim.grid); if(!acts2){ acts2 = enumeratePlacements(sims[i].sim.grid, nextShape); acts2Cache.set(sims[i].sim.grid, acts2); } if(acts2.length>0){ let best2=-Infinity; for(const a2 of acts2){ const ff2=featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col); if(!ff2) continue; const s2=scoreFeats(weights, ff2.feats); if(s2>best2) best2=s2; } if(isFinite(best2)) s += LOOKAHEAD_LAMBDA*best2; }
+          function choosePlacement2(weights, grid, curShape, nextShape){
+            return trainingProfiler.section('train.plan.full.lookahead', () => {
+              const acts = enumeratePlacements(grid, curShape);
+              if(acts.length === 0) return null;
+              let best = acts[0];
+              let bestS = -Infinity;
+              const sims = [];
+              // precompute first-ply sims and scores
+              for(const a of acts){
+                const sim = simulateAfterPlacement(grid, curShape, a.rot, a.col);
+                if(!sim) continue;
+                const baseFeats = featuresFromGrid(sim.grid, sim.lines);
+                const s1 = scoreFeats(weights, baseFeats);
+                sims.push({ a, sim, s1 });
               }
-              if(s>bestS){ bestS=s; best=sims[i].a; }
-            }
-            return best; }
+              if(sims.length === 0) return null;
+              // Beam: consider lookahead only for top-K first-ply moves
+              sims.sort((u, v) => v.s1 - u.s1);
+              const K = Math.min(LOOKAHEAD_BEAM, sims.length);
+              const acts2Cache = new WeakMap();
+              for(let i=0; i<sims.length; i++){
+                let s = sims[i].s1;
+                if(nextShape && i < K){
+                  let acts2 = acts2Cache.get(sims[i].sim.grid);
+                  if(!acts2){
+                    acts2 = enumeratePlacements(sims[i].sim.grid, nextShape);
+                    acts2Cache.set(sims[i].sim.grid, acts2);
+                  }
+                  if(acts2.length > 0){
+                    let best2 = -Infinity;
+                    for(const a2 of acts2){
+                      const ff2 = featuresForPlacement(sims[i].sim.grid, nextShape, a2.rot, a2.col);
+                      if(!ff2) continue;
+                      const s2 = scoreFeats(weights, ff2.feats);
+                      if(s2 > best2) best2 = s2;
+                    }
+                    if(Number.isFinite(best2)) s += LOOKAHEAD_LAMBDA * best2;
+                  }
+                }
+                if(s > bestS){
+                  bestS = s;
+                  best = sims[i].a;
+                }
+              }
+              return best;
+            });
+          }
           function planForCurrentPieceHeadless(weights){
-            if(!state.active) return null;
-            const shape = state.active.shape;
-            const board = createHeadlessBoard(state.grid);
-            const placements = headlessEnumerate(board, shape);
-            if(!placements.length) return null;
-            const sims = [];
-            for(const placement of placements){
-              const sim = headlessApplyPlacement(board, shape, placement);
-              if(!sim) continue;
-              const feats = featuresFromHeadlessBoard(sim.board, sim.lines);
-              sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
-            }
-            if(!sims.length) return null;
-            sims.sort((a,b) => b.s1 - a.s1);
-            const nextShape = state.next;
-            const beam = Math.min(LOOKAHEAD_BEAM, sims.length);
-            const acts2Cache = typeof WeakMap === 'function' ? new WeakMap() : new Map();
-            let best = null;
-            let bestScore = -Infinity;
-            for(let i=0; i<sims.length; i++){
-              let score = sims[i].s1;
-              if(nextShape && i < beam){
-                let acts2 = acts2Cache.get(sims[i].sim.board);
-                if(!acts2){
-                  acts2 = headlessEnumerate(sims[i].sim.board, nextShape);
-                  acts2Cache.set(sims[i].sim.board, acts2);
-                }
-                if(acts2 && acts2.length){
-                  let best2 = -Infinity;
-                  for(const placement2 of acts2){
-                    const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
-                    if(!sim2) continue;
-                    const feats2 = featuresFromHeadlessBoard(sim2.board, sim2.lines);
-                    const score2 = scoreFeats(weights, feats2);
-                    if(score2 > best2) best2 = score2;
+            return trainingProfiler.section('train.plan.headless', () => {
+              if(!state.active) return null;
+              const shape = state.active.shape;
+              const board = createHeadlessBoard(state.grid);
+              const placements = headlessEnumerate(board, shape);
+              if(!placements.length) return null;
+              const sims = [];
+              for(const placement of placements){
+                const sim = headlessApplyPlacement(board, shape, placement);
+                if(!sim) continue;
+                const feats = featuresFromHeadlessBoard(sim.board, sim.lines);
+                sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
+              }
+              if(!sims.length) return null;
+              sims.sort((a,b) => b.s1 - a.s1);
+              const nextShape = state.next;
+              const beam = Math.min(LOOKAHEAD_BEAM, sims.length);
+              const acts2Cache = typeof WeakMap === 'function' ? new WeakMap() : new Map();
+              let best = null;
+              let bestScore = -Infinity;
+              for(let i=0; i<sims.length; i++){
+                let score = sims[i].s1;
+                if(nextShape && i < beam){
+                  let acts2 = acts2Cache.get(sims[i].sim.board);
+                  if(!acts2){
+                    acts2 = headlessEnumerate(sims[i].sim.board, nextShape);
+                    acts2Cache.set(sims[i].sim.board, acts2);
                   }
-                  if(Number.isFinite(best2)){
-                    score += LOOKAHEAD_LAMBDA * best2;
+                  if(acts2 && acts2.length){
+                    let best2 = -Infinity;
+                    for(const placement2 of acts2){
+                      const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
+                      if(!sim2) continue;
+                      const feats2 = featuresFromHeadlessBoard(sim2.board, sim2.lines);
+                      const score2 = scoreFeats(weights, feats2);
+                      if(score2 > best2) best2 = score2;
+                    }
+                    if(Number.isFinite(best2)){
+                      score += LOOKAHEAD_LAMBDA * best2;
+                    }
                   }
                 }
+                if(!Number.isFinite(score)){
+                  continue;
+                }
+                if(score <= bestScore){
+                  continue;
+                }
+                const placementCandidate = sims[i].placement;
+                if(!pathClear(state.grid, shape, placementCandidate.rotation, placementCandidate.column, state.level)){
+                  continue;
+                }
+                bestScore = score;
+                best = sims[i];
               }
-              if(!Number.isFinite(score)){
-                continue;
-              }
-              if(score <= bestScore){
-                continue;
-              }
-              const placementCandidate = sims[i].placement;
-              if(!pathClear(state.grid, shape, placementCandidate.rotation, placementCandidate.column, state.level)){
-                continue;
-              }
-              bestScore = score;
-              best = sims[i];
-            }
-            if(!best) return null;
-            const placement = best.placement;
-            const len = SHAPES[shape].length;
-            const cur = state.active.rot % len;
-            const needRot = (placement.rotation - cur + len) % len;
-            return { targetRot: placement.rotation, targetCol: placement.column, rotLeft: needRot, stage: 'rotate' };
+              if(!best) return null;
+              const placement = best.placement;
+              const len = SHAPES[shape].length;
+              const cur = state.active.rot % len;
+              const needRot = (placement.rotation - cur + len) % len;
+              return { targetRot: placement.rotation, targetCol: placement.column, rotLeft: needRot, stage: 'rotate' };
+            });
           }
 
           function planForCurrentPiece(){
-            if(!state.active) return null;
-            const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
-            if(train.enabled && train.useSimplifiedModel){
-              const headlessPlan = planForCurrentPieceHeadless(w);
-              if(headlessPlan) return headlessPlan;
-              const warnMsg = '⚠️ Headless model unavailable; falling back to full board evaluation.';
-              log(warnMsg);
-              if(typeof console !== 'undefined' && typeof console.warn === 'function'){
-                console.warn(warnMsg);
+            return trainingProfiler.section('train.plan.main', () => {
+              if(!state.active) return null;
+              const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
+              if(train.enabled && train.useSimplifiedModel){
+                const headlessPlan = planForCurrentPieceHeadless(w);
+                if(headlessPlan) return headlessPlan;
+                const warnMsg = '⚠️ Headless model unavailable; falling back to full board evaluation.';
+                log(warnMsg);
+                if(typeof console !== 'undefined' && typeof console.warn === 'function'){
+                  console.warn(warnMsg);
+                }
               }
-            }
-            const a = choosePlacement2(w, state.grid, state.active.shape, state.next);
-            if(!a){ return null; }
-            const len=SHAPES[state.active.shape].length; const cur=state.active.rot % len; const needRot=(a.rot - cur + len) % len;
-            return { targetRot:a.rot, targetCol:a.col, rotLeft:needRot, stage:'rotate' };
+              const placement = trainingProfiler.section('train.plan.full', () =>
+                choosePlacement2(w, state.grid, state.active.shape, state.next),
+              );
+              if(!placement){
+                return null;
+              }
+              const len = SHAPES[state.active.shape].length;
+              const cur = state.active.rot % len;
+              const needRot = (placement.rot - cur + len) % len;
+              return { targetRot: placement.rot, targetCol: placement.col, rotLeft: needRot, stage: 'rotate' };
+            });
           }
 
           // Scatter plot of raw score per game (all candidates)
@@ -2837,36 +3090,21 @@
         }
 
           function runAiMicroStep(){
-            if(!state.active){ return false; }
-
-            // Watchdog: if the active piece hasn't changed state for a while, force a drop
-            const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
-            if(train.ai.lastSig === sig){ train.ai.staleMs = (train.ai.staleMs || 0) + AI_STEP_MS; } else { train.ai.staleMs = 0; train.ai.lastSig = sig; }
-            if(train.ai.staleMs > 1000){
-              log('AI: watchdog forced drop');
-              while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
-              lock(state.grid, state.active);
-              state.pieces++;
-              if(state.pieces % 20 === 0){ state.level++; state.gravity = gravityForLevel(state.level); updateLevel(); }
-              const cleared = clearRows(state.grid);
-              if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); recordClear(cleared); }
-              if(state.grid[0].some(v => v !== 0)) {
-                onGameOver();
-                train.ai.plan = null;
-                train.ai.staleMs = 0;
+            return trainingProfiler.section('train.ai.micro_step', () => {
+              if(!state.active){
                 return false;
               }
-              spawn();
-              train.ai.plan = null;
-              train.ai.staleMs = 0;
-              if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
-              return false;
-            }
 
-            if(!train.ai.plan){
-              train.ai.plan = planForCurrentPiece();
-              if(!train.ai.plan){
-                // force drop to end episode
+              // Watchdog: if the active piece hasn't changed state for a while, force a drop
+              const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
+              if(train.ai.lastSig === sig){
+                train.ai.staleMs = (train.ai.staleMs || 0) + AI_STEP_MS;
+              } else {
+                train.ai.staleMs = 0;
+                train.ai.lastSig = sig;
+              }
+              if(train.ai.staleMs > 1000){
+                log('AI: watchdog forced drop');
                 while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
                 lock(state.grid, state.active);
                 state.pieces++;
@@ -2876,60 +3114,122 @@
                   updateLevel();
                 }
                 const cleared = clearRows(state.grid);
-                if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); recordClear(cleared); }
-                if(state.grid[0].some(v => v !== 0)) {
-                  log('AI: top-out after forced drop');
+                if(cleared){
+                  state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
+                  updateScore();
+                  recordClear(cleared);
+                }
+                if(state.grid[0].some((v) => v !== 0)) {
                   onGameOver();
+                  train.ai.plan = null;
+                  train.ai.staleMs = 0;
                   return false;
                 }
                 spawn();
+                train.ai.plan = null;
+                train.ai.staleMs = 0;
                 if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
                 return false;
               }
-            }
-            const plan = train.ai.plan; if(!plan) return true;
-            if(plan.stage==='rotate'){
-              if(plan.rotLeft>0){
-                state.active.rotate();
-                if(!canMove(state.grid, state.active, 0, 0)){
-                  // Rotation blocked: abandon this plan to avoid stalling
-                  state.active.rotate(-1);
-                  train.ai.plan = null; log('AI: rotation blocked, abandoning plan');
-                } else {
-                  plan.rotLeft -= 1;
+
+              if(!train.ai.plan){
+                train.ai.plan = planForCurrentPiece();
+                if(!train.ai.plan){
+                  // force drop to end episode
+                  while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
+                  lock(state.grid, state.active);
+                  state.pieces++;
+                  if(state.pieces % 20 === 0){
+                    state.level++;
+                    state.gravity = gravityForLevel(state.level);
+                    updateLevel();
+                  }
+                  const cleared = clearRows(state.grid);
+                  if(cleared){
+                    state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
+                    updateScore();
+                    recordClear(cleared);
+                  }
+                  if(state.grid[0].some((v) => v !== 0)) {
+                    log('AI: top-out after forced drop');
+                    onGameOver();
+                    return false;
+                  }
+                  spawn();
+                  if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
+                  return false;
                 }
+              }
+
+              const plan = train.ai.plan;
+              if(!plan) return true;
+              if(plan.stage === 'rotate'){
+                if(plan.rotLeft > 0){
+                  state.active.rotate();
+                  if(!canMove(state.grid, state.active, 0, 0)){
+                    // Rotation blocked: abandon this plan to avoid stalling
+                    state.active.rotate(-1);
+                    train.ai.plan = null;
+                    log('AI: rotation blocked, abandoning plan');
+                  } else {
+                    plan.rotLeft -= 1;
+                  }
+                  return true;
+                }
+                plan.stage = 'move';
                 return true;
               }
-              plan.stage='move'; return true;
-            }
-            if(plan.stage==='move'){
-              if(state.active.col < plan.targetCol){ if(canMove(state.grid, state.active, 1, 0)) state.active.move(1,0); else plan.stage='drop'; return true; }
-              if(state.active.col > plan.targetCol){ if(canMove(state.grid, state.active, -1, 0)) state.active.move(-1,0); else plan.stage='drop'; return true; }
-              plan.stage='drop'; return true;
-            }
-            if(plan.stage==='drop'){
-              if(canMove(state.grid, state.active, 0, 1)){ state.active.move(0,1); return true; }
-              lock(state.grid, state.active);
-              state.pieces++;
-              if(state.pieces % 20 === 0){
-                state.level++;
-                state.gravity = gravityForLevel(state.level);
-                updateLevel();
+              if(plan.stage === 'move'){
+                if(state.active.col < plan.targetCol){
+                  if(canMove(state.grid, state.active, 1, 0)){
+                    state.active.move(1,0);
+                  } else {
+                    plan.stage = 'drop';
+                  }
+                  return true;
+                }
+                if(state.active.col > plan.targetCol){
+                  if(canMove(state.grid, state.active, -1, 0)){
+                    state.active.move(-1,0);
+                  } else {
+                    plan.stage = 'drop';
+                  }
+                  return true;
+                }
+                plan.stage = 'drop';
+                return true;
               }
-              const cleared = clearRows(state.grid);
-              if(cleared){ state.score += cleared*100*(cleared>1?cleared:1); updateScore(); recordClear(cleared); }
-              if(state.grid[0].some(v => v !== 0)) {
-                log('AI: top-out after drop');
-                onGameOver();
+              if(plan.stage === 'drop'){
+                if(canMove(state.grid, state.active, 0, 1)){
+                  state.active.move(0,1);
+                  return true;
+                }
+                lock(state.grid, state.active);
+                state.pieces++;
+                if(state.pieces % 20 === 0){
+                  state.level++;
+                  state.gravity = gravityForLevel(state.level);
+                  updateLevel();
+                }
+                const cleared = clearRows(state.grid);
+                if(cleared){
+                  state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
+                  updateScore();
+                  recordClear(cleared);
+                }
+                if(state.grid[0].some((v) => v !== 0)) {
+                  log('AI: top-out after drop');
+                  onGameOver();
+                  train.ai.plan = null;
+                  return false;
+                }
+                spawn();
                 train.ai.plan = null;
+                if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
                 return false;
               }
-              spawn();
-              train.ai.plan = null;
-              if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
-              return false;
-            }
-            return true;
+              return true;
+            });
           }
 
           function aiStep(dt){
