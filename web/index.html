@@ -2448,16 +2448,21 @@
                   }
                 }
               }
-              if(score > bestScore){
-                bestScore = score;
-                best = sims[i];
+              if(!Number.isFinite(score)){
+                continue;
               }
+              if(score <= bestScore){
+                continue;
+              }
+              const placementCandidate = sims[i].placement;
+              if(!pathClear(state.grid, shape, placementCandidate.rotation, placementCandidate.column, state.level)){
+                continue;
+              }
+              bestScore = score;
+              best = sims[i];
             }
             if(!best) return null;
             const placement = best.placement;
-            if(!pathClear(state.grid, shape, placement.rotation, placement.column, state.level)){
-              return null;
-            }
             const len = SHAPES[shape].length;
             const cur = state.active.rot % len;
             const needRot = (placement.rotation - cur + len) % len;
