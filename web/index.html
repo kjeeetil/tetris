@@ -2156,6 +2156,12 @@
             scorePlotPending: 0,
             scorePlotAxisMax: 0,
           };
+          const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
+          const columnHeightScratch = new Array(WIDTH).fill(0);
+          const featureScratch = new Float32Array(FEAT_DIM);
+          const pooledPiece = new Piece('I');
+          const simulateResultScratch = { lines: 0, grid: gridScratch };
+          const placementScratch = { feats: featureScratch, lines: 0, grid: gridScratch };
           window.__train = train;
           // After `train` exists, honor train.dtype for future allocations
           newWeightArray = (n) => allocWeights(n, (train && train.dtype) ? train.dtype : DEFAULT_DTYPE);
@@ -2432,7 +2438,26 @@
 
           function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
-          function copyGrid(g){ return g.map(r=>r.slice()); }
+          function resetGridScratchFrom(source){
+            for(let r=0; r<HEIGHT; r++){
+              const srcRow = source[r];
+              const dstRow = gridScratch[r];
+              if(srcRow && srcRow.length){
+                const limit = Math.min(WIDTH, srcRow.length);
+                for(let c=0; c<limit; c++){
+                  dstRow[c] = srcRow[c];
+                }
+                for(let c=limit; c<WIDTH; c++){
+                  dstRow[c] = 0;
+                }
+              } else {
+                for(let c=0; c<WIDTH; c++){
+                  dstRow[c] = 0;
+                }
+              }
+            }
+            return gridScratch;
+          }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
 
           // Return true if dropRowSim finds a valid landing row for the given rotation and column.
@@ -2460,11 +2485,43 @@
             });
           }
           function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
-          function clearRowsSim(grid){ let remaining = grid.filter(row => row.some(v => v===0)); const cleared = HEIGHT - remaining.length; while(remaining.length < HEIGHT) remaining.unshift(Array(WIDTH).fill(0)); for(let r=0;r<HEIGHT;r++) grid[r]=remaining[r]; return cleared; }
+          function clearLinesInScratch(grid){
+            let write = HEIGHT - 1;
+            let cleared = 0;
+            for(let row = HEIGHT - 1; row >= 0; row--){
+              const src = grid[row];
+              let filled = true;
+              for(let col = 0; col < WIDTH; col++){
+                if(!src[col]){ filled = false; break; }
+              }
+              if(!filled){
+                if(write !== row){
+                  const dst = grid[write];
+                  for(let col = 0; col < WIDTH; col++) dst[col] = src[col];
+                }
+                write -= 1;
+              } else {
+                cleared += 1;
+              }
+            }
+            for(let row = write; row >= 0; row--){
+              const dst = grid[row];
+              for(let col = 0; col < WIDTH; col++) dst[col] = 0;
+            }
+            return cleared;
+          }
           const BOARD_AREA = WIDTH * HEIGHT;
           const BUMP_NORMALIZER = ((WIDTH - 1) * HEIGHT) || 1;
           const CONTACT_NORMALIZER = (BOARD_AREA * 2) || 1;
-          function columnHeights(grid){ const h=Array(WIDTH).fill(0); for(let c=0;c<WIDTH;c++){ let r=0; while(r<HEIGHT && grid[r][c]===0) r++; h[c]=HEIGHT-r; } return h; }
+          function columnHeights(grid, target){
+            const heights = target || Array(WIDTH).fill(0);
+            for(let c=0;c<WIDTH;c++){
+              let r=0;
+              while(r<HEIGHT && grid[r][c]===0) r++;
+              heights[c]=HEIGHT-r;
+            }
+            return heights;
+          }
           function countHoles(grid){ let holes=0; for(let c=0;c<WIDTH;c++){ let seen=false; for(let r=0;r<HEIGHT;r++){ const v=grid[r][c]; if(v){ seen=true; } else if(seen){ holes++; } } } return holes; }
           function bumpiness(heights){ let b=0; for(let c=0;c<WIDTH-1;c++) b+=Math.abs(heights[c]-heights[c+1]); return b; }
           function wellMetrics(heights){
@@ -2503,17 +2560,20 @@
           function colTransitions(g){ let t=0; for(let c=0;c<WIDTH;c++){ let prev=0; for(let r=0;r<HEIGHT;r++){ const cur = g[r][c]?1:0; if(cur!==prev) t++; prev=cur; } if(prev!==0) t++; } return t; }
           function simulateAfterPlacement(grid, shape, rot, col){
             return trainingProfiler.section('train.full.simulate', () => {
-              const g = copyGrid(grid);
-              const p = new Piece(shape);
-              p.rot = rot;
-              p.row = 0;
-              p.col = col;
-              const fr = dropRowSim(g, p);
+              const g = resetGridScratchFrom(grid);
+              const piece = pooledPiece;
+              piece.shape = shape;
+              piece.rot = rot;
+              piece.row = 0;
+              piece.col = col;
+              const fr = dropRowSim(g, piece);
               if(fr === null) return null;
-              p.row = fr;
-              lockSim(g, p);
-              const lines = clearRowsSim(g);
-              return { grid: g, lines };
+              piece.row = fr;
+              lockSim(g, piece);
+              const lines = clearLinesInScratch(g);
+              simulateResultScratch.lines = lines;
+              simulateResultScratch.grid = g;
+              return simulateResultScratch;
             });
           }
           function fillFeatureVector(target, lines, holes, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
@@ -2540,12 +2600,12 @@
           }
           function featuresFromGrid(g, lines){
             return trainingProfiler.section('train.full.features', () => {
-              const h = columnHeights(g);
+              const h = columnHeights(g, columnHeightScratch);
               const Holes = countHoles(g);
               const Bump = bumpiness(h);
               let maxH = 0;
               let aggH = 0;
-              for(let i=0; i<h.length; i++){
+              for(let i=0; i<WIDTH; i++){
                 const v = h[i] || 0;
                 aggH += v;
                 if(v > maxH) maxH = v;
@@ -2557,10 +2617,18 @@
               const Contact = contactArea(g);
               const rT = rowTransitions(g);
               const cT = colTransitions(g);
-              return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
+              return fillFeatureVector(featureScratch, lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
             });
           }
-          function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
+          function featuresForPlacement(grid, shape, rot, col){
+            const sim = simulateAfterPlacement(grid, shape, rot, col);
+            if(!sim) return null;
+            const feats = featuresFromGrid(sim.grid, sim.lines);
+            placementScratch.lines = sim.lines;
+            placementScratch.grid = sim.grid;
+            placementScratch.feats = feats;
+            return placementScratch;
+          }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
           function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
