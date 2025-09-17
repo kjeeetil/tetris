@@ -2500,6 +2500,21 @@
                     for(let d=0; d<newStd.length; d++){
                       newStd[d] = Math.max(train.minStd, newStd[d] * 0.85);
                     }
+                    const prevDiversityScale = train.diversityScale;
+                    const prevRestartProb = train.randomRestartProb;
+                    const baseDiversityScale = train.diversityBaseScale ?? prevDiversityScale;
+                    const minDiversityScale = train.diversityMinScale ?? baseDiversityScale;
+                    const maxDiversityScale = train.diversityMaxScale ?? baseDiversityScale;
+                    const baseRestartProb = train.randomRestartBaseProb ?? prevRestartProb;
+                    const minRestartProb = train.randomRestartMin ?? baseRestartProb;
+                    const maxRestartProb = train.randomRestartMax ?? baseRestartProb;
+                    train.diversityScale = Math.min(maxDiversityScale, Math.max(minDiversityScale, baseDiversityScale));
+                    train.randomRestartProb = Math.min(maxRestartProb, Math.max(minRestartProb, baseRestartProb));
+                    if(prevDiversityScale !== train.diversityScale || prevRestartProb !== train.randomRestartProb){
+                      log(
+                        `Progress resumed: exploration reset — diversity scale -> ${train.diversityScale.toFixed(2)}, restart mix -> ${(train.randomRestartProb * 100).toFixed(0)}%`
+                      );
+                    }
                     train.bestFitness = bestThisGen;
                     train.genNoImprove = 0;
                   } else {
