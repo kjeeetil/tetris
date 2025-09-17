@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tetris.features import FEAT_DIM, features_from_grid
-from tetris.headless_model import SimplifiedHeadlessModel
+from tetris import HeadlessPlacement, SimplifiedHeadlessModel
 from tetris.tetromino import TetrominoType
 
 
@@ -25,6 +25,7 @@ def test_headless_line_clear_scores_and_resets_bottom_row() -> None:
     target = next(
         p for p in placements if p.rotation == 0 and p.column == 0
     )  # rotation 0 is horizontal
+    assert isinstance(target, HeadlessPlacement)
 
     info = model.apply(target)
 
@@ -42,6 +43,7 @@ def test_headless_reaches_level_ten_and_ends_session() -> None:
     model._level = 9
 
     placement = model.placements()[0]
+    assert isinstance(placement, HeadlessPlacement)
     model.apply(placement)
 
     assert model.game_over is True
@@ -54,6 +56,7 @@ def test_headless_feature_vector_matches_reference() -> None:
     model.reset(seed=1)
 
     placement = model.placements()[0]
+    assert isinstance(placement, HeadlessPlacement)
     model.apply(placement)
 
     features = model.feature_vector()
