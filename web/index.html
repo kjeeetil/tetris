@@ -17,6 +17,7 @@
       rel="stylesheet"
     />
     <script>
+      window.tailwind = window.tailwind || {};
       tailwind.config = {
         theme: {
           extend: {
@@ -930,6 +931,24 @@
 
         const SHAPES = {};
         for (const k of Object.keys(Shapes)) SHAPES[k] = genRotations(Shapes[k]);
+
+        const UNIQUE_ROTATIONS = Object.fromEntries(
+          Object.entries(SHAPES).map(([shape, states]) => {
+            const seen = new Set();
+            const indices = [];
+            for (let i = 0; i < states.length; i++) {
+              const signature = states[i]
+                .map(([r, c]) => `${r},${c}`)
+                .sort()
+                .join('|');
+              if (!seen.has(signature)) {
+                seen.add(signature);
+                indices.push(i);
+              }
+            }
+            return [shape, indices];
+          })
+        );
 
         const emptyGrid = () => Array.from({length: HEIGHT}, () => Array(WIDTH).fill(0));
 
@@ -2371,6 +2390,8 @@
                 updateTrainStatus();
               } else {
                 const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+                const bestIdx = idx[0];
+                const bestThisGen = train.candScores[bestIdx];
                 const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
                 const elites = idx.slice(0, eliteCount);
                 const dim = paramDim();
@@ -2394,9 +2415,6 @@
                       const diff = wCand[d] - newMean[d];
                       newStd[d] += diff * diff;
                     }
-
-                    train.bestFitness = bestThisGen;
-
                   }
                 }
                 for(let d = 0; d < dim; d++){
@@ -2405,8 +2423,7 @@
                   const bounded = Math.min(train.maxStd, Math.max(train.minStd, stdValue));
                   newStd[d] = Number.isFinite(bounded) ? bounded : train.minStd;
                 }
-                const bestIdx = idx[0];
-                const bestThisGen = train.candScores[bestIdx];
+                train.bestFitness = bestThisGen;
                 const bestWeights = train.candWeights[bestIdx];
                 train.mean = newMean;
                 train.std = newStd;
@@ -2436,7 +2453,6 @@
           }
           window.__onGameOver = onGameOver;
 
-          function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function resetGridScratchFrom(source){
             for(let r=0; r<HEIGHT; r++){
@@ -2472,7 +2488,7 @@
           function enumeratePlacements(grid, shape){
             return trainingProfiler.section('train.full.enumerate', () => {
               const actions = [];
-              const rotIdx = uniqueRotIdx(shape);
+              const rotIdx = UNIQUE_ROTATIONS[shape];
               for(const rot of rotIdx){
                 const width = stateWidth(SHAPES[shape][rot]);
                 for(let col=0; col<=WIDTH-width; col++){
@@ -2620,6 +2636,7 @@
               return fillFeatureVector(featureScratch, lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
             });
           }
+
           function featuresForPlacement(grid, shape, rot, col){
             const sim = simulateAfterPlacement(grid, shape, rot, col);
             if(!sim) return null;
@@ -2629,9 +2646,8 @@
             placementScratch.feats = feats;
             return placementScratch;
           }
+
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
-          function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
-          function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
           const mlpActivationScratch = [];
           let mlpOutputScratch = null;
           let mlpScratchDtype = null;
@@ -2731,7 +2747,7 @@
             return outputScratch[0] + bias;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
-          function choosePlacement2(weights, grid, curShape){
+          function choosePlacement(weights, grid, curShape){
             return trainingProfiler.section('train.plan.single', () => {
               const acts = enumeratePlacements(grid, curShape);
               if(acts.length === 0) return null;
@@ -2756,7 +2772,7 @@
               if(!state.active) return null;
               const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
               // Single-ply evaluation selects the best placement for the current piece.
-              const placement = choosePlacement2(w, state.grid, state.active.shape);
+              const placement = choosePlacement(w, state.grid, state.active.shape);
               if(!placement){
                 return null;
               }
