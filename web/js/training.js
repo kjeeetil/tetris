@@ -153,6 +153,8 @@ export function initTraining(game, renderer) {
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
 
+  const LEVEL_CAP = 10;
+
   function logTrainingProfileSummary(limit = 6) {
     const summary = trainingProfiler.summary({ sortBy: 'total', descending: true, limit });
     const trainState = typeof window !== 'undefined' && window.__train ? window.__train : null;
@@ -611,7 +613,7 @@ export function initTraining(game, renderer) {
       train.mean = typed;
       train.std = initialStd(modelType, mlpHiddenLayers);
       train.currentWeightsOverride = null;
-      train.ai.plan = null;
+      resetAiPlanState();
 
       const bestCopy = new Float64Array(typed.length);
       for(let i = 0; i < typed.length; i++){
@@ -1122,9 +1124,7 @@ export function initTraining(game, renderer) {
       trainingProfiler.reset();
       trainingProfiler.enable();
       train.performanceSummary = [];
-      train.enabled = true; train.gen = 0; train.ai.plan = null; train.ai.acc = 0; samplePopulation();
-      train.ai.lastSig = '';
-      train.ai.staleMs = 0;
+      train.enabled = true; train.gen = 0; resetAiPlanState(); train.ai.acc = 0; samplePopulation();
       train.gameScores = [];
       train.gameModelTypes = [];
       train.gameScoresOffset = 0;
@@ -1146,7 +1146,7 @@ export function initTraining(game, renderer) {
     function stopTraining(){
       const wasRunning = train.enabled;
       train.enabled = false;
-      train.ai.plan = null;
+      resetAiPlanState();
       const btn = document.getElementById('start-training');
       if(btn){
         btn.textContent = 'Start Training';
@@ -1178,7 +1178,7 @@ export function initTraining(game, renderer) {
       train.candWeights = [];
       train.candScores = [];
       train.candIndex = -1;
-      train.ai.plan = null;
+      resetAiPlanState();
       train.ai.acc = 0;
       train.performanceSummary = [];
       train.gameScores = [];
@@ -1198,6 +1198,26 @@ export function initTraining(game, renderer) {
       log('Training parameters reset');
     }
     window.startTraining = startTraining; window.stopTraining = stopTraining; window.resetTraining = resetTraining;
+
+    function resetAiPlanState(){
+      if(!train || !train.ai){
+        return;
+      }
+      train.ai.plan = null;
+      train.ai.staleMs = 0;
+      train.ai.lastSig = '';
+    }
+
+    function maybeEndForLevelCap(logPrefix = 'AI'){
+      if(state.level < LEVEL_CAP){
+        return false;
+      }
+      resetAiPlanState();
+      const prefix = logPrefix ? `${logPrefix}: ` : '';
+      log(`${prefix}level cap reached -> game over`);
+      onGameOver();
+      return true;
+    }
 
     function onGameOver(){
       log('Game over. Resetting.');
@@ -1232,7 +1252,7 @@ export function initTraining(game, renderer) {
           Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
           state.gravity = gravityForLevel(0);
           updateLevel(); updateScore();
-          spawn(); train.ai.plan = null; train.ai.acc = 0;
+          spawn(); resetAiPlanState(); train.ai.acc = 0;
           log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
           updateTrainStatus();
         } else {
@@ -1243,7 +1263,7 @@ export function initTraining(game, renderer) {
             Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
             state.gravity = gravityForLevel(0);
             updateLevel(); updateScore();
-            spawn(); train.ai.plan = null; train.ai.acc = 0;
+            spawn(); resetAiPlanState(); train.ai.acc = 0;
             updateScorePlot();
             log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
             updateTrainStatus();
@@ -1307,7 +1327,7 @@ export function initTraining(game, renderer) {
           Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
           state.gravity = gravityForLevel(0);
           updateLevel(); updateScore();
-          spawn(); train.ai.plan = null; train.ai.acc = 0;
+          spawn(); resetAiPlanState(); train.ai.acc = 0;
           updateScorePlot();
           log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
           updateTrainStatus();
@@ -1861,12 +1881,6 @@ export function initTraining(game, renderer) {
           return false;
         }
 
-        const resetPlanState = () => {
-          train.ai.plan = null;
-          train.ai.staleMs = 0;
-          train.ai.lastSig = '';
-        };
-
         const finalizePlacement = (piece, topOutLog) => {
           state.active = piece;
           lock(state.grid, piece);
@@ -1882,17 +1896,20 @@ export function initTraining(game, renderer) {
             updateScore();
             recordClear(cleared);
           }
+          if(maybeEndForLevelCap('AI')){
+            return false;
+          }
           const topOut = state.grid[0].some((v) => v !== 0);
           if(topOut){
             if(topOutLog){
               log(topOutLog);
             }
-            resetPlanState();
+            resetAiPlanState();
             onGameOver();
             return false;
           }
           spawn();
-          resetPlanState();
+          resetAiPlanState();
           if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
           return false;
         };
@@ -1953,15 +1970,16 @@ export function initTraining(game, renderer) {
             updateScore();
             recordClear(cleared);
           }
+          if(maybeEndForLevelCap('AI')){
+            return false;
+          }
           if(state.grid[0].some((v) => v !== 0)) {
+            resetAiPlanState();
             onGameOver();
-            train.ai.plan = null;
-            train.ai.staleMs = 0;
             return false;
           }
           spawn();
-          train.ai.plan = null;
-          train.ai.staleMs = 0;
+          resetAiPlanState();
           if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
           return false;
         }
@@ -1984,12 +2002,17 @@ export function initTraining(game, renderer) {
               updateScore();
               recordClear(cleared);
             }
+            if(maybeEndForLevelCap('AI')){
+              return false;
+            }
             if(state.grid[0].some((v) => v !== 0)) {
               log('AI: top-out after forced drop');
+              resetAiPlanState();
               onGameOver();
               return false;
             }
             spawn();
+            resetAiPlanState();
             if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
             return false;
           }
@@ -2051,14 +2074,17 @@ export function initTraining(game, renderer) {
             updateScore();
             recordClear(cleared);
           }
+          if(maybeEndForLevelCap('AI')){
+            return false;
+          }
           if(state.grid[0].some((v) => v !== 0)) {
             log('AI: top-out after drop');
+            resetAiPlanState();
             onGameOver();
-            train.ai.plan = null;
             return false;
           }
           spawn();
-          train.ai.plan = null;
+          resetAiPlanState();
           if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
           return false;
         }
