@@ -2196,11 +2196,6 @@
             heavyTailScale: 3.0,
             plateauGens: 8,
             stdBoost: 1.8,
-            diversityFrac: 0.3,
-            diversityScale: 4.0,
-            diversityBaseScale: 4.0,
-            diversityMaxScale: 12.0,
-            diversityBoost: 1.35,
             randomRestartProb: 0.15,
             randomRestartBaseProb: 0.15,
             randomRestartMax: 0.6,
@@ -2282,64 +2277,30 @@
           function samplePopulation(){
             const dim = paramDim();
             train.candWeights = [];
-            let diversityCount = Math.floor(train.diversityFrac * train.popSize);
-            diversityCount = Math.min(train.popSize, Math.max(0, diversityCount));
-            if(train.popSize >= 4){
-              diversityCount = Math.max(2, diversityCount);
-            }
-            let baseCount = train.popSize - diversityCount;
-            if(baseCount < 0){ baseCount = 0; diversityCount = train.popSize; }
-            if(baseCount % 2 !== 0){
-              if(baseCount > 0){
-                baseCount -= 1;
-                diversityCount += 1;
-              }
-            }
-            const baseHalf = Math.floor(baseCount / 2);
-            const heavyPairs = Math.min(baseHalf, Math.floor((train.heavyTailFrac * baseCount)/2));
-            const baseNoises = new Array(baseHalf);
-            for(let j=0; j<baseHalf; j++){
+            const pairCount = Math.ceil(train.popSize / 2);
+            const heavyPairs = Math.min(pairCount, Math.floor(train.heavyTailFrac * pairCount));
+            const baseNoises = new Array(pairCount);
+            for(let j=0; j<pairCount; j++){
               const eps = new Float32Array(dim);
               for(let d=0; d<dim; d++) eps[d] = randn();
               baseNoises[j] = eps;
             }
-            for(let pair=0; pair<baseHalf; pair++){
+            for(let pair=0; pair<pairCount; pair++){
               const eps = baseNoises[pair];
-              const pairScale = (pair < heavyPairs) ? train.heavyTailScale : 1.0;
+              const useRestart = Math.random() < train.randomRestartProb;
+              const restartScale = useRestart ? train.randomRestartScale : 1.0;
+              const pairScale = ((pair < heavyPairs) ? train.heavyTailScale : 1.0) * restartScale;
               const wPos = newWeightArray(dim);
               const wNeg = newWeightArray(dim);
               for(let d=0; d<dim; d++){
-                const stdv = (train.std[d] || train.minStd) * pairScale;
-                const offset = stdv * eps[d];
-                wPos[d] = train.mean[d] + offset;
-                wNeg[d] = train.mean[d] - offset;
+                const baseStd = Math.max(train.std[d] || 0, train.minStd);
+                const meanVal = train.mean[d] || 0;
+                const offset = baseStd * pairScale * eps[d];
+                wPos[d] = meanVal + offset;
+                wNeg[d] = meanVal - offset;
               }
               train.candWeights.push(wPos);
               train.candWeights.push(wNeg);
-            }
-            const needDiversity = train.candWeights.length < train.popSize;
-            const baselineMean = needDiversity ? initialMean(train.modelType, train.mlpHiddenLayers) : null;
-            const baselineStd = needDiversity ? initialStd(train.modelType, train.mlpHiddenLayers) : null;
-            const haveBest = !!(train.bestEverWeights && train.bestEverWeights.length === dim);
-            while(train.candWeights.length < train.popSize){
-              const w = newWeightArray(dim);
-              const useRestart = Math.random() < train.randomRestartProb;
-              const anchor = (!useRestart && haveBest && Math.random() < 0.5)
-                ? train.bestEverWeights
-                : (!useRestart ? baselineMean : null);
-              for(let d=0; d<dim; d++){
-                if(useRestart){
-                  const baseStd = baselineStd ? (baselineStd[d] || train.minStd) : train.minStd;
-                  const range = train.randomRestartScale * Math.max(baseStd, train.minStd);
-                  const noise = (Math.random() * 2 - 1) * range;
-                  w[d] = noise;
-                } else {
-                  const baseStd = baselineStd ? Math.max(train.std[d] || 0, baselineStd[d] || 0, train.minStd) : Math.max(train.std[d] || 0, train.minStd);
-                  const baseValue = anchor ? anchor[d] : 0;
-                  w[d] = baseValue + randn() * baseStd * train.diversityScale;
-                }
-              }
-              train.candWeights.push(w);
             }
             if(train.candWeights.length > train.popSize){
               train.candWeights.length = train.popSize;
@@ -2423,7 +2384,6 @@
             train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
             train.bestByGeneration = [];
             train.historySelection = null;
-            train.diversityScale = train.diversityBaseScale;
             train.randomRestartProb = train.randomRestartBaseProb;
             train.scorePlotPending = 0;
             train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
@@ -2520,19 +2480,14 @@
                     for(let d=0; d<newStd.length; d++){
                       newStd[d] = Math.max(train.minStd, newStd[d] * 0.85);
                     }
-                    const prevDiversityScale = train.diversityScale;
                     const prevRestartProb = train.randomRestartProb;
-                    const baseDiversityScale = train.diversityBaseScale ?? prevDiversityScale;
-                    const minDiversityScale = train.diversityMinScale ?? baseDiversityScale;
-                    const maxDiversityScale = train.diversityMaxScale ?? baseDiversityScale;
                     const baseRestartProb = train.randomRestartBaseProb ?? prevRestartProb;
                     const minRestartProb = train.randomRestartMin ?? baseRestartProb;
                     const maxRestartProb = train.randomRestartMax ?? baseRestartProb;
-                    train.diversityScale = Math.min(maxDiversityScale, Math.max(minDiversityScale, baseDiversityScale));
                     train.randomRestartProb = Math.min(maxRestartProb, Math.max(minRestartProb, baseRestartProb));
-                    if(prevDiversityScale !== train.diversityScale || prevRestartProb !== train.randomRestartProb){
+                    if(prevRestartProb !== train.randomRestartProb){
                       log(
-                        `Progress resumed: exploration reset — diversity scale -> ${train.diversityScale.toFixed(2)}, restart mix -> ${(train.randomRestartProb * 100).toFixed(0)}%`
+                        `Progress resumed: exploration reset — restart mix -> ${(train.randomRestartProb * 100).toFixed(0)}%`
                       );
                     }
                     train.bestFitness = bestThisGen;
@@ -2545,10 +2500,6 @@
                       }
                       train.genNoImprove = 0;
                       let plateauMsg = 'Plateau detected: boosted exploration std';
-                      if(train.diversityScale < train.diversityMaxScale){
-                        train.diversityScale = Math.min(train.diversityMaxScale, train.diversityScale * train.diversityBoost);
-                        plateauMsg += `, diversity scale -> ${train.diversityScale.toFixed(2)}`;
-                      }
                       if(train.randomRestartProb < train.randomRestartMax){
                         train.randomRestartProb = Math.min(train.randomRestartMax, train.randomRestartProb + train.randomRestartStep);
                         plateauMsg += `, restart mix -> ${(train.randomRestartProb * 100).toFixed(0)}%`;
