@@ -17,6 +17,7 @@
       rel="stylesheet"
     />
     <script>
+      window.tailwind = window.tailwind || {};
       tailwind.config = {
         theme: {
           extend: {
@@ -2383,6 +2384,8 @@
                 updateTrainStatus();
               } else {
                 const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+                const bestIdx = idx[0];
+                const bestThisGen = train.candScores[bestIdx];
                 const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
                 const elites = idx.slice(0, eliteCount);
                 const dim = paramDim();
@@ -2406,9 +2409,6 @@
                       const diff = wCand[d] - newMean[d];
                       newStd[d] += diff * diff;
                     }
-
-                    train.bestFitness = bestThisGen;
-
                   }
                 }
                 for(let d = 0; d < dim; d++){
@@ -2417,8 +2417,7 @@
                   const bounded = Math.min(train.maxStd, Math.max(train.minStd, stdValue));
                   newStd[d] = Number.isFinite(bounded) ? bounded : train.minStd;
                 }
-                const bestIdx = idx[0];
-                const bestThisGen = train.candScores[bestIdx];
+                train.bestFitness = bestThisGen;
                 const bestWeights = train.candWeights[bestIdx];
                 train.mean = newMean;
                 train.std = newStd;
