@@ -2577,10 +2577,7 @@
               return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
             });
           }
-          function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
-          function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
-          function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
           const mlpActivationScratch = [];
           let mlpOutputScratch = null;
           let mlpScratchDtype = null;
@@ -2680,7 +2677,7 @@
             return outputScratch[0] + bias;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
-          function choosePlacement2(weights, grid, curShape){
+          function choosePlacement(weights, grid, curShape){
             return trainingProfiler.section('train.plan.single', () => {
               const acts = enumeratePlacements(grid, curShape);
               if(acts.length === 0) return null;
@@ -2705,7 +2702,7 @@
               if(!state.active) return null;
               const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
               // Single-ply evaluation selects the best placement for the current piece.
-              const placement = choosePlacement2(w, state.grid, state.active.shape);
+              const placement = choosePlacement(w, state.grid, state.active.shape);
               if(!placement){
                 return null;
               }
