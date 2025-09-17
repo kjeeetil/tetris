@@ -2192,8 +2192,6 @@
             historySelection: null,
             genNoImprove: 0,
             // exploration config
-            heavyTailFrac: 0.25,
-            heavyTailScale: 3.0,
             plateauGens: 8,
             stdBoost: 1.8,
             diversityFrac: 0.3,
@@ -2296,7 +2294,6 @@
               }
             }
             const baseHalf = Math.floor(baseCount / 2);
-            const heavyPairs = Math.min(baseHalf, Math.floor((train.heavyTailFrac * baseCount)/2));
             const baseNoises = new Array(baseHalf);
             for(let j=0; j<baseHalf; j++){
               const eps = new Float32Array(dim);
@@ -2305,11 +2302,10 @@
             }
             for(let pair=0; pair<baseHalf; pair++){
               const eps = baseNoises[pair];
-              const pairScale = (pair < heavyPairs) ? train.heavyTailScale : 1.0;
               const wPos = newWeightArray(dim);
               const wNeg = newWeightArray(dim);
               for(let d=0; d<dim; d++){
-                const stdv = (train.std[d] || train.minStd) * pairScale;
+                const stdv = (train.std[d] || train.minStd);
                 const offset = stdv * eps[d];
                 wPos[d] = train.mean[d] + offset;
                 wNeg[d] = train.mean[d] - offset;
