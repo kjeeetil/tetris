@@ -931,6 +931,24 @@
         const SHAPES = {};
         for (const k of Object.keys(Shapes)) SHAPES[k] = genRotations(Shapes[k]);
 
+        const UNIQUE_ROTATIONS = Object.fromEntries(
+          Object.entries(SHAPES).map(([shape, states]) => {
+            const seen = new Set();
+            const indices = [];
+            for (let i = 0; i < states.length; i++) {
+              const signature = states[i]
+                .map(([r, c]) => `${r},${c}`)
+                .sort()
+                .join('|');
+              if (!seen.has(signature)) {
+                seen.add(signature);
+                indices.push(i);
+              }
+            }
+            return [shape, indices];
+          })
+        );
+
         const emptyGrid = () => Array.from({length: HEIGHT}, () => Array(WIDTH).fill(0));
 
         // Level speed table roughly matching classic NES Tetris up to level 9
@@ -2430,7 +2448,6 @@
           }
           window.__onGameOver = onGameOver;
 
-          function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function copyGrid(g){ return g.map(r=>r.slice()); }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
@@ -2447,7 +2464,7 @@
           function enumeratePlacements(grid, shape){
             return trainingProfiler.section('train.full.enumerate', () => {
               const actions = [];
-              const rotIdx = uniqueRotIdx(shape);
+              const rotIdx = UNIQUE_ROTATIONS[shape];
               for(const rot of rotIdx){
                 const width = stateWidth(SHAPES[shape][rot]);
                 for(let col=0; col<=WIDTH-width; col++){
