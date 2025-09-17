@@ -2977,7 +2977,10 @@
                 aggH += v;
                 if(v > maxH) maxH = v;
               }
-              const {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
+              let {wellSum, edgeWell, tetrisWell} = wellMetrics(h);
+              if(Holes > 0){
+                tetrisWell = 0;
+              }
               const Contact = contactArea(g);
               const rT = rowTransitions(g);
               const cT = colTransitions(g);
@@ -3003,7 +3006,10 @@
                 aggH += v;
                 if(v > maxH) maxH = v;
               }
-              const {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
+              let {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
+              if(Holes > 0){
+                tetrisWell = 0;
+              }
               const Contact = contactAreaFromRows(rows);
               const rT = rowTransitionsFromRows(rows);
               const cT = columnTransitionsFromRows(rows);
