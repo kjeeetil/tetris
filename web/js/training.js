@@ -216,6 +216,54 @@ export function initTraining(game, renderer) {
     const FEAT_DIM = FEATURE_NAMES.length;
     const AI_STEP_MS = 28; // ms between AI animation steps
 
+    const ROW_MASK_LIMIT = (1 << WIDTH) - 1;
+    const rowTransitionTable =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(ROW_MASK_LIMIT + 1) : new Array(ROW_MASK_LIMIT + 1).fill(0);
+    const rowPopcountTable =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(ROW_MASK_LIMIT + 1) : new Array(ROW_MASK_LIMIT + 1).fill(0);
+    const rowHorizontalContactTable =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(ROW_MASK_LIMIT + 1) : new Array(ROW_MASK_LIMIT + 1).fill(0);
+    const bitIndexTable = (() => {
+      const size = ROW_MASK_LIMIT + 1;
+      const table = typeof Int16Array !== 'undefined' ? new Int16Array(size) : new Array(size);
+      if (typeof table.fill === 'function') {
+        table.fill(-1);
+      } else {
+        for (let i = 0; i < size; i += 1) table[i] = -1;
+      }
+      for (let c = 0; c < WIDTH; c += 1) {
+        table[1 << c] = c;
+      }
+      return table;
+    })();
+
+    function countBits32(value) {
+      value -= (value >> 1) & 0x55555555;
+      value = (value & 0x33333333) + ((value >> 2) & 0x33333333);
+      return (((value + (value >> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+    }
+
+    (function initRowMetricTables() {
+      for (let mask = 0; mask <= ROW_MASK_LIMIT; mask += 1) {
+        let prev = 0;
+        let transitions = 0;
+        for (let c = 0; c < WIDTH; c += 1) {
+          const filled = (mask >> c) & 1;
+          if (filled !== prev) {
+            transitions += 1;
+            prev = filled;
+          }
+        }
+        if (prev !== 0) {
+          transitions += 1;
+        }
+        rowTransitionTable[mask] = transitions;
+        rowPopcountTable[mask] = countBits32(mask);
+        const horizontalPairs = countBits32(mask & ((mask << 1) & ROW_MASK_LIMIT));
+        rowHorizontalContactTable[mask] = horizontalPairs * 2;
+      }
+    })();
+
     // MLP architecture (when selected)
     const DEFAULT_MLP_HIDDEN = [8];
     const MLP_MIN_HIDDEN_LAYERS = 1;
@@ -1060,12 +1108,10 @@ export function initTraining(game, renderer) {
     };
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
-    const columnSeenScratch = typeof Uint8Array !== 'undefined' ? new Uint8Array(WIDTH) : new Array(WIDTH).fill(0);
-    const columnPrevStateScratch = typeof Uint8Array !== 'undefined' ? new Uint8Array(WIDTH) : new Array(WIDTH).fill(0);
+    const columnMaskScratch = typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
     const featureScratch = new Float32Array(FEAT_DIM);
     const pooledPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0 };
-    const placementScratch = { feats: featureScratch, lines: 0, grid: gridScratch };
     window.__train = train;
     // After `train` exists, honor train.dtype for future allocations
     dtypePreference = train.dtype || DEFAULT_DTYPE;
@@ -1585,73 +1631,88 @@ export function initTraining(game, renderer) {
     function featuresFromGrid(g, lines){
       return trainingProfiler.section('train.full.features', () => {
         const heights = columnHeightScratch;
-        heights.fill(0);
-        columnSeenScratch.fill(0);
-        columnPrevStateScratch.fill(0);
+        const columnMasks = columnMaskScratch;
+        if (typeof columnMasks.fill === 'function') {
+          columnMasks.fill(0);
+        } else {
+          for (let i = 0; i < columnMasks.length; i += 1) columnMasks[i] = 0;
+        }
 
-        let holes = 0;
         let rowTrans = 0;
         let colTrans = 0;
         let contact = 0;
+        let prevMask = 0;
 
-        for(let r = 0; r < HEIGHT; r++){
+        for (let r = 0; r < HEIGHT; r += 1) {
           const row = g[r];
-          const nextRow = r + 1 < HEIGHT ? g[r + 1] : null;
-          let prevRowVal = 0;
-          for(let c = 0; c < WIDTH; c++){
-            const filled = row[c] ? 1 : 0;
-            if(filled !== prevRowVal){
-              rowTrans += 1;
-              prevRowVal = filled;
-            }
-            if(filled !== columnPrevStateScratch[c]){
-              colTrans += 1;
-              columnPrevStateScratch[c] = filled;
-            }
-            if(filled){
-              if(heights[c] === 0){
-                heights[c] = HEIGHT - r;
-              }
-              columnSeenScratch[c] = 1;
-              if(r === HEIGHT - 1 || (nextRow && nextRow[c])){
-                contact += 1;
-              }
-              if(c > 0 && row[c - 1]){
-                contact += 1;
-              }
-              if(c < WIDTH - 1 && row[c + 1]){
-                contact += 1;
-              }
-            } else if(columnSeenScratch[c]){
-              holes += 1;
+          let mask = 0;
+          for (let c = 0; c < WIDTH; c += 1) {
+            if (row[c]) {
+              mask |= 1 << c;
             }
           }
-          if(prevRowVal !== 0){
-            rowTrans += 1;
+          rowTrans += rowTransitionTable[mask];
+          const horizontalContact = rowHorizontalContactTable[mask];
+          if (horizontalContact) {
+            contact += horizontalContact;
           }
+          const shared = mask & prevMask;
+          if (shared) {
+            contact += rowPopcountTable[shared];
+          }
+          const diff = mask ^ prevMask;
+          if (diff) {
+            colTrans += rowPopcountTable[diff];
+          }
+          let bits = mask;
+          while (bits) {
+            const lsb = bits & -bits;
+            const idx = bitIndexTable[lsb];
+            if (idx >= 0 && idx < WIDTH) {
+              columnMasks[idx] |= 1 << (HEIGHT - 1 - r);
+            }
+            bits ^= lsb;
+          }
+          prevMask = mask;
         }
 
-        for(let c = 0; c < WIDTH; c++){
-          if(columnPrevStateScratch[c] !== 0){
-            colTrans += 1;
-          }
+        if (prevMask) {
+          const bottomPop = rowPopcountTable[prevMask];
+          colTrans += bottomPop;
+          contact += bottomPop;
         }
 
         let aggregateHeight = 0;
         let maxHeight = 0;
-        for(let c = 0; c < WIDTH; c++){
-          const h = heights[c];
-          aggregateHeight += h;
-          if(h > maxHeight) maxHeight = h;
+        let holes = 0;
+
+        for (let c = 0; c < WIDTH; c += 1) {
+          const mask = columnMasks[c] || 0;
+          if (mask) {
+            const topBit = 31 - Math.clz32(mask);
+            const height = topBit + 1;
+            heights[c] = height;
+            aggregateHeight += height;
+            if (height > maxHeight) {
+              maxHeight = height;
+            }
+            if (topBit > 0) {
+              const belowMask = mask & ((1 << topBit) - 1);
+              const filledBelow = countBits32(belowMask);
+              holes += topBit - filledBelow;
+            }
+          } else {
+            heights[c] = 0;
+          }
         }
 
         let bump = 0;
-        for(let c = 0; c < WIDTH - 1; c++){
+        for (let c = 0; c < WIDTH - 1; c += 1) {
           bump += Math.abs(heights[c] - heights[c + 1]);
         }
 
         let { wellSum, edgeWell, tetrisWell } = wellMetrics(heights);
-        if(holes > 0){
+        if (holes > 0) {
           tetrisWell = 0;
         }
 
@@ -1670,16 +1731,6 @@ export function initTraining(game, renderer) {
           aggregateHeight
         );
       });
-    }
-
-    function featuresForPlacement(grid, shape, rot, col){
-      const sim = simulateAfterPlacement(grid, shape, rot, col);
-      if(!sim) return null;
-      const feats = featuresFromGrid(sim.grid, sim.lines);
-      placementScratch.lines = sim.lines;
-      placementScratch.grid = sim.grid;
-      placementScratch.feats = feats;
-      return placementScratch;
     }
 
     function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
