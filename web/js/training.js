@@ -1226,6 +1226,19 @@ export function initTraining(game, renderer) {
           log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
           updateTrainStatus();
         } else {
+          if(!Array.isArray(train.candScores) || train.candScores.length === 0){
+            log('Candidate score buffer missing or empty. Reinitializing population.');
+            samplePopulation();
+            train.candIndex = 0;
+            Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+            state.gravity = gravityForLevel(0);
+            updateLevel(); updateScore();
+            spawn(); train.ai.plan = null; train.ai.acc = 0;
+            updateScorePlot();
+            log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+            updateTrainStatus();
+            return;
+          }
           const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
           const bestIdx = idx[0];
           const bestThisGen = train.candScores[bestIdx];
