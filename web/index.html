@@ -1769,7 +1769,6 @@
               train.gen = snapGen;
             }
             train.bestFitness = train.bestEverFitness;
-            train.genNoImprove = 0;
 
             updateTrainStatus();
 
@@ -2172,10 +2171,7 @@
             bestEverWeights: null,
             bestByGeneration: [],
             historySelection: null,
-            genNoImprove: 0,
             // exploration config
-            plateauGens: 8,
-            stdBoost: 1.8,
             diversityFrac: 0.3,
             diversityScale: 4.0,
             diversityBaseScale: 4.0,
@@ -2372,7 +2368,6 @@
             train.mean = initialMean(train.modelType);
             train.std = initialStd(train.modelType);
             train.gen = 0;
-            train.genNoImprove = 0;
             train.candWeights = [];
             train.candScores = [];
             train.candIndex = -1;
@@ -2483,32 +2478,11 @@
                     for(let d=0; d<newStd.length; d++){
                       newStd[d] = Math.max(train.minStd, newStd[d] * 0.85);
                     }
-                    const prevDiversityScale = train.diversityScale;
-                    const baseDiversityScale = train.diversityBaseScale ?? prevDiversityScale;
+                    const baseDiversityScale = train.diversityBaseScale ?? train.diversityScale;
                     const minDiversityScale = train.diversityMinScale ?? baseDiversityScale;
                     const maxDiversityScale = train.diversityMaxScale ?? baseDiversityScale;
                     train.diversityScale = Math.min(maxDiversityScale, Math.max(minDiversityScale, baseDiversityScale));
-                    if(prevDiversityScale !== train.diversityScale){
-                      log(
-                        `Progress resumed: exploration reset — diversity scale -> ${train.diversityScale.toFixed(2)}`
-                      );
-                    }
                     train.bestFitness = bestThisGen;
-                    train.genNoImprove = 0;
-                  } else {
-                    train.genNoImprove += 1;
-                    if(train.genNoImprove >= train.plateauGens){
-                      for(let d=0; d<newStd.length; d++){
-                        newStd[d] = Math.min(train.maxStd, newStd[d] * train.stdBoost);
-                      }
-                      train.genNoImprove = 0;
-                      let plateauMsg = 'Plateau detected: boosted exploration std';
-                      if(train.diversityScale < train.diversityMaxScale){
-                        train.diversityScale = Math.min(train.diversityMaxScale, train.diversityScale * train.diversityBoost);
-                        plateauMsg += `, diversity scale -> ${train.diversityScale.toFixed(2)}`;
-                      }
-                      log(plateauMsg);
-                    }
                   }
                   train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
                   samplePopulation();
