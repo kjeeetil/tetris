@@ -134,14 +134,40 @@ export function lock(grid, piece) {
 }
 
 export function clearRows(grid) {
-  const remaining = grid.filter((row) => row.some((value) => value === 0));
-  const cleared = HEIGHT - remaining.length;
-  while (remaining.length < HEIGHT) {
-    remaining.unshift(Array(WIDTH).fill(0));
+  let write = HEIGHT - 1;
+  let cleared = 0;
+
+  for (let row = HEIGHT - 1; row >= 0; row -= 1) {
+    const source = grid[row];
+    let filled = true;
+    for (let col = 0; col < WIDTH; col += 1) {
+      if (!source[col]) {
+        filled = false;
+        break;
+      }
+    }
+
+    if (filled) {
+      cleared += 1;
+      continue;
+    }
+
+    if (write !== row) {
+      const target = grid[write];
+      for (let col = 0; col < WIDTH; col += 1) {
+        target[col] = source[col];
+      }
+    }
+    write -= 1;
   }
-  for (let r = 0; r < HEIGHT; r += 1) {
-    grid[r] = remaining[r];
+
+  for (; write >= 0; write -= 1) {
+    const target = grid[write];
+    for (let col = 0; col < WIDTH; col += 1) {
+      target[col] = 0;
+    }
   }
+
   return cleared;
 }
 
