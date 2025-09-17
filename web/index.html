@@ -1111,16 +1111,8 @@
           }
         }
 
-        // Record cleared line counts for training fitness (safe no-op if training is off)
-        function recordClear(lines){
-          try {
-            const tr = window.__train;
-            if(tr && tr.enabled){
-              if(!tr.clearCounts) tr.clearCounts = {1:0,2:0,3:0,4:0};
-              if(lines>=1 && lines<=4){ tr.clearCounts[lines] = (tr.clearCounts[lines]||0) + 1; }
-            }
-          } catch(_) { /* ignore */ }
-        }
+        // Legacy stub: line-clear tracking was only needed for shaped fitness
+        function recordClear(){ /* no-op */ }
 
         function isHeadlessTrainingActive(){
           try {
@@ -1372,7 +1364,6 @@
           const AI_STEP_MS = 28; // ms between AI animation steps
           const LOOKAHEAD_LAMBDA = 0.7; // weight for next-piece lookahead score
           const LOOKAHEAD_BEAM = 6; // evaluate next-piece lookahead only for top-K first moves
-          const SCORE_WEIGHT = 3.0; // emphasize final score in fitness
 
           // MLP architecture (when selected)
           const DEFAULT_MLP_HIDDEN = [8];
@@ -1493,7 +1484,7 @@
             return `${genLabel} — Architecture unavailable`;
           }
 
-          function formatFitness(value){
+          function formatScore(value){
             if(!Number.isFinite(value)){
               return 'n/a';
             }
@@ -1555,14 +1546,14 @@
                 const latest = train.bestByGeneration[total - 1];
                 const info = [];
                 if(Number.isFinite(latest.gen)) info.push(`Latest stored: Gen ${latest.gen}`);
-                if(Number.isFinite(latest.fitness)) info.push(`Fitness ${formatFitness(latest.fitness)}`);
+                if(Number.isFinite(latest.fitness)) info.push(`Score ${formatScore(latest.fitness)}`);
                 if(latest.modelType) info.push(latest.modelType.toUpperCase());
                 historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
               } else {
                 const entry = train.bestByGeneration[activeIndex];
                 const info = [];
                 if(entry.modelType) info.push(entry.modelType.toUpperCase());
-                if(Number.isFinite(entry.fitness)) info.push(`Fitness ${formatFitness(entry.fitness)}`);
+                if(Number.isFinite(entry.fitness)) info.push(`Score ${formatScore(entry.fitness)}`);
                 historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
               }
             }
@@ -2180,7 +2171,6 @@
             currentWeightsOverride: null,
             ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
             performanceSummary: [],
-            clearCounts: {1:0,2:0,3:0,4:0},
             gameScores: [],
             gameModelTypes: [],
             gameScoresOffset: 0,
@@ -2351,7 +2341,6 @@
             }
             train.candScores = new Array(train.popSize).fill(0);
             train.candIndex = 0;
-            train.clearCounts = {1:0,2:0,3:0,4:0};
           }
 
           function startTraining(){
@@ -2415,7 +2404,6 @@
             train.ai.plan = null;
             train.ai.acc = 0;
             train.performanceSummary = [];
-            train.clearCounts = {1:0,2:0,3:0,4:0};
             train.gameScores = [];
             train.gameModelTypes = [];
             train.gameScoresOffset = 0;
@@ -2437,10 +2425,7 @@
           function onGameOver(){
             log('Game over. Resetting.');
             if(train.enabled){
-              // Shaped fitness: prefer multi-line clears and discourage singles
-              const c = train.clearCounts || {1:0,2:0,3:0,4:0};
-              const c1 = c[1] || 0, c2 = c[2] || 0, c3 = c[3] || 0, c4 = c[4] || 0;
-              const fitness = SCORE_WEIGHT*state.score + 100*(4*c4 + 2*c3 + 1*c2) - 100*c1;
+              const fitness = state.score;
               if(train.candIndex >= 0) train.candScores[train.candIndex] = fitness;
               // Append raw score for progress plot and mark model type
               train.gameScores.push(state.score);
@@ -2472,7 +2457,7 @@
                   Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
                   state.gravity = gravityForLevel(0);
                   updateLevel(); updateScore();
-                  spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+                  spawn(); train.ai.plan = null; train.ai.acc = 0;
                   updateTrainStatus();
                   return;
                 } else {
@@ -2556,7 +2541,7 @@
                       log(plateauMsg);
                     }
                   }
-                  train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best fitness: ${bestThisGen}`);
+                  train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best score: ${bestThisGen}`);
                   samplePopulation();
                   // Elitist carryover
                   if(train.candWeights.length>0){ const copy0 = newWeightArray(bestW.length); for(let d=0; d<bestW.length; d++) copy0[d]=bestW[d]; train.candWeights[0] = copy0; }
@@ -2564,7 +2549,7 @@
                   Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
                   state.gravity = gravityForLevel(0);
                   updateLevel(); updateScore();
-                  spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+                  spawn(); train.ai.plan = null; train.ai.acc = 0;
                   updateScorePlot();
                   log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                   updateTrainStatus();
@@ -2576,7 +2561,7 @@
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
                 state.gravity = gravityForLevel(0);
                 updateLevel(); updateScore();
-                spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+                spawn(); train.ai.plan = null; train.ai.acc = 0;
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
               } else {
@@ -2587,7 +2572,7 @@
               Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
               state.gravity = gravityForLevel(0);
               updateLevel(); updateScore();
-              spawn(); train.ai.plan = null; train.ai.acc = 0; train.clearCounts = {1:0,2:0,3:0,4:0};
+              spawn(); train.ai.plan = null; train.ai.acc = 0;
               updateTrainStatus();
               return;
               }
