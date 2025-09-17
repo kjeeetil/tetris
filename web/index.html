@@ -2142,11 +2142,6 @@
             candWeights: [],
             candScores: [],
             candIndex: -1,
-            phase: 'eval',
-            reevalRuns: 3,
-            reevalDone: 0,
-            reevalAccum: 0,
-            reevalTarget: -1,
             // Visualization + speed controls for training
             visualizeBoard: false,     // if false: skip board/preview rendering
             fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
@@ -2319,7 +2314,7 @@
             train.gameModelTypes = [];
             train.gameScoresOffset = 0;
             train.totalGamesPlayed = 0;
-            train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1;
+            train.currentWeightsOverride = null;
             train.scorePlotPending = 0;
             train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
             updateTrainStatus();
@@ -2372,7 +2367,7 @@
             train.gameModelTypes = [];
             train.gameScoresOffset = 0;
             train.totalGamesPlayed = 0;
-            train.phase = 'eval'; train.currentWeightsOverride = null; train.reevalDone = 0; train.reevalAccum = 0; train.reevalTarget = -1; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
+            train.currentWeightsOverride = null; train.bestFitness = -Infinity; train.bestEverFitness = -Infinity; train.bestEverWeights = null;
             train.bestByGeneration = [];
             train.historySelection = null;
             train.diversityScale = train.diversityBaseScale;
@@ -2413,103 +2408,6 @@
               if(train.scorePlotPending >= updateStride){
                 updateScorePlot();
               }
-              // Re-evaluation phase handling
-              if(train.phase === 'reeval'){
-                train.reevalAccum += fitness; train.reevalDone += 1;
-                if(train.reevalDone < train.reevalRuns){
-                  Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
-                  state.gravity = gravityForLevel(0);
-                  updateLevel(); updateScore();
-                  spawn(); train.ai.plan = null; train.ai.acc = 0;
-                  updateTrainStatus();
-                  return;
-                } else {
-                  const avgFit = train.reevalAccum / train.reevalRuns;
-                  if(train.reevalTarget >= 0) train.candScores[train.reevalTarget] = avgFit;
-                  train.currentWeightsOverride = null; train.phase = 'eval';
-                  // Complete generation update after re-eval with rank-weighted elites
-                  const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
-                  const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
-                  const elites = idx.slice(0, eliteCount);
-                  const dim = paramDim();
-                  const wsum = eliteCount*(eliteCount+1)/2;
-                  const eliteMean = newWeightArray(dim);
-                  for(let r=0;r<elites.length;r++){
-                    const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
-                    for(let d=0; d<dim; d++) eliteMean[d] += wRank * wCand[d];
-                  }
-                  const mu = 0.3; const bestW = train.candWeights[idx[0]];
-                  const newMean = newWeightArray(dim);
-                  for(let d=0; d<dim; d++) newMean[d] = (1-mu)*eliteMean[d] + mu*bestW[d];
-                  const newStd = newWeightArray(dim);
-                  for(let r=0;r<elites.length;r++){
-                    const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
-                    for(let d=0; d<dim; d++){ const diff=wCand[d]-eliteMean[d]; newStd[d]+= wRank*diff*diff; }
-                  }
-                  for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d])));
-                  const bestThisGen = train.candScores[idx[0]];
-                  const layerSnapshot = (train.modelType === 'mlp') ? currentMlpLayerSizes() : [FEAT_DIM, 1];
-                  const snapshotWeights = cloneWeightsArray(bestW);
-                  recordGenerationSnapshot({
-                    gen: train.gen + 1,
-                    fitness: bestThisGen,
-                    modelType: train.modelType,
-                    layerSizes: layerSnapshot,
-                    weights: snapshotWeights,
-                    scoreIndex: (Number.isFinite(train.totalGamesPlayed) && train.totalGamesPlayed > 0)
-                      ? train.totalGamesPlayed - 1
-                      : null,
-                  });
-                  if(bestThisGen > (train.bestEverFitness ?? -Infinity)){
-                    train.bestEverFitness = bestThisGen;
-                    train.bestEverWeights = snapshotWeights;
-                  }
-                  if(bestThisGen > train.bestFitness){
-                    for(let d=0; d<newStd.length; d++){
-                      newStd[d] = Math.max(train.minStd, newStd[d] * 0.85);
-                    }
-                    const prevDiversityScale = train.diversityScale;
-                    const baseDiversityScale = train.diversityBaseScale ?? prevDiversityScale;
-                    const minDiversityScale = train.diversityMinScale ?? baseDiversityScale;
-                    const maxDiversityScale = train.diversityMaxScale ?? baseDiversityScale;
-                    train.diversityScale = Math.min(maxDiversityScale, Math.max(minDiversityScale, baseDiversityScale));
-                    if(prevDiversityScale !== train.diversityScale){
-                      log(
-                        `Progress resumed: exploration reset — diversity scale -> ${train.diversityScale.toFixed(2)}`
-                      );
-                    }
-                    train.bestFitness = bestThisGen;
-                    train.genNoImprove = 0;
-                  } else {
-                    train.genNoImprove += 1;
-                    if(train.genNoImprove >= train.plateauGens){
-                      for(let d=0; d<newStd.length; d++){
-                        newStd[d] = Math.min(train.maxStd, newStd[d] * train.stdBoost);
-                      }
-                      train.genNoImprove = 0;
-                      let plateauMsg = 'Plateau detected: boosted exploration std';
-                      if(train.diversityScale < train.diversityMaxScale){
-                        train.diversityScale = Math.min(train.diversityMaxScale, train.diversityScale * train.diversityBoost);
-                        plateauMsg += `, diversity scale -> ${train.diversityScale.toFixed(2)}`;
-                      }
-                      log(plateauMsg);
-                    }
-                  }
-                  train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best score: ${bestThisGen}`);
-                  samplePopulation();
-                  // Elitist carryover
-                  if(train.candWeights.length>0){ const copy0 = newWeightArray(bestW.length); for(let d=0; d<bestW.length; d++) copy0[d]=bestW[d]; train.candWeights[0] = copy0; }
-                  if(train.bestEverWeights && train.candWeights.length>1){ const be = train.bestEverWeights; const copy1=newWeightArray(be.length); for(let d=0; d<be.length; d++) copy1[d]=be[d]; train.candWeights[1] = copy1; }
-                  Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
-                  state.gravity = gravityForLevel(0);
-                  updateLevel(); updateScore();
-                  spawn(); train.ai.plan = null; train.ai.acc = 0;
-                  updateScorePlot();
-                  log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
-                  updateTrainStatus();
-                  return;
-                }
-              }
               if(train.candIndex + 1 < train.popSize){
                 train.candIndex += 1;
                 Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
@@ -2519,16 +2417,86 @@
                 log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
                 updateTrainStatus();
               } else {
-              // Start re-evaluation of best-of-gen before updating population
-              const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
-              const bestIdx = idx[0];
-              train.phase = 'reeval'; train.reevalTarget = bestIdx; train.reevalDone = 0; train.reevalAccum = 0; train.currentWeightsOverride = new Float64Array(train.candWeights[bestIdx]);
-              Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
-              state.gravity = gravityForLevel(0);
-              updateLevel(); updateScore();
-              spawn(); train.ai.plan = null; train.ai.acc = 0;
-              updateTrainStatus();
-              return;
+                train.currentWeightsOverride = null;
+                const idx = [...train.candScores.keys()].sort((a,b)=>train.candScores[b]-train.candScores[a]);
+                const eliteCount = Math.max(1, Math.floor(train.eliteFrac * train.popSize));
+                const elites = idx.slice(0, eliteCount);
+                const dim = paramDim();
+                const wsum = eliteCount*(eliteCount+1)/2;
+                const eliteMean = newWeightArray(dim);
+                for(let r=0;r<elites.length;r++){
+                  const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
+                  for(let d=0; d<dim; d++) eliteMean[d] += wRank * wCand[d];
+                }
+                const mu = 0.3; const bestW = train.candWeights[idx[0]];
+                const newMean = newWeightArray(dim);
+                for(let d=0; d<dim; d++) newMean[d] = (1-mu)*eliteMean[d] + mu*bestW[d];
+                const newStd = newWeightArray(dim);
+                for(let r=0;r<elites.length;r++){
+                  const ei = elites[r]; const wCand = train.candWeights[ei]; const wRank = (eliteCount - r)/wsum;
+                  for(let d=0; d<dim; d++){ const diff=wCand[d]-eliteMean[d]; newStd[d]+= wRank*diff*diff; }
+                }
+                for(let d=0; d<dim; d++) newStd[d] = Math.max(train.minStd, Math.min(train.maxStd, Math.sqrt(newStd[d])));
+                const bestThisGen = train.candScores[idx[0]];
+                const layerSnapshot = (train.modelType === 'mlp') ? currentMlpLayerSizes() : [FEAT_DIM, 1];
+                const snapshotWeights = cloneWeightsArray(bestW);
+                recordGenerationSnapshot({
+                  gen: train.gen + 1,
+                  fitness: bestThisGen,
+                  modelType: train.modelType,
+                  layerSizes: layerSnapshot,
+                  weights: snapshotWeights,
+                  scoreIndex: (Number.isFinite(train.totalGamesPlayed) && train.totalGamesPlayed > 0)
+                    ? train.totalGamesPlayed - 1
+                    : null,
+                });
+                if(bestThisGen > (train.bestEverFitness ?? -Infinity)){
+                  train.bestEverFitness = bestThisGen;
+                  train.bestEverWeights = snapshotWeights;
+                }
+                if(bestThisGen > train.bestFitness){
+                  for(let d=0; d<newStd.length; d++){
+                    newStd[d] = Math.max(train.minStd, newStd[d] * 0.85);
+                  }
+                  const prevDiversityScale = train.diversityScale;
+                  const baseDiversityScale = train.diversityBaseScale ?? prevDiversityScale;
+                  const minDiversityScale = train.diversityMinScale ?? baseDiversityScale;
+                  const maxDiversityScale = train.diversityMaxScale ?? baseDiversityScale;
+                  train.diversityScale = Math.min(maxDiversityScale, Math.max(minDiversityScale, baseDiversityScale));
+                  if(prevDiversityScale !== train.diversityScale){
+                    log(
+                      `Progress resumed: exploration reset — diversity scale -> ${train.diversityScale.toFixed(2)}`
+                    );
+                  }
+                  train.bestFitness = bestThisGen;
+                  train.genNoImprove = 0;
+                } else {
+                  train.genNoImprove += 1;
+                  if(train.genNoImprove >= train.plateauGens){
+                    for(let d=0; d<newStd.length; d++){
+                      newStd[d] = Math.min(train.maxStd, newStd[d] * train.stdBoost);
+                    }
+                    train.genNoImprove = 0;
+                    let plateauMsg = 'Plateau detected: boosted exploration std';
+                    if(train.diversityScale < train.diversityMaxScale){
+                      train.diversityScale = Math.min(train.diversityMaxScale, train.diversityScale * train.diversityBoost);
+                      plateauMsg += `, diversity scale -> ${train.diversityScale.toFixed(2)}`;
+                    }
+                    log(plateauMsg);
+                  }
+                }
+                train.mean = newMean; train.std = newStd; train.gen += 1; log(`Gen ${train.gen} complete. Best score: ${bestThisGen}`);
+                samplePopulation();
+                // Elitist carryover
+                if(train.candWeights.length>0){ const copy0 = newWeightArray(bestW.length); for(let d=0; d<bestW.length; d++) copy0[d]=bestW[d]; train.candWeights[0] = copy0; }
+                if(train.bestEverWeights && train.candWeights.length>1){ const be = train.bestEverWeights; const copy1=newWeightArray(be.length); for(let d=0; d<be.length; d++) copy1[d]=be[d]; train.candWeights[1] = copy1; }
+                Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+                state.gravity = gravityForLevel(0);
+                updateLevel(); updateScore();
+                spawn(); train.ai.plan = null; train.ai.acc = 0;
+                updateScorePlot();
+                log(`Candidate ${train.candIndex+1}/${train.popSize} (gen ${train.gen+1})`);
+                updateTrainStatus();
               }
             } else {
               Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
