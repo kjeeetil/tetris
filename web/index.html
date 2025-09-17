@@ -2475,6 +2475,11 @@
             if(train.enabled && train.useSimplifiedModel){
               const headlessPlan = planForCurrentPieceHeadless(w);
               if(headlessPlan) return headlessPlan;
+              const warnMsg = '⚠️ Headless model unavailable; falling back to full board evaluation.';
+              log(warnMsg);
+              if(typeof console !== 'undefined' && typeof console.warn === 'function'){
+                console.warn(warnMsg);
+              }
             }
             const a = choosePlacement2(w, state.grid, state.active.shape, state.next);
             if(!a){ return null; }
