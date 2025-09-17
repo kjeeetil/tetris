@@ -203,6 +203,7 @@ export function initTraining(game, renderer) {
       'Triple Clear',
       'Tetris',
       'Holes',
+      'New Holes',
       'Bumpiness',
       'Max Height',
       'Well Sum',
@@ -345,8 +346,8 @@ export function initTraining(game, renderer) {
     }
 
     // Initial weights for Linear model (intentionally poor to make the very first attempt worse)
-    // Order: [lines, lines2, is1, is2, is3, is4, holes, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
-    const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
+    // Order: [lines, lines2, is1, is2, is3, is4, holes, newHoles, bumpiness, maxH, wellSum, edgeWell, tetrisWell, contact, rowTrans, colTrans, aggH]
+    const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
     function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
@@ -1109,9 +1110,24 @@ export function initTraining(game, renderer) {
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
     const columnMaskScratch = typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
+    const metricsScratch = {
+      holes: 0,
+      bump: 0,
+      maxHeight: 0,
+      wellSum: 0,
+      edgeWell: 0,
+      tetrisWell: 0,
+      contact: 0,
+      rowTransitions: 0,
+      colTransitions: 0,
+      aggregateHeight: 0,
+    };
+    const baselineColumnMaskScratch =
+      typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
+    const clearedRowsScratch = [];
     const featureScratch = new Float32Array(FEAT_DIM);
     const pooledPiece = new Piece('I');
-    const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0 };
+    const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
     // After `train` exists, honor train.dtype for future allocations
     dtypePreference = train.dtype || DEFAULT_DTYPE;
@@ -1531,7 +1547,10 @@ export function initTraining(game, renderer) {
       });
     }
     function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
-    function clearLinesInScratch(grid){
+    function clearLinesInScratch(grid, clearedRows){
+      if(clearedRows){
+        clearedRows.length = 0;
+      }
       let write = HEIGHT - 1;
       let cleared = 0;
       for(let row = HEIGHT - 1; row >= 0; row--){
@@ -1548,6 +1567,9 @@ export function initTraining(game, renderer) {
           write -= 1;
         } else {
           cleared += 1;
+          if(clearedRows){
+            clearedRows.push(row);
+          }
         }
       }
       for(let row = write; row >= 0; row--){
@@ -1599,14 +1621,161 @@ export function initTraining(game, renderer) {
         if(fr === null) return null;
         piece.row = fr;
         lockSim(g, piece);
-        const lines = clearLinesInScratch(g);
+        const lines = clearLinesInScratch(g, clearedRowsScratch);
         simulateResultScratch.lines = lines;
         simulateResultScratch.grid = g;
         simulateResultScratch.dropRow = fr;
+        simulateResultScratch.clearedRows = clearedRowsScratch;
+        simulateResultScratch.clearedRowCount = clearedRowsScratch.length;
         return simulateResultScratch;
       });
     }
-    function fillFeatureVector(target, lines, holes, bump, maxHeight, wellSum, edgeWell, tetrisWell, contact, rowTransitions, colTransitions, aggregateHeight){
+    function holeMaskForColumn(mask){
+      if(!mask){
+        return 0;
+      }
+      const topBit = 31 - Math.clz32(mask);
+      if(topBit <= 0){
+        return 0;
+      }
+      const rangeMask = (1 << topBit) - 1;
+      return (~mask) & rangeMask;
+    }
+    function removeBitAtIndex(mask, bitIndex){
+      if(bitIndex < 0){
+        return mask;
+      }
+      const lower = bitIndex > 0 ? mask & ((1 << bitIndex) - 1) : 0;
+      const higher = mask >>> (bitIndex + 1);
+      return lower | (higher << bitIndex);
+    }
+    function applyClearedRowsToMask(mask, clearedRows){
+      if(!mask || !clearedRows || clearedRows.length === 0){
+        return mask;
+      }
+      let result = mask;
+      let removedBelow = 0;
+      for(let i = 0; i < clearedRows.length; i += 1){
+        const row = clearedRows[i];
+        if(row < 0 || row >= HEIGHT){
+          continue;
+        }
+        const adjustedRow = row + removedBelow;
+        if(adjustedRow < 0 || adjustedRow >= HEIGHT){
+          removedBelow += 1;
+          continue;
+        }
+        const bitIndex = HEIGHT - 1 - adjustedRow;
+        result = removeBitAtIndex(result, bitIndex);
+        removedBelow += 1;
+      }
+      return result;
+    }
+    function computeGridMetrics(g){
+      const metrics = metricsScratch;
+      metrics.holes = 0;
+      metrics.bump = 0;
+      metrics.maxHeight = 0;
+      metrics.wellSum = 0;
+      metrics.edgeWell = 0;
+      metrics.tetrisWell = 0;
+      metrics.contact = 0;
+      metrics.rowTransitions = 0;
+      metrics.colTransitions = 0;
+      metrics.aggregateHeight = 0;
+
+      const heights = columnHeightScratch;
+      const columnMasks = columnMaskScratch;
+      if (typeof columnMasks.fill === 'function') {
+        columnMasks.fill(0);
+      } else {
+        for (let i = 0; i < columnMasks.length; i += 1) columnMasks[i] = 0;
+      }
+
+      let prevMask = 0;
+      for (let r = 0; r < HEIGHT; r += 1) {
+        const row = g[r];
+        let mask = 0;
+        for (let c = 0; c < WIDTH; c += 1) {
+          if (row[c]) {
+            mask |= 1 << c;
+          }
+        }
+        metrics.rowTransitions += rowTransitionTable[mask];
+        const horizontalContact = rowHorizontalContactTable[mask];
+        if (horizontalContact) {
+          metrics.contact += horizontalContact;
+        }
+        const shared = mask & prevMask;
+        if (shared) {
+          metrics.contact += rowPopcountTable[shared];
+        }
+        const diff = mask ^ prevMask;
+        if (diff) {
+          metrics.colTransitions += rowPopcountTable[diff];
+        }
+        let bits = mask;
+        while (bits) {
+          const lsb = bits & -bits;
+          const idx = bitIndexTable[lsb];
+          if (idx >= 0 && idx < WIDTH) {
+            columnMasks[idx] |= 1 << (HEIGHT - 1 - r);
+          }
+          bits ^= lsb;
+        }
+        prevMask = mask;
+      }
+
+      if (prevMask) {
+        const bottomPop = rowPopcountTable[prevMask];
+        metrics.colTransitions += bottomPop;
+        metrics.contact += bottomPop;
+      }
+
+      let aggregateHeight = 0;
+      let maxHeight = 0;
+      let holes = 0;
+
+      for (let c = 0; c < WIDTH; c += 1) {
+        const mask = columnMasks[c] || 0;
+        if (mask) {
+          const topBit = 31 - Math.clz32(mask);
+          const height = topBit + 1;
+          heights[c] = height;
+          aggregateHeight += height;
+          if (height > maxHeight) {
+            maxHeight = height;
+          }
+          if (topBit > 0) {
+            const belowMask = mask & ((1 << topBit) - 1);
+            const filledBelow = countBits32(belowMask);
+            holes += topBit - filledBelow;
+          }
+        } else {
+          heights[c] = 0;
+        }
+      }
+
+      let bump = 0;
+      for (let c = 0; c < WIDTH - 1; c += 1) {
+        bump += Math.abs(heights[c] - heights[c + 1]);
+      }
+
+      let { wellSum, edgeWell, tetrisWell } = wellMetrics(heights);
+      if (holes > 0) {
+        tetrisWell = 0;
+      }
+
+      metrics.aggregateHeight = aggregateHeight;
+      metrics.maxHeight = maxHeight;
+      metrics.holes = holes;
+      metrics.bump = bump;
+      metrics.wellSum = wellSum;
+      metrics.edgeWell = edgeWell;
+      metrics.tetrisWell = tetrisWell;
+      return metrics;
+    }
+    function fillFeatureVector(target, lines, metrics, newHoles){
       let cleared = (typeof lines === 'number' && Number.isFinite(lines)) ? lines : 0;
       if(cleared < 0) cleared = 0;
       target[0] = cleared / 4;
@@ -1616,120 +1785,63 @@ export function initTraining(game, renderer) {
       target[4] = cleared === 3 ? 1 : 0;
       target[5] = cleared === 4 ? 1 : 0;
       const area = BOARD_AREA || 1;
+      const holes = metrics && typeof metrics.holes === 'number' ? metrics.holes : 0;
+      const bump = metrics && typeof metrics.bump === 'number' ? metrics.bump : 0;
+      const maxHeight = metrics && typeof metrics.maxHeight === 'number' ? metrics.maxHeight : 0;
+      const wellSum = metrics && typeof metrics.wellSum === 'number' ? metrics.wellSum : 0;
+      const edgeWell = metrics && typeof metrics.edgeWell === 'number' ? metrics.edgeWell : 0;
+      const tetrisWell = metrics && typeof metrics.tetrisWell === 'number' ? metrics.tetrisWell : 0;
+      const contact = metrics && typeof metrics.contact === 'number' ? metrics.contact : 0;
+      const rowTransitions = metrics && typeof metrics.rowTransitions === 'number' ? metrics.rowTransitions : 0;
+      const colTransitions = metrics && typeof metrics.colTransitions === 'number' ? metrics.colTransitions : 0;
+      const aggregateHeight = metrics && typeof metrics.aggregateHeight === 'number' ? metrics.aggregateHeight : 0;
+      const boundedNewHoles = Number.isFinite(newHoles) && newHoles > 0 ? newHoles : 0;
       target[6] = holes / area;
-      target[7] = bump / BUMP_NORMALIZER;
-      target[8] = HEIGHT ? maxHeight / HEIGHT : 0;
-      target[9] = wellSum / area;
-      target[10] = HEIGHT ? edgeWell / HEIGHT : 0;
-      target[11] = HEIGHT ? tetrisWell / HEIGHT : 0;
-      target[12] = contact / CONTACT_NORMALIZER;
-      target[13] = rowTransitions / area;
-      target[14] = colTransitions / area;
-      target[15] = aggregateHeight / area;
+      target[7] = boundedNewHoles / area;
+      target[8] = bump / BUMP_NORMALIZER;
+      target[9] = HEIGHT ? maxHeight / HEIGHT : 0;
+      target[10] = wellSum / area;
+      target[11] = HEIGHT ? edgeWell / HEIGHT : 0;
+      target[12] = HEIGHT ? tetrisWell / HEIGHT : 0;
+      target[13] = contact / CONTACT_NORMALIZER;
+      target[14] = rowTransitions / area;
+      target[15] = colTransitions / area;
+      target[16] = aggregateHeight / area;
       return target;
     }
-    function featuresFromGrid(g, lines){
+    function featuresFromGrid(g, lines, options = {}){
       return trainingProfiler.section('train.full.features', () => {
-        const heights = columnHeightScratch;
-        const columnMasks = columnMaskScratch;
-        if (typeof columnMasks.fill === 'function') {
-          columnMasks.fill(0);
-        } else {
-          for (let i = 0; i < columnMasks.length; i += 1) columnMasks[i] = 0;
-        }
-
-        let rowTrans = 0;
-        let colTrans = 0;
-        let contact = 0;
-        let prevMask = 0;
-
-        for (let r = 0; r < HEIGHT; r += 1) {
-          const row = g[r];
-          let mask = 0;
+        const metrics = computeGridMetrics(g);
+        const baselineHoles = Number.isFinite(options.holeBaseline) ? options.holeBaseline : 0;
+        const baselineColumnMasks = options && options.baselineColumnMasks;
+        const clearedRows = options && options.clearedRows;
+        let newHoleCount = 0;
+        if (baselineColumnMasks && baselineColumnMasks.length >= WIDTH) {
+          const clearedSource = Array.isArray(clearedRows) ? clearedRows : null;
           for (let c = 0; c < WIDTH; c += 1) {
-            if (row[c]) {
-              mask |= 1 << c;
+            const finalMask = columnMaskScratch[c] || 0;
+            if (!finalMask) {
+              continue;
+            }
+            const baselineMaskRaw = baselineColumnMasks[c] || 0;
+            const baselineMask = clearedSource && clearedSource.length ? applyClearedRowsToMask(baselineMaskRaw, clearedSource) : baselineMaskRaw;
+            const finalHoleMask = holeMaskForColumn(finalMask);
+            if (!finalHoleMask) {
+              continue;
+            }
+            const baselineHoleMask = holeMaskForColumn(baselineMask);
+            const diffMask = finalHoleMask & ~baselineHoleMask;
+            if (diffMask) {
+              newHoleCount += countBits32(diffMask);
             }
           }
-          rowTrans += rowTransitionTable[mask];
-          const horizontalContact = rowHorizontalContactTable[mask];
-          if (horizontalContact) {
-            contact += horizontalContact;
-          }
-          const shared = mask & prevMask;
-          if (shared) {
-            contact += rowPopcountTable[shared];
-          }
-          const diff = mask ^ prevMask;
-          if (diff) {
-            colTrans += rowPopcountTable[diff];
-          }
-          let bits = mask;
-          while (bits) {
-            const lsb = bits & -bits;
-            const idx = bitIndexTable[lsb];
-            if (idx >= 0 && idx < WIDTH) {
-              columnMasks[idx] |= 1 << (HEIGHT - 1 - r);
-            }
-            bits ^= lsb;
-          }
-          prevMask = mask;
-        }
-
-        if (prevMask) {
-          const bottomPop = rowPopcountTable[prevMask];
-          colTrans += bottomPop;
-          contact += bottomPop;
-        }
-
-        let aggregateHeight = 0;
-        let maxHeight = 0;
-        let holes = 0;
-
-        for (let c = 0; c < WIDTH; c += 1) {
-          const mask = columnMasks[c] || 0;
-          if (mask) {
-            const topBit = 31 - Math.clz32(mask);
-            const height = topBit + 1;
-            heights[c] = height;
-            aggregateHeight += height;
-            if (height > maxHeight) {
-              maxHeight = height;
-            }
-            if (topBit > 0) {
-              const belowMask = mask & ((1 << topBit) - 1);
-              const filledBelow = countBits32(belowMask);
-              holes += topBit - filledBelow;
-            }
-          } else {
-            heights[c] = 0;
+        } else {
+          const diff = metrics.holes - baselineHoles;
+          if (diff > 0) {
+            newHoleCount = diff;
           }
         }
-
-        let bump = 0;
-        for (let c = 0; c < WIDTH - 1; c += 1) {
-          bump += Math.abs(heights[c] - heights[c + 1]);
-        }
-
-        let { wellSum, edgeWell, tetrisWell } = wellMetrics(heights);
-        if (holes > 0) {
-          tetrisWell = 0;
-        }
-
-        return fillFeatureVector(
-          featureScratch,
-          lines,
-          holes,
-          bump,
-          maxHeight,
-          wellSum,
-          edgeWell,
-          tetrisWell,
-          contact,
-          rowTrans,
-          colTrans,
-          aggregateHeight
-        );
+        return fillFeatureVector(featureScratch, lines, metrics, newHoleCount);
       });
     }
 
@@ -1830,6 +1942,11 @@ export function initTraining(game, renderer) {
       return trainingProfiler.section('train.plan.single', () => {
         const acts = enumeratePlacements(grid, curShape);
         if(acts.length === 0) return null;
+        const baselineMetrics = computeGridMetrics(grid);
+        const baselineHoles = baselineMetrics ? baselineMetrics.holes : 0;
+        for(let c = 0; c < WIDTH; c += 1){
+          baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
+        }
         let best = null;
         let bestScore = -Infinity;
         // Evaluate each valid placement exactly once.
@@ -1838,7 +1955,11 @@ export function initTraining(game, renderer) {
           if(!sim) continue;
           const lines = sim.lines;
           const dropRow = sim.dropRow;
-          const baseFeats = featuresFromGrid(sim.grid, lines);
+          const baseFeats = featuresFromGrid(sim.grid, lines, {
+            holeBaseline: baselineHoles,
+            baselineColumnMasks: baselineColumnMaskScratch,
+            clearedRows: sim.clearedRows,
+          });
           const score = scoreFeats(weights, baseFeats);
           a.dropRow = dropRow;
           a.lines = lines;
