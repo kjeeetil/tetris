@@ -86,26 +86,126 @@ export const UNIQUE_ROTATIONS = Object.fromEntries(
 
 export class Piece {
   constructor(shape) {
-    this.shape = shape;
+    this._row = 0;
+    this._col = Math.floor(WIDTH / 2) - 2;
+    this._rot = 0;
+    this._shape = 'I';
+    this._dirty = true;
+    this._blocks = Array.from({ length: 4 }, () => [0, 0]);
+    this.shape = shape && SHAPES[shape] ? shape : 'I';
     this.rot = 0;
     this.row = 0;
     this.col = Math.floor(WIDTH / 2) - 2;
   }
 
+  get shape() {
+    return this._shape;
+  }
+
+  set shape(value) {
+    if (!value || !SHAPES[value]) {
+      return;
+    }
+    if (value !== this._shape) {
+      this._shape = value;
+      const states = SHAPES[value];
+      if (states && states.length) {
+        const len = states.length;
+        if (this._rot >= len || this._rot < 0) {
+          this._rot = ((this._rot % len) + len) % len;
+        }
+      } else {
+        this._rot = 0;
+      }
+      this._dirty = true;
+    }
+  }
+
+  get rot() {
+    return this._rot;
+  }
+
+  set rot(value) {
+    const states = SHAPES[this._shape];
+    const len = states && states.length ? states.length : 1;
+    const raw = Number.isFinite(value) ? value : 0;
+    let next = raw % len;
+    if (next < 0) {
+      next += len;
+    }
+    if (next !== this._rot) {
+      this._rot = next;
+      this._dirty = true;
+    }
+  }
+
+  get row() {
+    return this._row;
+  }
+
+  set row(value) {
+    const next = Number.isFinite(value) ? Math.round(value) : this._row;
+    if (next !== this._row) {
+      this._row = next;
+      this._dirty = true;
+    }
+  }
+
+  get col() {
+    return this._col;
+  }
+
+  set col(value) {
+    const next = Number.isFinite(value) ? Math.round(value) : this._col;
+    if (next !== this._col) {
+      this._col = next;
+      this._dirty = true;
+    }
+  }
+
   blocks() {
-    const state = SHAPES[this.shape][this.rot];
-    return state.map(([dr, dc]) => [this.row + dr, this.col + dc]);
+    if (this._dirty) {
+      this._recomputeBlocks();
+    }
+    return this._blocks;
   }
 
   move(dx, dy) {
-    this.col += dx;
-    this.row += dy;
+    const nextCol = Number.isFinite(dx) ? this._col + dx : this._col;
+    const nextRow = Number.isFinite(dy) ? this._row + dy : this._row;
+    this.col = nextCol;
+    this.row = nextRow;
   }
 
   rotate(dir = 1) {
-    const states = SHAPES[this.shape];
-    const next = dir >= 0 ? 1 : states.length - 1;
-    this.rot = (this.rot + next) % states.length;
+    const states = SHAPES[this._shape];
+    if (!states || !states.length) {
+      return;
+    }
+    const step = dir >= 0 ? 1 : -1;
+    this.rot = this._rot + step;
+  }
+
+  _recomputeBlocks() {
+    const states = SHAPES[this._shape];
+    const state = states && states.length ? states[this._rot] : null;
+    if (!state) {
+      this._dirty = false;
+      return this._blocks;
+    }
+    const rowBase = this._row;
+    const colBase = this._col;
+    if (!this._blocks || this._blocks.length < state.length) {
+      this._blocks = Array.from({ length: state.length }, () => [0, 0]);
+    }
+    for (let i = 0; i < state.length; i += 1) {
+      const block = this._blocks[i] || (this._blocks[i] = [0, 0]);
+      const [dr, dc] = state[i];
+      block[0] = rowBase + dr;
+      block[1] = colBase + dc;
+    }
+    this._dirty = false;
+    return this._blocks;
   }
 }
 
