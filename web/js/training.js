@@ -1365,15 +1365,6 @@ export function initTraining(game, renderer) {
     }
     function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
 
-    // Return true if dropRowSim finds a valid landing row for the given rotation and column.
-    function pathClear(grid, shape, rot, col){
-      const piece = new Piece(shape);
-      piece.rot = rot;
-      piece.row = 0;
-      piece.col = col;
-      return dropRowSim(grid, piece) !== null;
-    }
-
     function enumeratePlacements(grid, shape){
       return trainingProfiler.section('train.full.enumerate', () => {
         const actions = [];
@@ -1381,9 +1372,7 @@ export function initTraining(game, renderer) {
         for(const rot of rotIdx){
           const width = stateWidth(SHAPES[shape][rot]);
           for(let col=0; col<=WIDTH-width; col++){
-            if(pathClear(grid, shape, rot, col)){
-              actions.push({ rot, col });
-            }
+            actions.push({ rot, col });
           }
         }
         return actions;
