@@ -443,23 +443,6 @@
           </label>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
-          <label
-            id="simplified-model-label"
-            class="control-toggle"
-            title="Use the simplified headless engine for faster training"
-            data-active="true"
-          >
-            <input
-              id="simplified-model-toggle"
-              type="checkbox"
-              class="control-checkbox"
-              checked
-              aria-label="Use simplified headless tetris model"
-            />
-            <span class="control-toggle__text">Simplified (fast) tetris model</span>
-          </label>
-        </div>
-        <div class="controls flex flex-wrap items-center justify-center gap-4">
           <button
             id="download-weights"
             class="icon-btn icon-btn--wide"
@@ -2176,7 +2159,6 @@
             // Visualization + speed controls for training
             visualizeBoard: false,     // if false: skip board/preview rendering
             fastStepsPerFrame: 2048,   // cap for AI steps per frame when visualizeBoard=false
-            useSimplifiedModel: true,
             currentWeightsOverride: null,
             ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
             performanceSummary: [],
@@ -2214,11 +2196,10 @@
 
           function updateTrainStatus(){
             if(trainStatus){
-              const engineLabel = train.useSimplifiedModel ? 'Simplified headless' : 'Full board';
               if(train.enabled){
-                trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${train.modelType.toUpperCase()} · Engine: ${engineLabel}`;
+                trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${train.modelType.toUpperCase()}`;
               } else {
-                trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()} · Engine: ${engineLabel}`;
+                trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()}`;
               }
             }
             const historySelection = getHistorySelection();
@@ -2574,244 +2555,6 @@
           window.__onGameOver = onGameOver;
 
           function uniqueRotIdx(shape){ const states = SHAPES[shape]; const seen = new Set(); const out=[]; for(let i=0;i<states.length;i++){ const key = JSON.stringify(states[i].slice().sort()); if(!seen.has(key)){ seen.add(key); out.push(i); } } return out; }
-          const HEADLESS_PROFILES = {};
-          const HEADLESS_PROFILE_LOOKUP = {};
-          const HEADLESS_POPCOUNT = (() => {
-            const size = 1 << WIDTH;
-            const table = new Uint8Array(size);
-            for (let i = 1; i < size; i++) {
-              table[i] = table[i >> 1] + (i & 1);
-            }
-            return table;
-          })();
-          (function initHeadlessProfiles(){
-            const shapes = Object.keys(SHAPES);
-            for(const shape of shapes){
-              const rotations = SHAPES[shape];
-              const seen = new Set();
-              const profiles = [];
-              const lookup = {};
-              for(let rotIndex=0; rotIndex<rotations.length; rotIndex++){
-                const cells = rotations[rotIndex];
-                const key = cells.map(([r,c]) => `${r},${c}`).sort().join('|');
-                if(seen.has(key)) continue;
-                seen.add(key);
-                let width = 0;
-                let height = 0;
-                for(const [dr,dc] of cells){
-                  if(dc > width) width = dc;
-                  if(dr > height) height = dr;
-                }
-                width += 1;
-                height += 1;
-                const columnMask = new Array(width).fill(false);
-                const bottomOffsets = new Array(width).fill(0);
-                for(let localCol=0; localCol<width; localCol++){
-                  let maxOffset = -1;
-                  for(const [dr,dc] of cells){
-                    if(dc === localCol){
-                      columnMask[localCol] = true;
-                      if(dr > maxOffset) maxOffset = dr;
-                    }
-                  }
-                  bottomOffsets[localCol] = maxOffset >= 0 ? maxOffset : 0;
-                }
-                const rowMasks = new Array(height).fill(0);
-                for(let localRow=0; localRow<height; localRow++){
-                  let mask = 0;
-                  for(const [dr,dc] of cells){
-                    if(dr === localRow){
-                      mask |= (1 << dc);
-                    }
-                  }
-                  rowMasks[localRow] = mask;
-                }
-                const profile = {
-                  rotation: rotIndex,
-                  width,
-                  height,
-                  bottomOffsets,
-                  rowMasks,
-                  columnMask,
-                };
-                profiles.push(profile);
-                lookup[rotIndex] = profile;
-              }
-              HEADLESS_PROFILES[shape] = profiles;
-              HEADLESS_PROFILE_LOOKUP[shape] = lookup;
-            }
-          })();
-          function gridToRowMasks(grid){
-            const rows = new Array(HEIGHT);
-            for(let r=0; r<HEIGHT; r++){
-              let mask = 0;
-              const row = grid[r];
-              for(let c=0; c<WIDTH; c++){
-                if(row[c]) mask |= (1 << c);
-              }
-              rows[r] = mask;
-            }
-            return rows;
-          }
-          function columnHeightsFromRows(rows){
-            const heights = new Array(WIDTH);
-            for(let c=0; c<WIDTH; c++){
-              let height = 0;
-              for(let r=0; r<HEIGHT; r++){
-                if(rows[r] & (1 << c)){
-                  height = HEIGHT - r;
-                  break;
-                }
-              }
-              heights[c] = height;
-            }
-            return heights;
-          }
-          function countHolesFromRows(rows, heights){
-            let holes = 0;
-            for(let c=0; c<WIDTH; c++){
-              const height = heights[c] || 0;
-              const startRow = Math.max(0, HEIGHT - height);
-              for(let r = startRow; r < HEIGHT; r++){
-                const rowMask = rows[r] || 0;
-                if(!(rowMask & (1 << c))){
-                  holes += 1;
-                }
-              }
-            }
-            return holes;
-          }
-          function contactAreaFromRows(rows){
-            let contact = 0;
-            for(let r=0; r<HEIGHT; r++){
-              const mask = rows[r] || 0;
-              if(!mask) continue;
-              if(r === HEIGHT - 1){
-                contact += HEADLESS_POPCOUNT[mask];
-              } else {
-                contact += HEADLESS_POPCOUNT[mask & rows[r+1]];
-              }
-              const horizontal = mask & (mask << 1);
-              if(horizontal){
-                contact += HEADLESS_POPCOUNT[horizontal] * 2;
-              }
-            }
-            return contact;
-          }
-          function rowTransitionsFromRows(rows){
-            let transitions = 0;
-            for(let r=0; r<HEIGHT; r++){
-              const mask = rows[r] || 0;
-              if(!mask) continue;
-              const starts = mask & ~(mask << 1);
-              if(starts){
-                transitions += HEADLESS_POPCOUNT[starts] * 2;
-              }
-            }
-            return transitions;
-          }
-          function columnTransitionsFromRows(rows){
-            let transitions = 0;
-            for(let c=0; c<WIDTH; c++){
-              const bit = 1 << c;
-              let prev = 0;
-              for(let r=0; r<HEIGHT; r++){
-                const rowMask = rows[r] || 0;
-                const cur = (rowMask & bit) ? 1 : 0;
-                if(cur !== prev){
-                  transitions += 1;
-                  prev = cur;
-                }
-              }
-              if(prev !== 0){
-                transitions += 1;
-              }
-            }
-            return transitions;
-          }
-          function createHeadlessBoard(grid){
-            const rows = gridToRowMasks(grid);
-            return { rows, columnHeights: columnHeightsFromRows(rows) };
-          }
-          function headlessFits(rows, profile, row, column){
-            if(row < 0 || row + profile.height > HEIGHT) return false;
-            for(let localRow=0; localRow<profile.height; localRow++){
-              const boardRow = row + localRow;
-              const shifted = profile.rowMasks[localRow] << column;
-              if(rows[boardRow] & shifted) return false;
-            }
-            return true;
-          }
-          function headlessLandingRow(board, profile, column){
-            if(column < 0 || column + profile.width > WIDTH) return null;
-            let candidate = HEIGHT - profile.height;
-            for(let localCol=0; localCol<profile.width; localCol++){
-              if(!profile.columnMask[localCol]) continue;
-              const boardCol = column + localCol;
-              const colHeight = board.columnHeights[boardCol];
-              const slot = HEIGHT - colHeight - 1 - profile.bottomOffsets[localCol];
-              if(slot < candidate) candidate = slot;
-            }
-            if(candidate < 0) return null;
-            let row = candidate;
-            while(row >= 0){
-              if(headlessFits(board.rows, profile, row, column)) return row;
-              row -= 1;
-            }
-            return null;
-          }
-          function headlessEnumerate(board, shape){
-            return trainingProfiler.section('train.headless.enumerate', () => {
-              const placements = [];
-              const profiles = HEADLESS_PROFILES[shape];
-              if(!profiles) return placements;
-              for(const profile of profiles){
-                const maxCol = WIDTH - profile.width;
-                for(let column=0; column<=maxCol; column++){
-                  const row = headlessLandingRow(board, profile, column);
-                  if(row !== null){
-                    placements.push({ rotation: profile.rotation, column, row });
-                  }
-                }
-              }
-              return placements;
-            });
-          }
-          function headlessApplyPlacement(board, shape, placement){
-            return trainingProfiler.section('train.headless.apply', () => {
-              const lookup = HEADLESS_PROFILE_LOOKUP[shape];
-              if(!lookup) return null;
-              const profile = lookup[placement.rotation];
-              if(!profile) return null;
-              let landingRow = (typeof placement.row === 'number' && Number.isFinite(placement.row))
-                ? placement.row
-                : headlessLandingRow(board, profile, placement.column);
-              if(landingRow === null || landingRow === undefined) return null;
-              if(!headlessFits(board.rows, profile, landingRow, placement.column)) return null;
-              const rows = board.rows.slice();
-              for(let localRow=0; localRow<profile.height; localRow++){
-                const boardRow = landingRow + localRow;
-                const shifted = profile.rowMasks[localRow] << placement.column;
-                rows[boardRow] |= shifted;
-              }
-              let cleared = 0;
-              const remaining = [];
-              for(let r=0; r<HEIGHT; r++){
-                if(rows[r] === FULL_ROW_MASK){
-                  cleared += 1;
-                } else {
-                  remaining.push(rows[r]);
-                }
-              }
-              while(remaining.length < HEIGHT) remaining.unshift(0);
-              const newRows = remaining;
-              const newBoard = {
-                rows: newRows,
-                columnHeights: columnHeightsFromRows(newRows),
-              };
-              return { board: newBoard, lines: cleared };
-            });
-          }
           function stateWidth(state){ let maxC=0; for(const [,c] of state) if(c>maxC) maxC=c; return maxC+1; }
           function copyGrid(g){ return g.map(r=>r.slice()); }
           function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
@@ -3000,35 +2743,6 @@
               return fillFeatureVector(new Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
             });
           }
-          function featuresFromHeadlessBoard(board, lines){
-            return trainingProfiler.section('train.headless.features', () => {
-              if(!board || !board.rows || board.rows.length !== HEIGHT){
-                return fillFeatureVector(new Float64Array(FEAT_DIM), lines, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-              }
-              const rows = board.rows;
-              let heights = board.columnHeights;
-              if(!Array.isArray(heights) || heights.length !== WIDTH){
-                heights = columnHeightsFromRows(rows);
-              }
-              const Holes = countHolesFromRows(rows, heights);
-              const Bump = bumpiness(heights);
-              let maxH = 0;
-              let aggH = 0;
-              for(let i=0; i<heights.length; i++){
-                const v = heights[i] || 0;
-                aggH += v;
-                if(v > maxH) maxH = v;
-              }
-              let {wellSum, edgeWell, tetrisWell} = wellMetrics(heights);
-              if(Holes > 0){
-                tetrisWell = 0;
-              }
-              const Contact = contactAreaFromRows(rows);
-              const rT = rowTransitionsFromRows(rows);
-              const cT = columnTransitionsFromRows(rows);
-              return fillFeatureVector(new Float64Array(FEAT_DIM), lines, Holes, Bump, maxH, wellSum, edgeWell, tetrisWell, Contact, rT, cT, aggH);
-            });
-          }
           function featuresForPlacement(grid, shape, rot, col){ const sim=simulateAfterPlacement(grid, shape, rot, col); if(!sim) return null; const feats = featuresFromGrid(sim.grid, sim.lines); return { feats, lines: sim.lines, grid: sim.grid } }
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
@@ -3133,7 +2847,7 @@
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
           function choosePlacement2(weights, grid, curShape, nextShape){
-            return trainingProfiler.section('train.plan.full.lookahead', () => {
+            return trainingProfiler.section('train.plan.lookahead', () => {
               const acts = enumeratePlacements(grid, curShape);
               if(acts.length === 0) return null;
               let best = acts[0];
@@ -3179,87 +2893,11 @@
               return best;
             });
           }
-          function planForCurrentPieceHeadless(weights){
-            return trainingProfiler.section('train.plan.headless', () => {
-              if(!state.active) return null;
-              const shape = state.active.shape;
-              const board = createHeadlessBoard(state.grid);
-              const placements = headlessEnumerate(board, shape);
-              if(!placements.length) return null;
-              const sims = [];
-              for(const placement of placements){
-                const sim = headlessApplyPlacement(board, shape, placement);
-                if(!sim) continue;
-                const feats = featuresFromHeadlessBoard(sim.board, sim.lines);
-                sims.push({ placement, sim, s1: scoreFeats(weights, feats) });
-              }
-              if(!sims.length) return null;
-              sims.sort((a,b) => b.s1 - a.s1);
-              const nextShape = state.next;
-              const beam = Math.min(LOOKAHEAD_BEAM, sims.length);
-              const acts2Cache = typeof WeakMap === 'function' ? new WeakMap() : new Map();
-              let best = null;
-              let bestScore = -Infinity;
-              for(let i=0; i<sims.length; i++){
-                let score = sims[i].s1;
-                if(nextShape && i < beam){
-                  let acts2 = acts2Cache.get(sims[i].sim.board);
-                  if(!acts2){
-                    acts2 = headlessEnumerate(sims[i].sim.board, nextShape);
-                    acts2Cache.set(sims[i].sim.board, acts2);
-                  }
-                  if(acts2 && acts2.length){
-                    let best2 = -Infinity;
-                    for(const placement2 of acts2){
-                      const sim2 = headlessApplyPlacement(sims[i].sim.board, nextShape, placement2);
-                      if(!sim2) continue;
-                      const feats2 = featuresFromHeadlessBoard(sim2.board, sim2.lines);
-                      const score2 = scoreFeats(weights, feats2);
-                      if(score2 > best2) best2 = score2;
-                    }
-                    if(Number.isFinite(best2)){
-                      score += LOOKAHEAD_LAMBDA * best2;
-                    }
-                  }
-                }
-                if(!Number.isFinite(score)){
-                  continue;
-                }
-                if(score <= bestScore){
-                  continue;
-                }
-                const placementCandidate = sims[i].placement;
-                if(!pathClear(state.grid, shape, placementCandidate.rotation, placementCandidate.column, state.level)){
-                  continue;
-                }
-                bestScore = score;
-                best = sims[i];
-              }
-              if(!best) return null;
-              const placement = best.placement;
-              const len = SHAPES[shape].length;
-              const cur = state.active.rot % len;
-              const needRot = (placement.rotation - cur + len) % len;
-              return { targetRot: placement.rotation, targetCol: placement.column, rotLeft: needRot, stage: 'rotate' };
-            });
-          }
-
           function planForCurrentPiece(){
-            return trainingProfiler.section('train.plan.main', () => {
+            return trainingProfiler.section('train.plan', () => {
               if(!state.active) return null;
               const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
-              if(train.enabled && train.useSimplifiedModel){
-                const headlessPlan = planForCurrentPieceHeadless(w);
-                if(headlessPlan) return headlessPlan;
-                const warnMsg = '⚠️ Headless model unavailable; falling back to full board evaluation.';
-                log(warnMsg);
-                if(typeof console !== 'undefined' && typeof console.warn === 'function'){
-                  console.warn(warnMsg);
-                }
-              }
-              const placement = trainingProfiler.section('train.plan.full', () =>
-                choosePlacement2(w, state.grid, state.active.shape, state.next),
-              );
+              const placement = choosePlacement2(w, state.grid, state.active.shape, state.next);
               if(!placement){
                 return null;
               }
@@ -3735,25 +3373,6 @@
             });
           }
           syncRenderToggle();
-          const simplifiedToggle = document.getElementById('simplified-model-toggle');
-          const simplifiedLabel = document.getElementById('simplified-model-label');
-          function syncSimplifiedToggle(){
-            if(!simplifiedToggle) return;
-            simplifiedToggle.checked = !!train.useSimplifiedModel;
-            if(simplifiedLabel){
-              simplifiedLabel.dataset.active = simplifiedToggle.checked ? 'true' : 'false';
-            }
-          }
-          if(simplifiedToggle){
-            simplifiedToggle.checked = !!train.useSimplifiedModel;
-            simplifiedToggle.addEventListener('change', () => {
-              train.useSimplifiedModel = simplifiedToggle.checked;
-              train.ai.plan = null;
-              syncSimplifiedToggle();
-              updateTrainStatus();
-            });
-          }
-          syncSimplifiedToggle();
           initMlpConfigUi();
           const modelSel = document.getElementById('model-select');
           function setModelType(mt){
