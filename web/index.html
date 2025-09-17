@@ -2476,46 +2476,103 @@
           function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
           function scorePlacement(weights, grid, shape, act){ const ff=featuresForPlacement(grid, shape, act.rot, act.col); if(!ff) return -Infinity; return dot(weights, ff.feats); }
           function choosePlacement(weights, grid, shape){ const acts=enumeratePlacements(grid, shape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; for(const a of acts){ const s=scorePlacement(weights, grid, shape, a); if(s>bestS){ bestS=s; best=a; } } return best; }
+          const mlpActivationScratch = [];
+          let mlpOutputScratch = null;
+          let mlpScratchDtype = null;
+
+          function resetMlpScratchIfNeeded(dtype){
+            if(mlpScratchDtype !== dtype){
+              mlpScratchDtype = dtype;
+              mlpActivationScratch.length = 0;
+              mlpOutputScratch = null;
+            }
+          }
+
+          function getMlpLayerScratch(layerIdx, size, dtype){
+            let buffer = mlpActivationScratch[layerIdx];
+            if(!buffer || buffer.length !== size){
+              buffer = allocWeights(size, dtype);
+              mlpActivationScratch[layerIdx] = buffer;
+            }
+            if(typeof buffer.fill === 'function'){
+              buffer.fill(0);
+            } else {
+              for(let i = 0; i < size; i++){
+                buffer[i] = 0;
+              }
+            }
+            return buffer;
+          }
+
+          function getMlpOutputScratch(dtype){
+            if(!mlpOutputScratch || mlpOutputScratch.length !== 1){
+              mlpOutputScratch = allocWeights(1, dtype);
+            }
+            mlpOutputScratch[0] = 0;
+            return mlpOutputScratch;
+          }
+
           function mlpScore(weights, feats){
             if(!weights || !weights.length){
               return 0;
             }
             const hiddenLayers = mlpHiddenLayers.length ? mlpHiddenLayers : DEFAULT_MLP_HIDDEN;
+            const dtype = (train && train.dtype)
+              ? train.dtype
+              : ((HAS_F16 && typeof Float16Array !== 'undefined' && weights instanceof Float16Array)
+                ? 'f16'
+                : (weights instanceof Float32Array ? 'f32' : DEFAULT_DTYPE));
+            resetMlpScratchIfNeeded(dtype);
             let offset = 0;
             let prevSize = FEAT_DIM;
             let activations = feats;
+            const weightLen = weights.length;
             for(let layerIdx = 0; layerIdx < hiddenLayers.length; layerIdx++){
               const layerSize = hiddenLayers[layerIdx];
-              const nextActivations = new Float64Array(layerSize);
               const weightBase = offset;
               const biasBase = weightBase + prevSize * layerSize;
-              for(let j = 0; j < layerSize; j++){
-                let sum = (biasBase + j < weights.length) ? weights[biasBase + j] : 0;
-                for(let i = 0; i < prevSize; i++){
-                  const wIdx = weightBase + i * layerSize + j;
-                  if(wIdx < weights.length){
-                    sum += activations[i] * weights[wIdx];
-                  }
+              const nextActivations = getMlpLayerScratch(layerIdx, layerSize, dtype);
+              const weightLimit = Math.min(biasBase, weightLen);
+              for(let i = 0; i < prevSize; i++){
+                const value = activations[i];
+                if(!Number.isFinite(value) || value === 0){
+                  continue;
                 }
+                const base = weightBase + i * layerSize;
+                if(base >= weightLimit){
+                  break;
+                }
+                const maxJ = Math.min(layerSize, weightLimit - base);
+                for(let j = 0; j < maxJ; j++){
+                  nextActivations[j] += value * weights[base + j];
+                }
+              }
+              for(let j = 0; j < layerSize; j++){
+                const biasIdx = biasBase + j;
+                const sum = nextActivations[j] + (biasIdx < weightLen ? weights[biasIdx] : 0);
                 nextActivations[j] = sum > 0 ? sum : 0;
               }
               offset = biasBase + layerSize;
               activations = nextActivations;
               prevSize = layerSize;
             }
-            let y = 0;
             const outWeightsBase = offset;
             const outBiasIndex = outWeightsBase + prevSize;
-            if(outBiasIndex < weights.length){
-              y = weights[outBiasIndex];
-            }
+            const outLimit = Math.min(outBiasIndex, weightLen);
+            const outputScratch = getMlpOutputScratch(dtype);
             for(let i = 0; i < prevSize; i++){
-              const wIdx = outWeightsBase + i;
-              if(wIdx < weights.length){
-                y += activations[i] * weights[wIdx];
+              const value = activations[i];
+              if(!Number.isFinite(value) || value === 0){
+                continue;
               }
+              const wIdx = outWeightsBase + i;
+              if(wIdx >= outLimit){
+                break;
+              }
+              outputScratch[0] += value * weights[wIdx];
             }
-            return y;
+            const bias = (outBiasIndex < weightLen) ? weights[outBiasIndex] : 0;
+            return outputScratch[0] + bias;
           }
           function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
           function choosePlacement2(weights, grid, curShape, nextShape){ const acts=enumeratePlacements(grid, curShape); if(acts.length===0) return null; let best=acts[0], bestS=-Infinity; const sims=[]; // precompute first-ply sims and scores
