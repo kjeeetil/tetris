@@ -2215,6 +2215,49 @@ export function initTraining(game, renderer) {
       ctx.stroke();
     }
 
+    // Draw a centered rolling average (last 50 and next 50 games).
+    const windowRadius = 50;
+    const requiredWindow = windowRadius * 2 + 1;
+    if(count >= requiredWindow){
+      const prefix = new Array(count + 1);
+      prefix[0] = 0;
+      for(let i = 0; i < count; i++){
+        prefix[i + 1] = prefix[i] + scores[i];
+      }
+      const startIdx = windowRadius;
+      const endIdx = count - windowRadius - 1;
+      if(startIdx <= endIdx){
+        ctx.save();
+        ctx.beginPath();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        let drewPoint = false;
+        for(let i = startIdx; i <= endIdx; i++){
+          const windowStart = i - windowRadius;
+          const windowEnd = i + windowRadius;
+          const windowCount = windowEnd - windowStart + 1;
+          if(windowCount <= 0) continue;
+          const sum = prefix[windowEnd + 1] - prefix[windowStart];
+          const avg = sum / windowCount;
+          const point = pointPositions[i];
+          if(!point) continue;
+          const y = H - padB - (avg / safeMaxY) * yh;
+          if(!drewPoint){
+            ctx.moveTo(point.x, y);
+            drewPoint = true;
+          } else {
+            ctx.lineTo(point.x, y);
+          }
+        }
+        if(drewPoint){
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
     if(trainState && Array.isArray(trainState.bestByGeneration) && trainState.bestByGeneration.length){
       const offset = Number.isFinite(trainState.gameScoresOffset) ? trainState.gameScoresOffset : 0;
       let selection = trainState.historySelection;
