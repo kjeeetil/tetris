@@ -1,5 +1,15 @@
 import { HEIGHT, MAX_AI_STEPS_PER_FRAME, WIDTH } from './constants.js';
 import { Piece, SHAPES, UNIQUE_ROTATIONS, canMove, clearRows, emptyGrid, gravityForLevel, lock } from './engine.js';
+import {
+  backpropagate,
+  computeVisitPolicy,
+  createNode,
+  normalizePriors,
+  sampleFromPolicy,
+  selectChild,
+  softmax,
+  visitStats,
+} from './mcts.js';
 
 let randnSpare = null;
 
@@ -151,6 +161,9 @@ export function initTraining(game, renderer) {
   const mlpConfigEl = document.getElementById('mlp-config');
   const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
   const mlpLayerControlsEl = document.getElementById('mlp-layer-controls');
+  const mctsSimulationInput = document.getElementById('mcts-simulations');
+  const mctsCpuctInput = document.getElementById('mcts-cpuct');
+  const mctsTemperatureInput = document.getElementById('mcts-temperature');
 
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
@@ -315,6 +328,31 @@ export function initTraining(game, renderer) {
       }
       const rounded = Math.round(n);
       return Math.max(MLP_MIN_UNITS, Math.min(MLP_MAX_UNITS, rounded));
+    }
+
+    function sanitizeSimulationCount(value, fallback){
+      const raw = Math.round(Number(value));
+      if(!Number.isFinite(raw) || raw <= 0){
+        const fb = Math.round(Number(fallback) || 1);
+        return Math.max(1, Math.min(MAX_AI_STEPS_PER_FRAME, fb || 1));
+      }
+      return Math.max(1, Math.min(MAX_AI_STEPS_PER_FRAME, raw));
+    }
+
+    function sanitizeExplorationConstant(value, fallback){
+      const parsed = Number(value);
+      if(!Number.isFinite(parsed)){
+        return Number.isFinite(fallback) ? fallback : 1.5;
+      }
+      return Math.max(0.01, parsed);
+    }
+
+    function sanitizeTemperature(value, fallback){
+      const parsed = Number(value);
+      if(!Number.isFinite(parsed) || parsed < 0){
+        return Math.max(0, Number.isFinite(fallback) ? fallback : 1);
+      }
+      return Math.max(0, parsed);
     }
 
     function mlpParamDim(layers = mlpHiddenLayers, modelType = currentModelType){
@@ -522,6 +560,40 @@ export function initTraining(game, renderer) {
           if(entry.modelType) info.push(modelDisplayName(entry.modelType));
           if(Number.isFinite(entry.fitness)) info.push(`Score ${formatScore(entry.fitness)}`);
           historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
+        }
+      }
+    }
+
+    function syncMctsControls(){
+      if(!train || !train.ai || !train.ai.search){
+        return;
+      }
+      const search = train.ai.search;
+      if(mctsSimulationInput){
+        const sanitized = sanitizeSimulationCount(search.simulations, search.simulations);
+        if(search.simulations !== sanitized){
+          search.simulations = sanitized;
+        }
+        if(mctsSimulationInput.value !== String(sanitized)){
+          mctsSimulationInput.value = String(sanitized);
+        }
+      }
+      if(mctsCpuctInput){
+        const sanitized = sanitizeExplorationConstant(search.cPuct, search.cPuct);
+        if(search.cPuct !== sanitized){
+          search.cPuct = sanitized;
+        }
+        if(mctsCpuctInput.value !== String(sanitized)){
+          mctsCpuctInput.value = String(sanitized);
+        }
+      }
+      if(mctsTemperatureInput){
+        const sanitized = sanitizeTemperature(search.temperature, search.temperature);
+        if(search.temperature !== sanitized){
+          search.temperature = sanitized;
+        }
+        if(mctsTemperatureInput.value !== String(sanitized)){
+          mctsTemperatureInput.value = String(sanitized);
         }
       }
     }
@@ -1131,7 +1203,19 @@ export function initTraining(game, renderer) {
       visualizeBoard: false,     // if false: skip board/preview rendering
       plotBestOnly: true,
       currentWeightsOverride: null,
-      ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
+      ai: {
+        plan: null,
+        acc: 0,
+        lastSig: '',
+        staleMs: 0,
+        lastSearchStats: null,
+        search: {
+          simulations: 48,
+          cPuct: 1.5,
+          temperature: 1.0,
+          discount: 1,
+        },
+      },
       performanceSummary: [],
       gameScores: [],
       gameModelTypes: [],
@@ -1211,6 +1295,7 @@ export function initTraining(game, renderer) {
     train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
     train.scorePlotPending = 0;
     syncHistoryControls();
+    syncMctsControls();
 
     function getDisplayWeightsForUi(weights, options = {}){
       if(!weights) return weights;
@@ -1514,6 +1599,7 @@ export function initTraining(game, renderer) {
       }
       updateScorePlot();
       syncHistoryControls();
+      syncMctsControls();
       updateTrainStatus();
       log('Training parameters reset');
     }
@@ -1526,6 +1612,7 @@ export function initTraining(game, renderer) {
       train.ai.plan = null;
       train.ai.staleMs = 0;
       train.ai.lastSig = '';
+      train.ai.lastSearchStats = null;
     }
 
     function maybeEndForLevelCap(logPrefix = 'AI'){
@@ -2170,23 +2257,24 @@ export function initTraining(game, renderer) {
       return outputScratch[0] + bias;
     }
     function scoreFeats(weights, feats){ return isMlpModelType(train.modelType) ? mlpScore(weights, feats, train.modelType) : dot(weights, feats); }
-    function choosePlacement(weights, grid, curShape){
-      return trainingProfiler.section('train.plan.single', () => {
-        const acts = enumeratePlacements(grid, curShape);
-        if(acts.length === 0) return null;
+
+    function evaluatePlacementsForSearch(weights, grid, curShape){
+      return trainingProfiler.section('train.plan.evaluate_all', () => {
+        const actions = [];
+        const placements = enumeratePlacements(grid, curShape);
+        if(placements.length === 0){
+          return actions;
+        }
         const baselineMetrics = computeGridMetrics(grid);
         const baselineHoles = baselineMetrics ? baselineMetrics.holes : 0;
         for(let c = 0; c < WIDTH; c += 1){
           baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
           baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
         }
-        let best = null;
-        let bestScore = -Infinity;
-        // Evaluate each valid placement exactly once.
-        for(const a of acts){
-          const sim = simulateAfterPlacement(grid, curShape, a.rot, a.col);
+        for(const placement of placements){
+          const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
           if(!sim) continue;
-          const lines = sim.lines;
+          const lines = Number.isFinite(sim.lines) ? sim.lines : 0;
           const dropRow = sim.dropRow;
           const baseFeats = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw'
             ? rawFeaturesFromGrid(sim.grid)
@@ -2195,31 +2283,185 @@ export function initTraining(game, renderer) {
                 baselineColumnMasks: baselineColumnMaskScratch,
                 clearedRows: sim.clearedRows,
               });
-          const score = scoreFeats(weights, baseFeats);
-          a.dropRow = dropRow;
-          a.lines = lines;
-          if(score > bestScore){
-            bestScore = score;
-            best = a;
-          }
+          const value = scoreFeats(weights, baseFeats);
+          const reward = lines / 4;
+          actions.push({
+            key: `${placement.rot}|${placement.col}`,
+            rot: placement.rot,
+            col: placement.col,
+            dropRow,
+            lines,
+            value: Number.isFinite(value) ? value : 0,
+            reward: Number.isFinite(reward) ? reward : 0,
+          });
         }
-        return best;
+        return actions;
       });
     }
-    function planForCurrentPiece(){
-      return trainingProfiler.section('train.plan', () => {
-        if(!state.active) return null;
-        const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
-        // Single-ply evaluation selects the best placement for the current piece.
-        const placement = choosePlacement(w, state.grid, state.active.shape);
-        if(!placement){
+
+    function choosePlacement(weights, grid, curShape){
+      return trainingProfiler.section('train.plan.single', () => {
+        const evaluations = evaluatePlacementsForSearch(weights, grid, curShape);
+        if(evaluations.length === 0){
           return null;
         }
+        let best = evaluations[0];
+        for(let i = 1; i < evaluations.length; i += 1){
+          const candidate = evaluations[i];
+          if(candidate.value > best.value){
+            best = candidate;
+          }
+        }
+        return { rot: best.rot, col: best.col, dropRow: best.dropRow, lines: best.lines };
+      });
+    }
+
+    function planForCurrentPiece(){
+      return trainingProfiler.section('train.plan', () => {
+        if(!state.active){
+          return null;
+        }
+        const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
+        const evaluations = evaluatePlacementsForSearch(w, state.grid, state.active.shape);
+        if(!evaluations.length){
+          train.ai.lastSearchStats = null;
+          return null;
+        }
+
+        const logits = evaluations.map((action) => action.value);
+        const priors = softmax(logits);
+        for(let i = 0; i < evaluations.length; i += 1){
+          evaluations[i].prior = priors.length > i ? priors[i] : 0;
+        }
+        normalizePriors(evaluations);
+
+        if(!train.ai.search){
+          train.ai.search = { simulations: 48, cPuct: 1.5, temperature: 1, discount: 1 };
+        }
+        const searchConfig = train.ai.search;
+        const simulationTarget = sanitizeSimulationCount(searchConfig.simulations, searchConfig.simulations);
+        searchConfig.simulations = simulationTarget;
+        const cPuct = sanitizeExplorationConstant(searchConfig.cPuct, searchConfig.cPuct);
+        searchConfig.cPuct = cPuct;
+        const temperature = sanitizeTemperature(searchConfig.temperature, searchConfig.temperature);
+        searchConfig.temperature = temperature;
+        const discount = Number.isFinite(searchConfig.discount) ? searchConfig.discount : 1;
+
+        const root = createNode({ expanded: true });
+        for(const action of evaluations){
+          const key = action.key;
+          const child = createNode({
+            parent: root,
+            prior: action.prior,
+            reward: action.reward,
+            valueEstimate: action.value,
+            metadata: action,
+          });
+          root.children.set(key, child);
+        }
+
+        const simulationLimit = Math.max(1, Math.min(simulationTarget, MAX_AI_STEPS_PER_FRAME));
+        for(let sim = 0; sim < simulationLimit; sim += 1){
+          const path = [{ node: root, reward: 0 }];
+          let node = root;
+          while(node.children && node.children.size > 0){
+            const [, child] = selectChild(node, cPuct);
+            if(!child){
+              break;
+            }
+            path.push({ node: child, reward: child.reward });
+            node = child;
+            if(!child.expanded || !child.children || child.children.size === 0){
+              break;
+            }
+          }
+          const leafValue = Number.isFinite(node.valueEstimate) ? node.valueEstimate : 0;
+          node.expanded = true;
+          backpropagate(path, leafValue, discount);
+        }
+
+        const stats = visitStats(root);
+        const policyDistribution = computeVisitPolicy(stats, temperature);
+        let chosen = null;
+        if(temperature === 0){
+          chosen = policyDistribution.find((entry) => entry.policy === 1) || null;
+        }
+        if(!chosen){
+          chosen = sampleFromPolicy(policyDistribution) || null;
+        }
+        if(!chosen && policyDistribution.length){
+          chosen = policyDistribution[0];
+        }
+
+        const selected = chosen || null;
+        const selectedMeta = selected && selected.metadata ? selected.metadata : null;
+        const totalVisits = stats.reduce((acc, entry) => acc + (entry.visits || 0), 0);
+        const policyStats = policyDistribution.map((entry) => ({
+          key: entry.key,
+          visits: entry.visits,
+          prior: entry.prior,
+          value: entry.value,
+          reward: entry.reward,
+          policy: entry.policy,
+          rot: entry.metadata ? entry.metadata.rot : null,
+          col: entry.metadata ? entry.metadata.col : null,
+          dropRow: entry.metadata ? entry.metadata.dropRow : null,
+          lines: entry.metadata ? entry.metadata.lines : null,
+        }));
+        if(!selectedMeta){
+          train.ai.lastSearchStats = {
+            rootValue: root.visitCount > 0 ? root.valueSum / root.visitCount : 0,
+            totalVisits,
+            simulations: simulationLimit,
+            temperature,
+            cPuct,
+            policy: policyStats,
+            selected: null,
+          };
+          return null;
+        }
+
         const len = SHAPES[state.active.shape].length;
         const cur = state.active.rot % len;
-        const needRot = (placement.rot - cur + len) % len;
-        const targetRow = Number.isFinite(placement.dropRow) ? placement.dropRow : null;
-        return { targetRot: placement.rot, targetCol: placement.col, targetRow, rotLeft: needRot, stage: 'rotate' };
+        const needRot = (selectedMeta.rot - cur + len) % len;
+        const targetRow = Number.isFinite(selectedMeta.dropRow) ? selectedMeta.dropRow : null;
+        const rootValue = root.visitCount > 0 ? root.valueSum / root.visitCount : selectedMeta.value;
+        train.ai.lastSearchStats = {
+          rootValue,
+          totalVisits,
+          simulations: simulationLimit,
+          temperature,
+          cPuct,
+          policy: policyStats,
+          selected: {
+            key: selected.key,
+            rot: selectedMeta.rot,
+            col: selectedMeta.col,
+            dropRow: selectedMeta.dropRow,
+            lines: selectedMeta.lines,
+            value: selected.value,
+            reward: selected.reward,
+            visits: selected.visits,
+            prior: selected.prior,
+            policy: selected.policy,
+          },
+        };
+
+        return {
+          targetRot: selectedMeta.rot,
+          targetCol: selectedMeta.col,
+          targetRow,
+          rotLeft: needRot,
+          stage: 'rotate',
+          search: {
+            totalVisits,
+            simulations: simulationLimit,
+            temperature,
+            cPuct,
+            policy: policyStats,
+            selected: train.ai.lastSearchStats.selected,
+          },
+        };
       });
     }
 
@@ -2973,6 +3215,27 @@ export function initTraining(game, renderer) {
       if(wasRunning) startTraining();
     }
     if(modelSel){ modelSel.addEventListener('change', (e) => setModelType(modelSel.value)); }
+    if(mctsSimulationInput){
+      mctsSimulationInput.addEventListener('change', () => {
+        const next = sanitizeSimulationCount(mctsSimulationInput.value, train.ai.search.simulations);
+        train.ai.search.simulations = next;
+        mctsSimulationInput.value = String(next);
+      });
+    }
+    if(mctsCpuctInput){
+      mctsCpuctInput.addEventListener('change', () => {
+        const next = sanitizeExplorationConstant(mctsCpuctInput.value, train.ai.search.cPuct);
+        train.ai.search.cPuct = next;
+        mctsCpuctInput.value = String(next);
+      });
+    }
+    if(mctsTemperatureInput){
+      mctsTemperatureInput.addEventListener('change', () => {
+        const next = sanitizeTemperature(mctsTemperatureInput.value, train.ai.search.temperature);
+        train.ai.search.temperature = next;
+        mctsTemperatureInput.value = String(next);
+      });
+    }
     updateTrainStatus();
 
 
