@@ -2797,6 +2797,12 @@ export function initTraining(game, renderer) {
         if(!model){
           return [];
         }
+
+        computeGridMetrics(grid);
+        for(let c = 0; c < WIDTH; c += 1){
+          baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
+          baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
+        }
         const alphaState = ensureAlphaState();
         const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
         if(!tf){
