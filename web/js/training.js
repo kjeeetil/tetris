@@ -1129,6 +1129,7 @@ export function initTraining(game, renderer) {
       candIndex: -1,
       // Visualization + speed controls for training
       visualizeBoard: false,     // if false: skip board/preview rendering
+      plotBestOnly: true,
       currentWeightsOverride: null,
       ai: { plan: null, acc: 0, lastSig: '', staleMs: 0 },
       performanceSummary: [],
@@ -1147,6 +1148,15 @@ export function initTraining(game, renderer) {
       meanView: null,
       stdView: null,
     };
+    function shouldLogTrainingEvent(){
+      return !(train && train.enabled && train.visualizeBoard === false);
+    }
+    function logTrainingEvent(message){
+      if(!shouldLogTrainingEvent()){
+        return;
+      }
+      log(message);
+    }
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
     const columnMaskScratch = typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
@@ -1292,10 +1302,13 @@ export function initTraining(game, renderer) {
       }
       const vizFeatureNames = featureNamesForModel(displayModelType);
       const vizInputDim = inputDimForModel(displayModelType);
-      try {
-        renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
-      } catch (_) {
-        /* ignore render failures */
+      const skipNetworkViz = train.enabled && train.visualizeBoard === false && !snapshot;
+      if(!skipNetworkViz){
+        try {
+          renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
+        } catch (_) {
+          /* ignore render failures */
+        }
       }
     }
 
@@ -1390,7 +1403,12 @@ export function initTraining(game, renderer) {
         train.gameModelTypes = [];
         train.gameScoresOffset = 0;
         train.totalGamesPlayed = 0;
-        train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
+        const baselineSource = train.plotBestOnly
+          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
+          : (train.popSize || 10);
+        const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
+        const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
+        train.scorePlotAxisMax = Math.min(cap, baselineAxis);
       }
       train.enabled = true;
       resetAiPlanState();
@@ -1485,7 +1503,15 @@ export function initTraining(game, renderer) {
       train.bestByGeneration = [];
       train.historySelection = null;
       train.scorePlotPending = 0;
-      train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
+      train.plotBestOnly = !train.visualizeBoard;
+      {
+        const baselineSource = train.plotBestOnly
+          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
+          : (train.popSize || 10);
+        const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
+        const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
+        train.scorePlotAxisMax = Math.min(cap, baselineAxis);
+      }
       updateScorePlot();
       syncHistoryControls();
       updateTrainStatus();
@@ -1536,10 +1562,14 @@ export function initTraining(game, renderer) {
           train.gameModelTypes.splice(0, overflow);
           train.gameScoresOffset += overflow;
         }
-        const updateStride = Math.max(1, train.scorePlotUpdateFreq || 5);
-        train.scorePlotPending = (train.scorePlotPending || 0) + 1;
-        if(train.scorePlotPending >= updateStride){
-          updateScorePlot();
+        if(train.plotBestOnly){
+          train.scorePlotPending = 0;
+        } else {
+          const updateStride = Math.max(1, train.scorePlotUpdateFreq || 5);
+          train.scorePlotPending = (train.scorePlotPending || 0) + 1;
+          if(train.scorePlotPending >= updateStride){
+            updateScorePlot();
+          }
         }
         if(train.candIndex + 1 < train.popSize){
           train.candIndex += 1;
@@ -2193,227 +2223,265 @@ export function initTraining(game, renderer) {
       });
     }
 
-    // Scatter plot of raw score per game (all candidates)
-  function updateScorePlot(){
-    const canvas = document.getElementById('score-plot');
-    if(!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0,0,W,H);
+    // Scatter plot of score history. When plotBestOnly is true, only best-of-generation points are rendered.
+    function updateScorePlot(){
+      const canvas = document.getElementById('score-plot');
+      if(!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0,0,W,H);
 
-    const padL = 48;
-    const padR = 24;
-    const padT = 26;
-    const padB = 44;
-    const axisColor = 'rgba(249, 245, 255, 0.68)';
-    const gridColor = 'rgba(249, 245, 255, 0.1)';
+      const padL = 48;
+      const padR = 24;
+      const padT = 26;
+      const padB = 44;
+      const axisColor = 'rgba(249, 245, 255, 0.68)';
+      const gridColor = 'rgba(249, 245, 255, 0.1)';
 
-    const trainState = window.__train || null;
-    const scores = (trainState && trainState.gameScores) ? trainState.gameScores : [];
-    const types  = (trainState && trainState.gameModelTypes) ? trainState.gameModelTypes : [];
-    const xw = Math.max(0, W - padL - padR);
-    const yh = Math.max(0, H - padT - padB);
+      const trainState = window.__train || null;
+      const usingBestSnapshots = !!(trainState && trainState.plotBestOnly);
+      const xw = Math.max(0, W - padL - padR);
+      const yh = Math.max(0, H - padT - padB);
 
-    const maxScore = scores.length ? Math.max(...scores) : 0;
-    let maxY = Math.ceil(Math.max(10000, maxScore) / 10000) * 10000;
-    if(!Number.isFinite(maxY) || maxY <= 0){
-      maxY = 10000;
-    }
-
-    const yTicks = [];
-    for(let tick = 0; tick <= maxY; tick += 10000){
-      yTicks.push(tick);
-    }
-    if(yTicks[yTicks.length - 1] !== maxY){
-      yTicks.push(maxY);
-    }
-
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = gridColor;
-    yTicks.forEach((tick) => {
-      const y = H - padB - (tick / maxY) * yh;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.stroke();
-    });
-
-    ctx.strokeStyle = axisColor;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(padL, padT);
-    ctx.lineTo(padL, H - padB);
-    ctx.lineTo(W - padR, H - padB);
-    ctx.stroke();
-
-    ctx.strokeStyle = axisColor;
-    ctx.lineWidth = 1;
-    ctx.fillStyle = axisColor;
-    ctx.font = '11px "Instrument Serif", serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    yTicks.forEach((tick) => {
-      const y = H - padB - (tick / maxY) * yh;
-      ctx.beginPath();
-      ctx.moveTo(padL - 6, y);
-      ctx.lineTo(padL, y);
-      ctx.stroke();
-      ctx.fillText(tick.toLocaleString(), padL - 10, y);
-    });
-
-    const count = scores.length;
-    if(trainState && typeof trainState.scorePlotPending !== 'number'){
-      trainState.scorePlotPending = 0;
-    }
-    if(!count){
-      if(trainState){
-        trainState.scorePlotPending = 0;
-        if(!trainState.scorePlotAxisMax || trainState.scorePlotAxisMax < 1){
-          const baseline = Math.max(10, Math.ceil((trainState.popSize || 10) * 1.2));
-          const maxCap = Math.max(1, trainState.maxPlotPoints || baseline);
-          trainState.scorePlotAxisMax = Math.min(maxCap, baseline);
-        }
-      }
-      return;
-    }
-
-    let axisMax = count;
-    if(trainState){
-      const maxCap = Math.max(count, trainState.maxPlotPoints || count);
-      let currentAxis = Number.isFinite(trainState.scorePlotAxisMax) ? trainState.scorePlotAxisMax : 0;
-      if(currentAxis < 1){
-        const baseline = Math.max(10, Math.ceil((trainState.popSize || count || 5) * 1.2));
-        currentAxis = Math.min(maxCap, baseline);
-      }
-      if(count > currentAxis){
-        let next = Math.ceil(currentAxis * 1.2);
-        if(!Number.isFinite(next) || next <= currentAxis){
-          next = currentAxis + 1;
-        }
-        currentAxis = Math.min(maxCap, Math.max(next, count));
-      }
-      trainState.scorePlotAxisMax = currentAxis;
-      trainState.scorePlotPending = 0;
-      axisMax = Math.max(count, currentAxis);
-    }
-
-    const denom = axisMax > 1 ? axisMax - 1 : 1;
-    const desiredTicks = Math.min(8, Math.max(3, Math.round(xw / 70)));
-    let step = 1;
-    if(axisMax > 1){
-      const raw = denom / Math.max(1, desiredTicks - 1);
-      const exponent = Math.floor(Math.log10(raw));
-      const base = Math.pow(10, exponent);
-      const fraction = raw / base;
-      let niceFraction;
-      if(fraction >= 5){
-        niceFraction = 5;
-      } else if(fraction >= 2){
-        niceFraction = 2;
-      } else {
-        niceFraction = 1;
-      }
-      step = Math.max(1, Math.round(niceFraction * base));
-    }
-
-    const tickSet = new Set();
-    for(let tick = 1; tick <= axisMax; tick += step){
-      tickSet.add(Math.round(tick));
-    }
-    tickSet.add(axisMax);
-    tickSet.add(count);
-    const xTicks = Array.from(tickSet)
-      .filter((tick) => tick >= 1 && tick <= axisMax)
-      .sort((a,b) => a - b);
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = axisColor;
-    ctx.strokeStyle = axisColor;
-    ctx.lineWidth = 1;
-    xTicks.forEach((tick) => {
-      const ratio = axisMax <= 1 ? 1 : (tick - 1) / denom;
-      const x = padL + ratio * xw;
-      ctx.beginPath();
-      ctx.moveTo(x, H - padB);
-      ctx.lineTo(x, H - padB + 6);
-      ctx.stroke();
-      ctx.fillText(String(tick), x, H - padB + 8);
-    });
-
-    const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b', mlp_raw: '#facc15' };
-    const safeMaxY = maxY || 1;
-    const pointPositions = [];
-    for(let i=0; i<count; i++){
-      const gameNumber = i + 1;
-      const ratio = axisMax <= 1 ? 1 : (gameNumber - 1) / denom;
-      const x = padL + ratio * xw;
-      const y = H - padB - (scores[i] / safeMaxY) * yh;
-      const color = COLORS[types[i] || 'linear'] || COLORS.linear;
-      pointPositions.push({ x, y });
-      ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.lineWidth = 1.2;
-      ctx.strokeStyle = 'rgba(12, 17, 32, 0.85)';
-      ctx.stroke();
-    }
-
-    // Draw a centered rolling average (last 50 and next 50 games).
-    const windowRadius = 50;
-    const requiredWindow = windowRadius * 2 + 1;
-    if(count >= requiredWindow){
-      const prefix = new Array(count + 1);
-      prefix[0] = 0;
-      for(let i = 0; i < count; i++){
-        prefix[i + 1] = prefix[i] + scores[i];
-      }
-      const startIdx = windowRadius;
-      const endIdx = count - windowRadius - 1;
-      if(startIdx <= endIdx){
-        ctx.save();
-        ctx.beginPath();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        let drewPoint = false;
-        for(let i = startIdx; i <= endIdx; i++){
-          const windowStart = i - windowRadius;
-          const windowEnd = i + windowRadius;
-          const windowCount = windowEnd - windowStart + 1;
-          if(windowCount <= 0) continue;
-          const sum = prefix[windowEnd + 1] - prefix[windowStart];
-          const avg = sum / windowCount;
-          const point = pointPositions[i];
-          if(!point) continue;
-          const y = H - padB - (avg / safeMaxY) * yh;
-          if(!drewPoint){
-            ctx.moveTo(point.x, y);
-            drewPoint = true;
-          } else {
-            ctx.lineTo(point.x, y);
+      const dataset = [];
+      let maxXValue = 0;
+      if(usingBestSnapshots){
+        const snapshots = trainState && Array.isArray(trainState.bestByGeneration)
+          ? trainState.bestByGeneration
+          : [];
+        for(let i = 0; i < snapshots.length; i += 1){
+          const entry = snapshots[i];
+          if(!entry) continue;
+          const score = Number.isFinite(entry.fitness) ? entry.fitness : 0;
+          const type = entry.modelType || (trainState && trainState.modelType) || 'linear';
+          const rawX = Number.isFinite(entry.gen) ? entry.gen : i + 1;
+          const xValue = rawX > 0 ? rawX : i + 1;
+          dataset.push({ score, type, xValue });
+          if(xValue > maxXValue){
+            maxXValue = xValue;
           }
         }
-        if(drewPoint){
-          ctx.stroke();
+      } else {
+        const scores = trainState && Array.isArray(trainState.gameScores) ? trainState.gameScores : [];
+        const types  = trainState && Array.isArray(trainState.gameModelTypes) ? trainState.gameModelTypes : [];
+        const offset = Number.isFinite(trainState && trainState.gameScoresOffset) ? trainState.gameScoresOffset : 0;
+        for(let i = 0; i < scores.length; i += 1){
+          const rawScore = scores[i];
+          const score = Number.isFinite(rawScore) ? rawScore : 0;
+          const type = types[i] || 'linear';
+          const xValue = offset + i + 1;
+          dataset.push({ score, type, xValue, scoreIndex: offset + i });
+          if(xValue > maxXValue){
+            maxXValue = xValue;
+          }
         }
-        ctx.restore();
       }
-    }
 
-    if(trainState && Array.isArray(trainState.bestByGeneration) && trainState.bestByGeneration.length){
-      const offset = Number.isFinite(trainState.gameScoresOffset) ? trainState.gameScoresOffset : 0;
-      let selection = trainState.historySelection;
-      if(selection !== null && selection !== undefined){
-        selection = Math.max(0, Math.min(trainState.bestByGeneration.length - 1, Math.round(selection)));
-        const snapshot = trainState.bestByGeneration[selection];
-        const hasIndex = snapshot && Number.isFinite(snapshot.scoreIndex);
-        if(hasIndex){
-          const relative = Math.round(snapshot.scoreIndex - offset);
-          if(relative >= 0 && relative < pointPositions.length){
-            const point = pointPositions[relative];
+      const count = dataset.length;
+      if(trainState && typeof trainState.scorePlotPending !== 'number'){
+        trainState.scorePlotPending = 0;
+      }
+      if(!count){
+        if(trainState){
+          trainState.scorePlotPending = 0;
+          if(!Number.isFinite(trainState.scorePlotAxisMax) || trainState.scorePlotAxisMax < 1){
+            const baselineSource = usingBestSnapshots
+              ? Math.max(1, trainState.gen || 0, 10)
+              : (trainState.popSize || 10);
+            const baseline = Math.max(10, Math.ceil(baselineSource * 1.2));
+            const maxCap = Math.max(1, trainState.maxPlotPoints || baseline);
+            trainState.scorePlotAxisMax = Math.min(maxCap, baseline);
+          }
+        }
+        return;
+      }
+
+      maxXValue = Math.max(maxXValue, count);
+      const maxScore = dataset.reduce((acc, point) => (point.score > acc ? point.score : acc), 0);
+      let maxY = Math.ceil(Math.max(10000, maxScore) / 10000) * 10000;
+      if(!Number.isFinite(maxY) || maxY <= 0){
+        maxY = 10000;
+      }
+
+      const yTicks = [];
+      for(let tick = 0; tick <= maxY; tick += 10000){
+        yTicks.push(tick);
+      }
+      if(yTicks[yTicks.length - 1] !== maxY){
+        yTicks.push(maxY);
+      }
+
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = gridColor;
+      yTicks.forEach((tick) => {
+        const y = H - padB - (tick / maxY) * yh;
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(W - padR, y);
+        ctx.stroke();
+      });
+
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(padL, padT);
+      ctx.lineTo(padL, H - padB);
+      ctx.lineTo(W - padR, H - padB);
+      ctx.stroke();
+
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1;
+      ctx.fillStyle = axisColor;
+      ctx.font = '11px "Instrument Serif", serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      yTicks.forEach((tick) => {
+        const y = H - padB - (tick / maxY) * yh;
+        ctx.beginPath();
+        ctx.moveTo(padL - 6, y);
+        ctx.lineTo(padL, y);
+        ctx.stroke();
+        ctx.fillText(tick.toLocaleString(), padL - 10, y);
+      });
+
+      let axisMax = maxXValue;
+      if(trainState){
+        const maxCap = Math.max(maxXValue, trainState.maxPlotPoints || maxXValue);
+        let currentAxis = Number.isFinite(trainState.scorePlotAxisMax) ? trainState.scorePlotAxisMax : 0;
+        if(currentAxis < 1){
+          const baselineSource = usingBestSnapshots
+            ? Math.max(maxXValue, count, trainState.gen || 0, 5)
+            : (trainState.popSize || count || 5);
+          const baseline = Math.max(10, Math.ceil(baselineSource * 1.2));
+          currentAxis = Math.min(maxCap, baseline);
+        }
+        if(maxXValue > currentAxis){
+          let next = Math.ceil(currentAxis * 1.2);
+          if(!Number.isFinite(next) || next <= currentAxis){
+            next = currentAxis + 1;
+          }
+          currentAxis = Math.min(maxCap, Math.max(next, maxXValue));
+        }
+        trainState.scorePlotAxisMax = currentAxis;
+        trainState.scorePlotPending = 0;
+        axisMax = Math.max(maxXValue, currentAxis);
+      }
+
+      const denom = axisMax > 1 ? axisMax - 1 : 1;
+      const desiredTicks = Math.min(8, Math.max(3, Math.round(xw / 70)));
+      let step = 1;
+      if(axisMax > 1){
+        const raw = denom / Math.max(1, desiredTicks - 1);
+        const exponent = Math.floor(Math.log10(raw));
+        const base = Math.pow(10, exponent);
+        const fraction = raw / base;
+        let niceFraction;
+        if(fraction >= 5){
+          niceFraction = 5;
+        } else if(fraction >= 2){
+          niceFraction = 2;
+        } else {
+          niceFraction = 1;
+        }
+        step = Math.max(1, Math.round(niceFraction * base));
+      }
+
+      const tickSet = new Set();
+      for(let tick = 1; tick <= axisMax; tick += step){
+        tickSet.add(Math.round(tick));
+      }
+      tickSet.add(axisMax);
+      tickSet.add(Math.round(maxXValue));
+      const xTicks = Array.from(tickSet)
+        .filter((tick) => tick >= 1 && tick <= axisMax)
+        .sort((a,b) => a - b);
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = axisColor;
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1;
+      xTicks.forEach((tick) => {
+        const ratio = axisMax <= 1 ? 1 : (tick - 1) / denom;
+        const x = padL + ratio * xw;
+        ctx.beginPath();
+        ctx.moveTo(x, H - padB);
+        ctx.lineTo(x, H - padB + 6);
+        ctx.stroke();
+        ctx.fillText(String(tick), x, H - padB + 8);
+      });
+
+      const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b', mlp_raw: '#facc15' };
+      const safeMaxY = maxY || 1;
+      const pointPositions = [];
+      for(let i = 0; i < dataset.length; i += 1){
+        const point = dataset[i];
+        const xVal = Math.max(1, Number.isFinite(point.xValue) ? point.xValue : i + 1);
+        const ratio = axisMax <= 1 ? 1 : (xVal - 1) / denom;
+        const x = padL + ratio * xw;
+        const y = H - padB - (point.score / safeMaxY) * yh;
+        const color = COLORS[point.type || 'linear'] || COLORS.linear;
+        pointPositions.push({ x, y });
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = 'rgba(12, 17, 32, 0.85)';
+        ctx.stroke();
+      }
+
+      if(!usingBestSnapshots){
+        // Draw a centered rolling average (last 50 and next 50 games).
+        const windowRadius = 50;
+        const requiredWindow = windowRadius * 2 + 1;
+        if(dataset.length >= requiredWindow){
+          const prefix = new Array(dataset.length + 1);
+          prefix[0] = 0;
+          for(let i = 0; i < dataset.length; i += 1){
+            prefix[i + 1] = prefix[i] + dataset[i].score;
+          }
+          const startIdx = windowRadius;
+          const endIdx = dataset.length - windowRadius - 1;
+          if(startIdx <= endIdx){
+            ctx.save();
+            ctx.beginPath();
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            let drewPoint = false;
+            for(let i = startIdx; i <= endIdx; i += 1){
+              const windowStart = i - windowRadius;
+              const windowEnd = i + windowRadius;
+              const windowCount = windowEnd - windowStart + 1;
+              if(windowCount <= 0) continue;
+              const sum = prefix[windowEnd + 1] - prefix[windowStart];
+              const avg = sum / windowCount;
+              const point = pointPositions[i];
+              if(!point) continue;
+              const y = H - padB - (avg / safeMaxY) * yh;
+              if(!drewPoint){
+                ctx.moveTo(point.x, y);
+                drewPoint = true;
+              } else {
+                ctx.lineTo(point.x, y);
+              }
+            }
+            if(drewPoint){
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+        }
+      }
+
+      if(trainState && Array.isArray(trainState.bestByGeneration) && trainState.bestByGeneration.length){
+        let selection = trainState.historySelection;
+        if(selection !== null && selection !== undefined){
+          selection = Math.max(0, Math.min(trainState.bestByGeneration.length - 1, Math.round(selection)));
+          if(usingBestSnapshots){
+            const point = pointPositions[selection];
             if(point && Number.isFinite(point.x) && Number.isFinite(point.y)){
               ctx.save();
               ctx.beginPath();
@@ -2433,11 +2501,39 @@ export function initTraining(game, renderer) {
               ctx.fill();
               ctx.restore();
             }
+          } else {
+            const offset = Number.isFinite(trainState.gameScoresOffset) ? trainState.gameScoresOffset : 0;
+            const snapshot = trainState.bestByGeneration[selection];
+            const hasIndex = snapshot && Number.isFinite(snapshot.scoreIndex);
+            if(hasIndex){
+              const relative = Math.round(snapshot.scoreIndex - offset);
+              if(relative >= 0 && relative < pointPositions.length){
+                const point = pointPositions[relative];
+                if(point && Number.isFinite(point.x) && Number.isFinite(point.y)){
+                  ctx.save();
+                  ctx.beginPath();
+                  ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+                  ctx.fillStyle = 'rgba(59, 130, 246, 0.25)';
+                  ctx.fill();
+                  ctx.beginPath();
+                  ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+                  ctx.fillStyle = '#3b82f6';
+                  ctx.fill();
+                  ctx.lineWidth = 2;
+                  ctx.strokeStyle = '#1d4ed8';
+                  ctx.stroke();
+                  ctx.beginPath();
+                  ctx.arc(point.x, point.y, 2.5, 0, Math.PI * 2);
+                  ctx.fillStyle = '#bfdbfe';
+                  ctx.fill();
+                  ctx.restore();
+                }
+              }
+            }
           }
         }
       }
     }
-  }
 
     function runHeadlessPlacement(){
       return trainingProfiler.section('train.ai.headless_placement', () => {
@@ -2466,7 +2562,7 @@ export function initTraining(game, renderer) {
           const topOut = state.grid[0].some((v) => v !== 0);
           if(topOut){
             if(topOutLog){
-              log(topOutLog);
+              logTrainingEvent(topOutLog);
             }
             resetAiPlanState();
             onGameOver();
@@ -2533,7 +2629,7 @@ export function initTraining(game, renderer) {
           train.ai.lastSig = sig;
         }
         if(train.ai.staleMs > 1000){
-          log('AI: watchdog forced drop');
+          logTrainingEvent('AI: watchdog forced drop');
           while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
           lock(state.grid, state.active);
           state.pieces++;
@@ -2584,7 +2680,7 @@ export function initTraining(game, renderer) {
               return false;
             }
             if(state.grid[0].some((v) => v !== 0)) {
-              log('AI: top-out after forced drop');
+              logTrainingEvent('AI: top-out after forced drop');
               resetAiPlanState();
               onGameOver();
               return false;
@@ -2605,7 +2701,7 @@ export function initTraining(game, renderer) {
               // Rotation blocked: abandon this plan to avoid stalling
               state.active.rotate(-1);
               train.ai.plan = null;
-              log('AI: rotation blocked, abandoning plan');
+              logTrainingEvent('AI: rotation blocked, abandoning plan');
             } else {
               plan.rotLeft -= 1;
             }
@@ -2656,7 +2752,7 @@ export function initTraining(game, renderer) {
             return false;
           }
           if(state.grid[0].some((v) => v !== 0)) {
-            log('AI: top-out after drop');
+            logTrainingEvent('AI: top-out after drop');
             resetAiPlanState();
             onGameOver();
             return false;
@@ -2672,7 +2768,7 @@ export function initTraining(game, renderer) {
 
     function aiStep(dt){
       if(!state.active){ return; }
-      if(!canMove(state.grid, state.active, 0, 0)) { log('AI: spawn blocked -> game over'); onGameOver(); return; }
+      if(!canMove(state.grid, state.active, 0, 0)) { logTrainingEvent('AI: spawn blocked -> game over'); onGameOver(); return; }
 
       const headlessTraining = train && train.enabled && train.visualizeBoard === false;
       if(headlessTraining){
@@ -2774,11 +2870,21 @@ export function initTraining(game, renderer) {
       renderToggleInput.checked = !!train.visualizeBoard;
       renderToggleInput.addEventListener('change', () => {
         train.visualizeBoard = renderToggleInput.checked;
+        train.plotBestOnly = !train.visualizeBoard;
         syncRenderToggle();
         if(train.visualizeBoard){
           try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
           updateScore(true); updateLevel(true);
         }
+        const baselineSource = train.plotBestOnly
+          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
+          : (train.popSize || 10);
+        const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
+        const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
+        train.scorePlotAxisMax = Math.min(cap, baselineAxis);
+        train.scorePlotPending = 0;
+        updateTrainStatus();
+        updateScorePlot();
       });
     }
     syncRenderToggle();
