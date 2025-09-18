@@ -238,6 +238,12 @@ export function initTraining(game, renderer) {
       return names;
     })();
     const RAW_FEAT_DIM = RAW_FEATURE_NAMES.length;
+    function isLinearModelType(type) {
+      return type === 'linear';
+    }
+    function isAlphaModelType(type) {
+      return type === 'alphatetris';
+    }
     function isMlpModelType(type) {
       return type === 'mlp' || type === 'mlp_raw';
     }
@@ -245,12 +251,30 @@ export function initTraining(game, renderer) {
       return type === 'mlp_raw' ? 'mlp_raw' : 'mlp';
     }
     function inputDimForModel(type) {
-      return type === 'mlp_raw' ? RAW_FEAT_DIM : FEAT_DIM;
+      if (type === 'mlp_raw') {
+        return RAW_FEAT_DIM;
+      }
+      if (type === 'mlp' || type === 'linear') {
+        return FEAT_DIM;
+      }
+      return null;
     }
     function featureNamesForModel(type) {
-      return type === 'mlp_raw' ? RAW_FEATURE_NAMES : FEATURE_NAMES;
+      if (type === 'mlp_raw') {
+        return RAW_FEATURE_NAMES;
+      }
+      if (type === 'mlp' || type === 'linear') {
+        return FEATURE_NAMES;
+      }
+      return null;
+    }
+    function isSupportedModelType(type) {
+      return isLinearModelType(type) || isMlpModelType(type) || isAlphaModelType(type);
     }
     function modelDisplayName(type) {
+      if (type === 'alphatetris') {
+        return 'AlphaTetris (ConvNet)';
+      }
       if (type === 'mlp_raw') {
         return 'MLP (board occupancy)';
       }
@@ -423,7 +447,15 @@ export function initTraining(game, renderer) {
     const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
-    function paramDim(){ return isMlpModelType(currentModelType) ? mlpParamDim(mlpHiddenLayers, currentModelType) : FEAT_DIM; }
+    function paramDim(modelType = currentModelType){
+      if(isMlpModelType(modelType)){
+        return mlpParamDim(mlpHiddenLayers, modelType);
+      }
+      if(isLinearModelType(modelType)){
+        return FEAT_DIM;
+      }
+      return 0;
+    }
     function makeStatsArray(vals){ return createFloat32ArrayFrom(vals); }
     function cloneWeightsArray(source){
       if(!source || !source.length){
@@ -441,7 +473,10 @@ export function initTraining(game, renderer) {
         const base = new Array(dim).fill(0.0);
         return makeStatsArray(base);
       }
-      return makeStatsArray(INITIAL_MEAN_LINEAR_BASE);
+      if(isLinearModelType(model)){
+        return makeStatsArray(INITIAL_MEAN_LINEAR_BASE);
+      }
+      return makeStatsArray([]);
     }
     function initialStd(model, layers = mlpHiddenLayers){
       if(isMlpModelType(model)){
@@ -449,7 +484,10 @@ export function initTraining(game, renderer) {
         const base = new Array(dim).fill(0.2);
         return makeStatsArray(base);
       }
-      return makeStatsArray(INITIAL_STD_LINEAR_BASE);
+      if(isLinearModelType(model)){
+        return makeStatsArray(INITIAL_STD_LINEAR_BASE);
+      }
+      return makeStatsArray([]);
     }
 
     function describeModelArchitecture(){
@@ -464,7 +502,13 @@ export function initTraining(game, renderer) {
         const descriptor = currentModelType === 'mlp_raw' ? 'Raw board MLP' : 'MLP';
         return `Architecture: ${descriptor} — ${parts.join(' → ')}`;
       }
-      return `Linear policy with ${FEAT_DIM} inputs`;
+      if(isAlphaModelType(currentModelType)){
+        return 'Architecture: AlphaTetris ConvNet — dual head (policy + value)';
+      }
+      if(isLinearModelType(currentModelType)){
+        return `Linear policy with ${FEAT_DIM} inputs`;
+      }
+      return 'Architecture: unavailable';
     }
 
     function describeSnapshotArchitecture(entry){
@@ -482,7 +526,10 @@ export function initTraining(game, renderer) {
         const descriptor = entry.modelType === 'mlp_raw' ? 'Raw board MLP' : 'MLP';
         return `${genLabel} — ${descriptor}: ${parts.join(' → ')}`;
       }
-      if(entry.modelType === 'linear'){
+      if(isAlphaModelType(entry.modelType)){
+        return `${genLabel} — AlphaTetris ConvNet dual head (policy + value)`;
+      }
+      if(isLinearModelType(entry.modelType)){
         const inputCount = layerSizes && layerSizes.length ? layerSizes[0] : FEAT_DIM;
         return `${genLabel} — Linear policy with ${inputCount} inputs`;
       }
@@ -1344,7 +1391,7 @@ export function initTraining(game, renderer) {
           overrideLayers = snapshot.layerSizes.slice();
         } else if(isMlpModelType(snapshot.modelType)){
           overrideLayers = currentMlpLayerSizes(snapshot.modelType);
-        } else if(snapshot.modelType === 'linear'){
+        } else if(isLinearModelType(snapshot.modelType)){
           overrideLayers = [FEAT_DIM, 1];
         }
       } else if(train.currentWeightsOverride){
@@ -1366,7 +1413,13 @@ export function initTraining(game, renderer) {
 
       if(!snapshot && !currentWeights && train.bestEverWeights){
         currentWeights = train.bestEverWeights;
-        overrideLayers = isMlpModelType(train.modelType) ? currentMlpLayerSizes(train.modelType) : [FEAT_DIM, 1];
+        if(isMlpModelType(train.modelType)){
+          overrideLayers = currentMlpLayerSizes(train.modelType);
+        } else if(isLinearModelType(train.modelType)){
+          overrideLayers = [FEAT_DIM, 1];
+        } else {
+          overrideLayers = null;
+        }
       }
 
       const fallbackModelType = train ? train.modelType : currentModelType;
@@ -1721,7 +1774,9 @@ export function initTraining(game, renderer) {
             fitness: bestThisGen,
             modelType: train.modelType,
             dtype: train.dtype,
-            layerSizes: isMlpModelType(train.modelType) ? currentMlpLayerSizes(train.modelType) : [FEAT_DIM, 1],
+            layerSizes: isMlpModelType(train.modelType)
+              ? currentMlpLayerSizes(train.modelType)
+              : (isLinearModelType(train.modelType) ? [FEAT_DIM, 1] : null),
             weights: bestWeights ? cloneWeightsArray(bestWeights) : null,
             scoreIndex: Math.max(0, train.totalGamesPlayed - train.popSize + bestIdx),
           };
@@ -3194,7 +3249,7 @@ export function initTraining(game, renderer) {
     initMlpConfigUi();
     const modelSel = document.getElementById('model-select');
     function setModelType(mt){
-      if(mt !== 'linear' && mt !== 'mlp' && mt !== 'mlp_raw') return;
+      if(!isSupportedModelType(mt)) return;
       const wasRunning = train.enabled;
       if(wasRunning) stopTraining();
       train.modelType = mt;
