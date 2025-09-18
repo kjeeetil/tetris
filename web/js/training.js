@@ -2245,6 +2245,7 @@ export function initTraining(game, renderer) {
 
       const dataset = [];
       let maxXValue = 0;
+      let minXValue = Infinity;
       if(usingBestSnapshots){
         const snapshots = trainState && Array.isArray(trainState.bestByGeneration)
           ? trainState.bestByGeneration
@@ -2260,6 +2261,9 @@ export function initTraining(game, renderer) {
           if(xValue > maxXValue){
             maxXValue = xValue;
           }
+          if(xValue < minXValue){
+            minXValue = xValue;
+          }
         }
       } else {
         const scores = trainState && Array.isArray(trainState.gameScores) ? trainState.gameScores : [];
@@ -2273,6 +2277,9 @@ export function initTraining(game, renderer) {
           dataset.push({ score, type, xValue, scoreIndex: offset + i });
           if(xValue > maxXValue){
             maxXValue = xValue;
+          }
+          if(xValue < minXValue){
+            minXValue = xValue;
           }
         }
       }
@@ -2431,48 +2438,102 @@ export function initTraining(game, renderer) {
         ctx.stroke();
       }
 
-      if(!usingBestSnapshots){
-        // Draw a centered rolling average (last 50 and next 50 games).
-        const windowRadius = 50;
-        const requiredWindow = windowRadius * 2 + 1;
-        if(dataset.length >= requiredWindow){
-          const prefix = new Array(dataset.length + 1);
-          prefix[0] = 0;
-          for(let i = 0; i < dataset.length; i += 1){
-            prefix[i + 1] = prefix[i] + dataset[i].score;
-          }
-          const startIdx = windowRadius;
-          const endIdx = dataset.length - windowRadius - 1;
-          if(startIdx <= endIdx){
-            ctx.save();
-            ctx.beginPath();
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            let drewPoint = false;
-            for(let i = startIdx; i <= endIdx; i += 1){
-              const windowStart = i - windowRadius;
-              const windowEnd = i + windowRadius;
-              const windowCount = windowEnd - windowStart + 1;
-              if(windowCount <= 0) continue;
-              const sum = prefix[windowEnd + 1] - prefix[windowStart];
-              const avg = sum / windowCount;
-              const point = pointPositions[i];
-              if(!point) continue;
-              const y = H - padB - (avg / safeMaxY) * yh;
-              if(!drewPoint){
-                ctx.moveTo(point.x, y);
-                drewPoint = true;
-              } else {
-                ctx.lineTo(point.x, y);
-              }
+      const firstPlottedX = Number.isFinite(minXValue) ? Math.max(1, minXValue) : 1;
+      const computePlotX = (value, fallbackIndex) => {
+        let base = Number.isFinite(value) ? value : null;
+        if(base === null || base <= 1){
+          base = fallbackIndex + 1;
+        }
+        const clamped = Math.min(axisMax, Math.max(1, base));
+        const ratio = axisMax <= 1 ? 1 : (clamped - 1) / denom;
+        return padL + ratio * xw;
+      };
+
+      // Draw a centered rolling average (last 5 and next 5 points). Prefer best-of-generation
+      // snapshots when available so the trend line matches the data being emphasized.
+      const windowRadius = 5;
+      const requiredWindow = windowRadius * 2 + 1;
+      const bestSeries = trainState && Array.isArray(trainState.bestByGeneration)
+        ? trainState.bestByGeneration
+        : null;
+      const rollingSeries = (() => {
+        if(bestSeries && bestSeries.length){
+          const series = [];
+          for(let i = 0; i < bestSeries.length; i += 1){
+            const entry = bestSeries[i];
+            if(!entry) continue;
+            const score = Number.isFinite(entry.fitness) ? entry.fitness : 0;
+            let xRaw;
+            if(usingBestSnapshots){
+              xRaw = Number.isFinite(entry.gen) && entry.gen > 0 ? entry.gen : i + 1;
+            } else if(Number.isFinite(entry.scoreIndex)){
+              xRaw = entry.scoreIndex + 1;
+            } else if(Number.isFinite(entry.gen) && entry.gen > 0){
+              xRaw = entry.gen;
+            } else {
+              xRaw = i + 1;
             }
-            if(drewPoint){
-              ctx.stroke();
+            if(!usingBestSnapshots && xRaw < firstPlottedX){
+              continue;
             }
-            ctx.restore();
+            series.push({
+              score,
+              x: computePlotX(xRaw, i),
+            });
           }
+          if(series.length >= requiredWindow){
+            return series;
+          }
+        }
+        return dataset.map((point, idx) => {
+          const plotPoint = pointPositions[idx];
+          const score = Number.isFinite(point.score) ? point.score : 0;
+          const x = plotPoint && Number.isFinite(plotPoint.x)
+            ? plotPoint.x
+            : computePlotX(point.xValue, idx);
+          return { score, x };
+        });
+      })();
+
+      if(rollingSeries.length >= requiredWindow){
+        const prefix = new Array(rollingSeries.length + 1);
+        prefix[0] = 0;
+        for(let i = 0; i < rollingSeries.length; i += 1){
+          prefix[i + 1] = prefix[i] + rollingSeries[i].score;
+        }
+        const startIdx = windowRadius;
+        const endIdx = rollingSeries.length - windowRadius - 1;
+        if(startIdx <= endIdx){
+          ctx.save();
+          ctx.beginPath();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          let drewPoint = false;
+          for(let i = startIdx; i <= endIdx; i += 1){
+            const windowStart = i - windowRadius;
+            const windowEnd = i + windowRadius;
+            const windowCount = windowEnd - windowStart + 1;
+            if(windowCount <= 0) continue;
+            const sum = prefix[windowEnd + 1] - prefix[windowStart];
+            const avg = sum / windowCount;
+            const x = rollingSeries[i] && Number.isFinite(rollingSeries[i].x)
+              ? rollingSeries[i].x
+              : computePlotX(null, i);
+            if(!Number.isFinite(x)) continue;
+            const y = H - padB - (avg / safeMaxY) * yh;
+            if(!drewPoint){
+              ctx.moveTo(x, y);
+              drewPoint = true;
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          if(drewPoint){
+            ctx.stroke();
+          }
+          ctx.restore();
         }
       }
 
