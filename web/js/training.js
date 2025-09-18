@@ -238,16 +238,30 @@ export function initTraining(game, renderer) {
       return names;
     })();
     const RAW_FEAT_DIM = RAW_FEATURE_NAMES.length;
+    const ALPHATETRIS_DEFAULT_ARCHITECTURE = 'AlphaTetris ConvNet — convolutional policy/value network';
+
+    function isAlphaModelType(type) {
+      return type === 'alphatetris';
+    }
     function isMlpModelType(type) {
       return type === 'mlp' || type === 'mlp_raw';
+    }
+    function usesPopulationModel(type) {
+      return !isAlphaModelType(type);
     }
     function resolveMlpType(type) {
       return type === 'mlp_raw' ? 'mlp_raw' : 'mlp';
     }
     function inputDimForModel(type) {
+      if (isAlphaModelType(type)) {
+        return RAW_FEAT_DIM;
+      }
       return type === 'mlp_raw' ? RAW_FEAT_DIM : FEAT_DIM;
     }
     function featureNamesForModel(type) {
+      if (isAlphaModelType(type)) {
+        return RAW_FEATURE_NAMES;
+      }
       return type === 'mlp_raw' ? RAW_FEATURE_NAMES : FEATURE_NAMES;
     }
     function modelDisplayName(type) {
@@ -256,6 +270,9 @@ export function initTraining(game, renderer) {
       }
       if (type === 'mlp') {
         return 'MLP (engineered features)';
+      }
+      if (isAlphaModelType(type)) {
+        return 'AlphaTetris ConvNet';
       }
       return 'Linear';
     }
@@ -423,7 +440,12 @@ export function initTraining(game, renderer) {
     const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
-    function paramDim(){ return isMlpModelType(currentModelType) ? mlpParamDim(mlpHiddenLayers, currentModelType) : FEAT_DIM; }
+    function paramDim(){
+      if(!usesPopulationModel(currentModelType)){
+        return 0;
+      }
+      return isMlpModelType(currentModelType) ? mlpParamDim(mlpHiddenLayers, currentModelType) : FEAT_DIM;
+    }
     function makeStatsArray(vals){ return createFloat32ArrayFrom(vals); }
     function cloneWeightsArray(source){
       if(!source || !source.length){
@@ -436,6 +458,9 @@ export function initTraining(game, renderer) {
       return copy;
     }
     function initialMean(model, layers = mlpHiddenLayers){
+      if(isAlphaModelType(model)){
+        return makeStatsArray([]);
+      }
       if(isMlpModelType(model)){
         const dim = mlpParamDim(layers, model);
         const base = new Array(dim).fill(0.0);
@@ -444,6 +469,9 @@ export function initTraining(game, renderer) {
       return makeStatsArray(INITIAL_MEAN_LINEAR_BASE);
     }
     function initialStd(model, layers = mlpHiddenLayers){
+      if(isAlphaModelType(model)){
+        return makeStatsArray([]);
+      }
       if(isMlpModelType(model)){
         const dim = mlpParamDim(layers, model);
         const base = new Array(dim).fill(0.2);
@@ -452,7 +480,26 @@ export function initTraining(game, renderer) {
       return makeStatsArray(INITIAL_STD_LINEAR_BASE);
     }
 
+    function createAlphaState(prevConfig = null){
+      const baseConfig = prevConfig && typeof prevConfig === 'object' ? { ...prevConfig } : {};
+      if(typeof baseConfig.architectureDescription !== 'string' || !baseConfig.architectureDescription.trim()){
+        const fallback =
+          typeof baseConfig.description === 'string' && baseConfig.description.trim()
+            ? baseConfig.description.trim()
+            : ALPHATETRIS_DEFAULT_ARCHITECTURE;
+        baseConfig.architectureDescription = fallback;
+      }
+      return {
+        config: baseConfig,
+        modelPromise: null,
+        latestModel: null,
+      };
+    }
+
     function describeModelArchitecture(){
+      if(isAlphaModelType(currentModelType)){
+        return describeAlphaArchitecture();
+      }
       if(isMlpModelType(currentModelType)){
         const sizes = currentMlpLayerSizes(currentModelType);
         if(!sizes.length) return 'Architecture: unavailable';
@@ -465,6 +512,28 @@ export function initTraining(game, renderer) {
         return `Architecture: ${descriptor} — ${parts.join(' → ')}`;
       }
       return `Linear policy with ${FEAT_DIM} inputs`;
+    }
+
+    function describeAlphaArchitecture(){
+      const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+      const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
+      const config = alphaState && alphaState.config ? alphaState.config : null;
+      if(config){
+        const description =
+          typeof config.architectureDescription === 'string' && config.architectureDescription.trim()
+            ? config.architectureDescription.trim()
+            : (typeof config.description === 'string' && config.description.trim()
+                ? config.description.trim()
+                : '');
+        if(description){
+          return `Architecture: ${description}`;
+        }
+        if(Array.isArray(config.layers) && config.layers.length){
+          const parts = config.layers.map((layer) => String(layer));
+          return `Architecture: AlphaTetris ConvNet — ${parts.join(' → ')}`;
+        }
+      }
+      return `Architecture: ${ALPHATETRIS_DEFAULT_ARCHITECTURE}`;
     }
 
     function describeSnapshotArchitecture(entry){
@@ -485,6 +554,15 @@ export function initTraining(game, renderer) {
       if(entry.modelType === 'linear'){
         const inputCount = layerSizes && layerSizes.length ? layerSizes[0] : FEAT_DIM;
         return `${genLabel} — Linear policy with ${inputCount} inputs`;
+      }
+      if(isAlphaModelType(entry.modelType)){
+        const alphaDesc =
+          (entry && typeof entry.architectureDescription === 'string' && entry.architectureDescription.trim())
+            ? entry.architectureDescription.trim()
+            : (entry && typeof entry.alphaDescription === 'string' && entry.alphaDescription.trim()
+                ? entry.alphaDescription.trim()
+                : ALPHATETRIS_DEFAULT_ARCHITECTURE);
+        return `${genLabel} — ${alphaDesc}`;
       }
       return `${genLabel} — Architecture unavailable`;
     }
@@ -624,6 +702,9 @@ export function initTraining(game, renderer) {
     }
 
     function activeWeightArray(){
+      if(train && isAlphaModelType(train.modelType)){
+        return null;
+      }
       if(train && train.currentWeightsOverride && train.currentWeightsOverride.length){
         return train.currentWeightsOverride;
       }
@@ -643,6 +724,9 @@ export function initTraining(game, renderer) {
     }
 
     function createWeightSnapshot(){
+      if(train && isAlphaModelType(train.modelType)){
+        return null;
+      }
       const weights = activeWeightArray();
       if(!weights || !weights.length){
         return null;
@@ -958,6 +1042,21 @@ export function initTraining(game, renderer) {
       syncMlpConfigVisibility();
     }
 
+    function renderAlphaNetworkPlaceholder(message){
+      if(!networkVizEl){
+        return;
+      }
+      if(typeof document === 'undefined'){
+        networkVizEl.textContent = message || 'AlphaTetris ConvNet visualization managed by TensorFlow.js.';
+        return;
+      }
+      networkVizEl.innerHTML = '';
+      const container = document.createElement('div');
+      container.className = 'alpha-network-placeholder';
+      container.textContent = message || 'AlphaTetris ConvNet visualization managed by TensorFlow.js.';
+      networkVizEl.appendChild(container);
+    }
+
     function sliceSegment(arr, start, end){
       if(!arr) return null;
       if(typeof arr.subarray === 'function'){
@@ -1231,6 +1330,7 @@ export function initTraining(game, renderer) {
       scorePlotAxisMax: 0,
       meanView: null,
       stdView: null,
+      alpha: null,
     };
     function shouldLogTrainingEvent(){
       return !(train && train.enabled && train.visualizeBoard === false);
@@ -1327,8 +1427,19 @@ export function initTraining(game, renderer) {
     function updateTrainStatus(){
       if(trainStatus){
         const statusLabel = modelDisplayName(train.modelType);
+        const populationModel = usesPopulationModel(train.modelType);
         if(train.enabled){
-          trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${statusLabel}`;
+          if(populationModel){
+            const maxIndex = Math.max(0, (Array.isArray(train.candWeights) ? train.candWeights.length : 0) - 1);
+            const safeIndex = Number.isFinite(train.candIndex) ? Math.max(0, Math.min(maxIndex, Math.floor(train.candIndex))) : 0;
+            const candidateNumber = safeIndex + 1;
+            const popSize = Number.isFinite(train.popSize) && train.popSize > 0 ? train.popSize : (maxIndex + 1 || 1);
+            trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${candidateNumber}/${popSize} — Model: ${statusLabel}`;
+          } else {
+            const gamesPlayed = Number.isFinite(train.totalGamesPlayed) ? train.totalGamesPlayed : 0;
+            const nextGame = gamesPlayed + 1;
+            trainStatus.textContent = `Training active — Model: ${statusLabel} (Game ${nextGame})`;
+          }
         } else {
           trainStatus.textContent = `Training stopped — Model: ${statusLabel}`;
         }
@@ -1352,25 +1463,26 @@ export function initTraining(game, renderer) {
         if(isMlpModelType(train.modelType)){
           overrideLayers = currentMlpLayerSizes(train.modelType);
         }
-      } else if(train.enabled && train.candIndex >= 0 && train.candIndex < train.candWeights.length){
+      } else if(usesPopulationModel(train.modelType) && train.enabled && train.candIndex >= 0 && train.candIndex < train.candWeights.length){
         currentWeights = train.candWeights[train.candIndex];
         if(isMlpModelType(train.modelType)){
           overrideLayers = currentMlpLayerSizes(train.modelType);
         }
-      } else if(train.mean){
+      } else if(usesPopulationModel(train.modelType) && train.mean){
         currentWeights = train.mean;
         if(isMlpModelType(train.modelType)){
           overrideLayers = currentMlpLayerSizes(train.modelType);
         }
       }
 
-      if(!snapshot && !currentWeights && train.bestEverWeights){
+      if(!snapshot && !currentWeights && usesPopulationModel(train.modelType) && train.bestEverWeights){
         currentWeights = train.bestEverWeights;
         overrideLayers = isMlpModelType(train.modelType) ? currentMlpLayerSizes(train.modelType) : [FEAT_DIM, 1];
       }
 
       const fallbackModelType = train ? train.modelType : currentModelType;
       const displayModelType = snapshot && snapshot.modelType ? snapshot.modelType : fallbackModelType;
+      const displayUsesPopulation = usesPopulationModel(displayModelType);
 
       if(architectureEl){
         if(snapshot){
@@ -1387,13 +1499,18 @@ export function initTraining(game, renderer) {
       }
       const vizFeatureNames = featureNamesForModel(displayModelType);
       const vizInputDim = inputDimForModel(displayModelType);
-      const skipNetworkViz = train.enabled && train.visualizeBoard === false && !snapshot;
+      const headlessSkip = train.enabled && train.visualizeBoard === false && !snapshot;
+      const skipNetworkViz = headlessSkip || !displayUsesPopulation;
       if(!skipNetworkViz){
         try {
           renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
         } catch (_) {
           /* ignore render failures */
         }
+      } else if(isAlphaModelType(displayModelType) && !headlessSkip){
+        renderAlphaNetworkPlaceholder();
+      } else if(!displayUsesPopulation && networkVizEl){
+        networkVizEl.innerHTML = '';
       }
     }
 
@@ -1411,6 +1528,13 @@ export function initTraining(game, renderer) {
       return sample;
     }
     function samplePopulation(){
+      if(!usesPopulationModel(train.modelType)){
+        train.candWeights = [];
+        train.candWeightViews = [];
+        train.candScores = [];
+        train.candIndex = -1;
+        return;
+      }
       const dim = paramDim();
       train.candWeights = [];
       train.candWeightViews = [];
@@ -1481,6 +1605,7 @@ export function initTraining(game, renderer) {
       trainingProfiler.reset();
       trainingProfiler.enable();
       const continuing = hasExistingTrainingProgress();
+      const populationModel = usesPopulationModel(train.modelType);
       if(!continuing){
         train.performanceSummary = [];
         train.gen = 0;
@@ -1498,20 +1623,27 @@ export function initTraining(game, renderer) {
       train.enabled = true;
       resetAiPlanState();
       train.ai.acc = 0;
-      if(!continuing){
-        samplePopulation();
-      } else {
-        const needsPopulation = !Array.isArray(train.candWeights) || train.candWeights.length !== train.popSize || train.candWeights.length === 0;
-        if(needsPopulation){
+      if(populationModel){
+        if(!continuing){
           samplePopulation();
         } else {
-          const maxIndex = Math.max(0, train.candWeights.length - 1);
-          const safeIndex = Number.isFinite(train.candIndex) ? Math.max(0, Math.min(maxIndex, Math.floor(train.candIndex))) : 0;
-          train.candIndex = safeIndex;
+          const needsPopulation = !Array.isArray(train.candWeights) || train.candWeights.length !== train.popSize || train.candWeights.length === 0;
+          if(needsPopulation){
+            samplePopulation();
+          } else {
+            const maxIndex = Math.max(0, train.candWeights.length - 1);
+            const safeIndex = Number.isFinite(train.candIndex) ? Math.max(0, Math.min(maxIndex, Math.floor(train.candIndex))) : 0;
+            train.candIndex = safeIndex;
+          }
+          if(!Array.isArray(train.candScores) || train.candScores.length !== train.popSize){
+            train.candScores = new Array(train.popSize).fill(0);
+          }
         }
-        if(!Array.isArray(train.candScores) || train.candScores.length !== train.popSize){
-          train.candScores = new Array(train.popSize).fill(0);
-        }
+      } else {
+        train.candWeights = [];
+        train.candWeightViews = [];
+        train.candScores = [];
+        train.candIndex = -1;
       }
       train.currentWeightsOverride = null;
       train.scorePlotPending = 0;
@@ -1525,16 +1657,20 @@ export function initTraining(game, renderer) {
         btn.setAttribute('aria-label', 'Stop training');
       }
       if(continuing){
-        const totalCandidates = Number.isFinite(train.popSize) && train.popSize > 0
-          ? train.popSize
-          : ((Array.isArray(train.candWeights) && train.candWeights.length > 0) ? train.candWeights.length : 1);
-        const candidateNumber = Math.max(
-          1,
-          Math.min(totalCandidates, (Number.isFinite(train.candIndex) ? Math.floor(train.candIndex) : 0) + 1)
-        );
-        log(`Training resumed — Gen ${train.gen + 1}, Candidate ${candidateNumber}/${totalCandidates}`);
+        if(populationModel){
+          const totalCandidates = Number.isFinite(train.popSize) && train.popSize > 0
+            ? train.popSize
+            : ((Array.isArray(train.candWeights) && train.candWeights.length > 0) ? train.candWeights.length : 1);
+          const candidateNumber = Math.max(
+            1,
+            Math.min(totalCandidates, (Number.isFinite(train.candIndex) ? Math.floor(train.candIndex) : 0) + 1)
+          );
+          log(`Training resumed — Gen ${train.gen + 1}, Candidate ${candidateNumber}/${totalCandidates}`);
+        } else {
+          log('AlphaTetris training resumed');
+        }
       } else {
-        log('Training started');
+        log(populationModel ? 'Training started' : 'AlphaTetris training started');
       }
     }
     function stopTraining(){
@@ -1565,11 +1701,21 @@ export function initTraining(game, renderer) {
       stopTraining();
       currentModelType = train.modelType;
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
-      // Reset mean/std based on selected model
-      train.mean = initialMean(train.modelType);
-      train.std = initialStd(train.modelType);
-      train.meanView = createDisplayView(train.mean, train.meanView);
-      train.stdView = createDisplayView(train.std, train.stdView);
+      const populationModel = usesPopulationModel(train.modelType);
+      if(populationModel){
+        // Reset mean/std based on selected model
+        train.mean = initialMean(train.modelType);
+        train.std = initialStd(train.modelType);
+        train.meanView = createDisplayView(train.mean, train.meanView);
+        train.stdView = createDisplayView(train.std, train.stdView);
+        train.alpha = null;
+      } else {
+        train.mean = null;
+        train.std = null;
+        train.meanView = null;
+        train.stdView = null;
+        train.alpha = createAlphaState(train.alpha ? train.alpha.config : null);
+      }
       train.gen = 0;
       train.candWeights = [];
       train.candWeightViews = [];
@@ -1601,7 +1747,7 @@ export function initTraining(game, renderer) {
       syncHistoryControls();
       syncMctsControls();
       updateTrainStatus();
-      log('Training parameters reset');
+      log(populationModel ? 'Training parameters reset' : 'AlphaTetris training state reset');
     }
     window.startTraining = startTraining; window.stopTraining = stopTraining; window.resetTraining = resetTraining;
 
@@ -1630,7 +1776,10 @@ export function initTraining(game, renderer) {
       log('Game over. Resetting.');
       if(train.enabled){
         const fitness = state.score;
-        if(train.candIndex >= 0) train.candScores[train.candIndex] = fitness;
+        const populationModel = usesPopulationModel(train.modelType);
+        if(populationModel && Array.isArray(train.candScores) && train.candIndex >= 0){
+          train.candScores[train.candIndex] = fitness;
+        }
         // Append raw score for progress plot and mark model type
         train.gameScores.push(state.score);
         train.gameModelTypes.push(train.modelType);
@@ -1657,6 +1806,17 @@ export function initTraining(game, renderer) {
           if(train.scorePlotPending >= updateStride){
             updateScorePlot();
           }
+        }
+        if(!populationModel){
+          if(Number.isFinite(fitness) && fitness > (train.bestEverFitness ?? -Infinity)){
+            train.bestEverFitness = fitness;
+          }
+          Object.assign(state,{grid:emptyGrid(),active:null,next:null,score:0, level:0, pieces:0});
+          state.gravity = gravityForLevel(0);
+          updateLevel(); updateScore();
+          spawn(); resetAiPlanState(); train.ai.acc = 0;
+          updateTrainStatus();
+          return;
         }
         if(train.candIndex + 1 < train.popSize){
           train.candIndex += 1;
@@ -2163,7 +2323,17 @@ export function initTraining(game, renderer) {
       return trainingProfiler.section('train.full.features_raw', () => fillRawFeatureVector(rawFeatureScratch, g));
     }
 
-    function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
+    function dot(weights, feats){
+      if(!weights || !weights.length){
+        return 0;
+      }
+      const limit = Math.min(FEAT_DIM, weights.length);
+      let s = 0;
+      for(let d = 0; d < limit; d++){
+        s += weights[d] * feats[d];
+      }
+      return s;
+    }
     const mlpActivationScratch = [];
     let mlpOutputScratch = null;
     let mlpInputScratch = null;
@@ -3194,20 +3364,31 @@ export function initTraining(game, renderer) {
     initMlpConfigUi();
     const modelSel = document.getElementById('model-select');
     function setModelType(mt){
-      if(mt !== 'linear' && mt !== 'mlp' && mt !== 'mlp_raw') return;
+      if(mt !== 'linear' && mt !== 'mlp' && mt !== 'mlp_raw' && mt !== 'alphatetris') return;
       const wasRunning = train.enabled;
       if(wasRunning) stopTraining();
       train.modelType = mt;
       currentModelType = mt;
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
-      // Prefer f16 for MLP if available, else f32
-      train.dtype = (isMlpModelType(mt) && HAS_F16) ? 'f16' : 'f32';
-      dtypePreference = train.dtype;
-      // Re-init mean/std to the appropriate initial values for this model
-      train.mean = initialMean(mt);
-      train.meanView = createDisplayView(train.mean, train.meanView);
-      train.std  = initialStd(mt);
-      train.stdView = createDisplayView(train.std, train.stdView);
+      if(isAlphaModelType(mt)){
+        train.dtype = 'f32';
+        dtypePreference = train.dtype;
+        train.mean = null;
+        train.std = null;
+        train.meanView = null;
+        train.stdView = null;
+        train.alpha = createAlphaState(train.alpha ? train.alpha.config : null);
+      } else {
+        // Prefer f16 for MLP if available, else f32
+        train.dtype = (isMlpModelType(mt) && HAS_F16) ? 'f16' : 'f32';
+        dtypePreference = train.dtype;
+        // Re-init mean/std to the appropriate initial values for this model
+        train.mean = initialMean(mt);
+        train.meanView = createDisplayView(train.mean, train.meanView);
+        train.std  = initialStd(mt);
+        train.stdView = createDisplayView(train.std, train.stdView);
+        train.alpha = null;
+      }
       updateTrainStatus();
       // Reset training state
       resetTraining();
