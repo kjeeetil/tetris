@@ -27,6 +27,55 @@ body::before {
   mix-blend-mode: screen;
   z-index: -2;
 }
+.github-link {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 1.25rem;
+  border-radius: 999px;
+  border: 1px solid rgba(249, 245, 255, 0.22);
+  background: linear-gradient(135deg, rgba(94, 74, 227, 0.45), rgba(244, 247, 121, 0.35));
+  color: #f9f5ff;
+  font-family: "Instrument Serif", serif;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  box-shadow: 0 18px 36px rgba(17, 17, 31, 0.34);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.github-link:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 22px 42px rgba(17, 17, 31, 0.4);
+}
+.github-link:focus-visible {
+  outline: 2px solid rgba(244, 247, 121, 0.65);
+  outline-offset: 3px;
+}
+.github-link__icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.github-link__text {
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .github-link {
+    top: 16px;
+    right: 16px;
+    padding: 0.45rem 1rem;
+    font-size: 12px;
+  }
+  .github-link__icon {
+    width: 18px;
+    height: 18px;
+  }
+}
 .aura-shape {
   position: absolute;
   border-radius: 48px;
