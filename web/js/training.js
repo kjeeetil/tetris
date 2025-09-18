@@ -1281,19 +1281,68 @@ export function initTraining(game, renderer) {
       train.candIndex = 0;
     }
 
+    function hasExistingTrainingProgress(){
+      if(!train){
+        return false;
+      }
+      if(Number.isFinite(train.gen) && train.gen > 0){
+        return true;
+      }
+      if(Array.isArray(train.bestByGeneration) && train.bestByGeneration.length > 0){
+        return true;
+      }
+      if(Array.isArray(train.gameScores) && train.gameScores.length > 0){
+        return true;
+      }
+      if(Number.isFinite(train.totalGamesPlayed) && train.totalGamesPlayed > 0){
+        return true;
+      }
+      if(Array.isArray(train.candWeights) && train.candWeights.length > 0){
+        const idx = Number.isFinite(train.candIndex) ? Math.floor(train.candIndex) : -1;
+        if(idx >= 0 && idx < train.candWeights.length){
+          return true;
+        }
+        if(train.candWeights.length === train.popSize){
+          return true;
+        }
+      }
+      return false;
+    }
+
     function startTraining(){
       if(!state.running){ start(); }
       trainingProfiler.reset();
       trainingProfiler.enable();
-      train.performanceSummary = [];
-      train.enabled = true; train.gen = 0; resetAiPlanState(); train.ai.acc = 0; samplePopulation();
-      train.gameScores = [];
-      train.gameModelTypes = [];
-      train.gameScoresOffset = 0;
-      train.totalGamesPlayed = 0;
+      const continuing = hasExistingTrainingProgress();
+      if(!continuing){
+        train.performanceSummary = [];
+        train.gen = 0;
+        train.gameScores = [];
+        train.gameModelTypes = [];
+        train.gameScoresOffset = 0;
+        train.totalGamesPlayed = 0;
+        train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
+      }
+      train.enabled = true;
+      resetAiPlanState();
+      train.ai.acc = 0;
+      if(!continuing){
+        samplePopulation();
+      } else {
+        const needsPopulation = !Array.isArray(train.candWeights) || train.candWeights.length !== train.popSize || train.candWeights.length === 0;
+        if(needsPopulation){
+          samplePopulation();
+        } else {
+          const maxIndex = Math.max(0, train.candWeights.length - 1);
+          const safeIndex = Number.isFinite(train.candIndex) ? Math.max(0, Math.min(maxIndex, Math.floor(train.candIndex))) : 0;
+          train.candIndex = safeIndex;
+        }
+        if(!Array.isArray(train.candScores) || train.candScores.length !== train.popSize){
+          train.candScores = new Array(train.popSize).fill(0);
+        }
+      }
       train.currentWeightsOverride = null;
       train.scorePlotPending = 0;
-      train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
       updateTrainStatus();
       const btn = document.getElementById('start-training');
       if(btn){
@@ -1303,7 +1352,18 @@ export function initTraining(game, renderer) {
         btn.setAttribute('title', 'Stop training');
         btn.setAttribute('aria-label', 'Stop training');
       }
-      log('Training started');
+      if(continuing){
+        const totalCandidates = Number.isFinite(train.popSize) && train.popSize > 0
+          ? train.popSize
+          : ((Array.isArray(train.candWeights) && train.candWeights.length > 0) ? train.candWeights.length : 1);
+        const candidateNumber = Math.max(
+          1,
+          Math.min(totalCandidates, (Number.isFinite(train.candIndex) ? Math.floor(train.candIndex) : 0) + 1)
+        );
+        log(`Training resumed — Gen ${train.gen + 1}, Candidate ${candidateNumber}/${totalCandidates}`);
+      } else {
+        log('Training started');
+      }
     }
     function stopTraining(){
       const wasRunning = train.enabled;
