@@ -505,6 +505,8 @@ export function initTraining(game, renderer) {
     // Numeric dtype for weight arrays
     const HAS_F16 = (typeof Float16Array !== 'undefined');
     const DEFAULT_DTYPE = HAS_F16 ? 'f16' : 'f32';
+    const SCORE_PLOT_DEFAULT_UPDATE_FREQ = 5;
+    const SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ = 20;
     let dtypePreference = DEFAULT_DTYPE;
     function allocFloat32(n){ return new Float32Array(n); }
     function copyValues(source, target){
@@ -1645,7 +1647,7 @@ export function initTraining(game, renderer) {
       bestByGeneration: [],
       historySelection: null,
       maxPlotPoints: 4000,
-      scorePlotUpdateFreq: 5,
+      scorePlotUpdateFreq: SCORE_PLOT_DEFAULT_UPDATE_FREQ,
       scorePlotPending: 0,
       scorePlotAxisMax: 0,
       meanView: null,
@@ -2078,7 +2080,10 @@ export function initTraining(game, renderer) {
       train.bestByGeneration = [];
       train.historySelection = null;
       train.scorePlotPending = 0;
-      train.plotBestOnly = !train.visualizeBoard;
+      train.plotBestOnly = populationModel && !train.visualizeBoard;
+      train.scorePlotUpdateFreq = populationModel
+        ? SCORE_PLOT_DEFAULT_UPDATE_FREQ
+        : SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ;
       {
         const bestCount = Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
         const genCount = Number.isFinite(train.gen) ? train.gen : 0;
@@ -2149,7 +2154,13 @@ export function initTraining(game, renderer) {
         if(train.plotBestOnly){
           train.scorePlotPending = 0;
         } else {
-          const updateStride = Math.max(1, train.scorePlotUpdateFreq || 5);
+          const defaultStride = usesPopulationModel(train.modelType)
+            ? SCORE_PLOT_DEFAULT_UPDATE_FREQ
+            : SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ;
+          const updateStride = Math.max(
+            1,
+            train.scorePlotUpdateFreq || defaultStride,
+          );
           train.scorePlotPending = (train.scorePlotPending || 0) + 1;
           if(train.scorePlotPending >= updateStride){
             updateScorePlot();
@@ -3925,13 +3936,16 @@ export function initTraining(game, renderer) {
       renderToggleInput.checked = !!train.visualizeBoard;
       renderToggleInput.addEventListener('change', () => {
         train.visualizeBoard = renderToggleInput.checked;
-        train.plotBestOnly = !train.visualizeBoard;
+        const populationModel = usesPopulationModel(train.modelType);
+        train.plotBestOnly = populationModel && !train.visualizeBoard;
+        train.scorePlotUpdateFreq = populationModel
+          ? SCORE_PLOT_DEFAULT_UPDATE_FREQ
+          : SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ;
         syncRenderToggle();
         if(train.visualizeBoard){
           try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
           updateScore(true); updateLevel(true);
         }
-        const populationModel = usesPopulationModel(train.modelType);
         const bestCount = Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
         const genCount = Number.isFinite(train.gen) ? train.gen : 0;
         const popBaseline = Math.max(1, Number.isFinite(train.popSize) ? train.popSize : 0);
