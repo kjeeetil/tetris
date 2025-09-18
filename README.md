@@ -6,8 +6,7 @@ This project packages a playable Tetris clone together with a lightweight
 reinforcement-learning lab. The web front end renders the game with
 vanilla JavaScript and HTML canvas while exposing controls that let you train
 heuristic agents directly in the browser. All gameplay and learning logic runs
-in JavaScript; the repository intentionally omits mirrored Python modules to keep
-the codebase focused on the shipped experience.
+in JavaScript.
 
 ## Site build-up
 
