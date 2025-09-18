@@ -1147,6 +1147,11 @@ export function initTraining(game, renderer) {
       meanView: null,
       stdView: null,
     };
+    const logTrainingEvent = (...args) => {
+      if (train.visualizeBoard !== false) {
+        log(...args);
+      }
+    };
     const gridScratch = Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(0));
     const columnHeightScratch = new Array(WIDTH).fill(0);
     const columnMaskScratch = typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
@@ -2466,7 +2471,7 @@ export function initTraining(game, renderer) {
           const topOut = state.grid[0].some((v) => v !== 0);
           if(topOut){
             if(topOutLog){
-              log(topOutLog);
+              logTrainingEvent(topOutLog);
             }
             resetAiPlanState();
             onGameOver();
@@ -2533,7 +2538,7 @@ export function initTraining(game, renderer) {
           train.ai.lastSig = sig;
         }
         if(train.ai.staleMs > 1000){
-          log('AI: watchdog forced drop');
+          logTrainingEvent('AI: watchdog forced drop');
           while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
           lock(state.grid, state.active);
           state.pieces++;
@@ -2584,7 +2589,7 @@ export function initTraining(game, renderer) {
               return false;
             }
             if(state.grid[0].some((v) => v !== 0)) {
-              log('AI: top-out after forced drop');
+              logTrainingEvent('AI: top-out after forced drop');
               resetAiPlanState();
               onGameOver();
               return false;
@@ -2605,7 +2610,7 @@ export function initTraining(game, renderer) {
               // Rotation blocked: abandon this plan to avoid stalling
               state.active.rotate(-1);
               train.ai.plan = null;
-              log('AI: rotation blocked, abandoning plan');
+              logTrainingEvent('AI: rotation blocked, abandoning plan');
             } else {
               plan.rotLeft -= 1;
             }
@@ -2656,7 +2661,7 @@ export function initTraining(game, renderer) {
             return false;
           }
           if(state.grid[0].some((v) => v !== 0)) {
-            log('AI: top-out after drop');
+            logTrainingEvent('AI: top-out after drop');
             resetAiPlanState();
             onGameOver();
             return false;
@@ -2672,7 +2677,7 @@ export function initTraining(game, renderer) {
 
     function aiStep(dt){
       if(!state.active){ return; }
-      if(!canMove(state.grid, state.active, 0, 0)) { log('AI: spawn blocked -> game over'); onGameOver(); return; }
+      if(!canMove(state.grid, state.active, 0, 0)) { logTrainingEvent('AI: spawn blocked -> game over'); onGameOver(); return; }
 
       const headlessTraining = train && train.enabled && train.visualizeBoard === false;
       if(headlessTraining){
