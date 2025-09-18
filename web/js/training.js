@@ -450,6 +450,10 @@ export function initTraining(game, renderer) {
       if(!master){
         return null;
       }
+      const activeModelType = train ? train.modelType : currentModelType;
+      if(isAlphaModelType(activeModelType)){
+        return master;
+      }
       if(dtypePreference !== 'f16' || !HAS_F16){
         return master;
       }
@@ -463,11 +467,16 @@ export function initTraining(game, renderer) {
     const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
-    function paramDim(){
-      if(!usesPopulationModel(currentModelType)){
+    function paramDim(model = currentModelType, layers = mlpHiddenLayers){
+      const targetModel = model || currentModelType;
+      if(!usesPopulationModel(targetModel)){
         return 0;
       }
-      return isMlpModelType(currentModelType) ? mlpParamDim(mlpHiddenLayers, currentModelType) : FEAT_DIM;
+      if(isMlpModelType(targetModel)){
+        const layerConfig = Array.isArray(layers) ? layers : mlpHiddenLayers;
+        return mlpParamDim(layerConfig, targetModel);
+      }
+      return FEAT_DIM;
     }
     function makeStatsArray(vals){ return createFloat32ArrayFrom(vals); }
     function cloneWeightsArray(source){
@@ -1423,7 +1432,10 @@ export function initTraining(game, renderer) {
     train.stdView = createDisplayView(train.std, train.stdView);
     train.candWeightViews = [];
 
-    train.scorePlotAxisMax = Math.max(10, Math.ceil(train.popSize * 1.2));
+    const initialAxisSeed = usesPopulationModel(train.modelType)
+      ? Math.max(1, Number.isFinite(train.popSize) ? train.popSize : 0)
+      : 10;
+    train.scorePlotAxisMax = Math.max(10, Math.ceil(initialAxisSeed * 1.2));
     train.scorePlotPending = 0;
     syncHistoryControls();
     syncMctsControls();
@@ -1644,9 +1656,13 @@ export function initTraining(game, renderer) {
         train.gameModelTypes = [];
         train.gameScoresOffset = 0;
         train.totalGamesPlayed = 0;
+        const bestCount = Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
+        const genCount = Number.isFinite(train.gen) ? train.gen : 0;
+        const popBaseline = Math.max(1, Number.isFinite(train.popSize) ? train.popSize : 0);
+        const gameBaseline = Math.max(10, Number.isFinite(train.totalGamesPlayed) ? train.totalGamesPlayed : 0);
         const baselineSource = train.plotBestOnly
-          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
-          : (train.popSize || 10);
+          ? Math.max(1, bestCount, genCount, populationModel ? 1 : 10)
+          : (populationModel ? popBaseline : gameBaseline);
         const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
         const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
         train.scorePlotAxisMax = Math.min(cap, baselineAxis);
@@ -1705,6 +1721,7 @@ export function initTraining(game, renderer) {
       }
     }
     function stopTraining(){
+      const populationModel = usesPopulationModel(train.modelType);
       const wasRunning = train.enabled;
       train.enabled = false;
       resetAiPlanState();
@@ -1720,7 +1737,7 @@ export function initTraining(game, renderer) {
         updateScorePlot();
       }
       train.scorePlotPending = 0;
-      log('Training stopped');
+      log(populationModel ? 'Training stopped' : 'AlphaTetris training stopped');
       if(wasRunning){
         logTrainingProfileSummary();
       }
@@ -1767,9 +1784,13 @@ export function initTraining(game, renderer) {
       train.scorePlotPending = 0;
       train.plotBestOnly = !train.visualizeBoard;
       {
+        const bestCount = Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
+        const genCount = Number.isFinite(train.gen) ? train.gen : 0;
+        const popBaseline = Math.max(1, Number.isFinite(train.popSize) ? train.popSize : 0);
+        const gameBaseline = Math.max(10, Number.isFinite(train.totalGamesPlayed) ? train.totalGamesPlayed : 0);
         const baselineSource = train.plotBestOnly
-          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
-          : (train.popSize || 10);
+          ? Math.max(1, bestCount, genCount, populationModel ? 1 : 10)
+          : (populationModel ? popBaseline : gameBaseline);
         const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
         const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
         train.scorePlotAxisMax = Math.min(cap, baselineAxis);
@@ -2682,6 +2703,7 @@ export function initTraining(game, renderer) {
       const gridColor = 'rgba(249, 245, 255, 0.1)';
 
       const trainState = window.__train || null;
+      const usingPopulation = trainState ? usesPopulationModel(trainState.modelType) : true;
       const usingBestSnapshots = !!(trainState && trainState.plotBestOnly);
       const xw = Math.max(0, W - padL - padR);
       const yh = Math.max(0, H - padT - padB);
@@ -2735,9 +2757,12 @@ export function initTraining(game, renderer) {
         if(trainState){
           trainState.scorePlotPending = 0;
           if(!Number.isFinite(trainState.scorePlotAxisMax) || trainState.scorePlotAxisMax < 1){
+            const genCount = Number.isFinite(trainState.gen) ? trainState.gen : 0;
+            const popBaseline = Math.max(1, Number.isFinite(trainState.popSize) ? trainState.popSize : 0);
+            const gameBaseline = Math.max(10, Number.isFinite(trainState.totalGamesPlayed) ? trainState.totalGamesPlayed : 0);
             const baselineSource = usingBestSnapshots
-              ? Math.max(1, trainState.gen || 0, 10)
-              : (trainState.popSize || 10);
+              ? Math.max(1, genCount, usingPopulation ? 1 : 10)
+              : (usingPopulation ? popBaseline : gameBaseline);
             const baseline = Math.max(10, Math.ceil(baselineSource * 1.2));
             const maxCap = Math.max(1, trainState.maxPlotPoints || baseline);
             trainState.scorePlotAxisMax = Math.min(maxCap, baseline);
@@ -2799,9 +2824,15 @@ export function initTraining(game, renderer) {
         const maxCap = Math.max(maxXValue, trainState.maxPlotPoints || maxXValue);
         let currentAxis = Number.isFinite(trainState.scorePlotAxisMax) ? trainState.scorePlotAxisMax : 0;
         if(currentAxis < 1){
+          const genCount = Number.isFinite(trainState.gen) ? trainState.gen : 0;
+          const popBaseline = Math.max(1, Number.isFinite(trainState.popSize) ? trainState.popSize : 0);
+          const gameBaseline = Math.max(10, Number.isFinite(trainState.totalGamesPlayed) ? trainState.totalGamesPlayed : 0);
+          const fallbackCount = usingPopulation
+            ? Math.max(1, popBaseline, count || 0, 5)
+            : Math.max(gameBaseline, count || 0);
           const baselineSource = usingBestSnapshots
-            ? Math.max(maxXValue, count, trainState.gen || 0, 5)
-            : (trainState.popSize || count || 5);
+            ? Math.max(maxXValue, count, genCount, usingPopulation ? 5 : 10)
+            : fallbackCount;
           const baseline = Math.max(10, Math.ceil(baselineSource * 1.2));
           currentAxis = Math.min(maxCap, baseline);
         }
@@ -3380,9 +3411,14 @@ export function initTraining(game, renderer) {
           try { draw(state.grid, state.active); drawNext(state.next); } catch(_) {}
           updateScore(true); updateLevel(true);
         }
+        const populationModel = usesPopulationModel(train.modelType);
+        const bestCount = Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
+        const genCount = Number.isFinite(train.gen) ? train.gen : 0;
+        const popBaseline = Math.max(1, Number.isFinite(train.popSize) ? train.popSize : 0);
+        const gameBaseline = Math.max(10, Number.isFinite(train.totalGamesPlayed) ? train.totalGamesPlayed : 0);
         const baselineSource = train.plotBestOnly
-          ? Math.max(1, (Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0), train.gen || 0, 1)
-          : (train.popSize || 10);
+          ? Math.max(1, bestCount, genCount, populationModel ? 1 : 10)
+          : (populationModel ? popBaseline : gameBaseline);
         const baselineAxis = Math.max(10, Math.ceil(baselineSource * 1.2));
         const cap = Math.max(1, train.maxPlotPoints || baselineAxis);
         train.scorePlotAxisMax = Math.min(cap, baselineAxis);
@@ -3408,6 +3444,13 @@ export function initTraining(game, renderer) {
         train.std = null;
         train.meanView = null;
         train.stdView = null;
+        train.candWeights = [];
+        train.candWeightViews = [];
+        train.candScores = [];
+        train.candIndex = -1;
+        train.currentWeightsOverride = null;
+        train.bestEverWeights = null;
+        train.bestEverFitness = -Infinity;
         train.alpha = createAlphaState(train.alpha ? train.alpha.config : null);
       } else {
         // Prefer f16 for MLP if available, else f32
