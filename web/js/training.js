@@ -1,6 +1,17 @@
 import { HEIGHT, MAX_AI_STEPS_PER_FRAME, WIDTH } from './constants.js';
 import { Piece, SHAPES, UNIQUE_ROTATIONS, canMove, clearRows, emptyGrid, gravityForLevel, lock } from './engine.js';
 import {
+  ALPHA_ACTIONS,
+  ALPHA_AUX_FEATURE_COUNT,
+  ALPHA_BOARD_CHANNELS,
+  ALPHA_BOARD_HEIGHT,
+  ALPHA_BOARD_WIDTH,
+  ALPHA_POLICY_SIZE,
+  buildAlphaTetrisModel,
+  prepareAlphaInputs,
+  runAlphaInference,
+} from './models/alphatetris.js';
+import {
   backpropagate,
   computeVisitPolicy,
   createNode,
@@ -12,6 +23,73 @@ import {
 } from './mcts.js';
 
 let randnSpare = null;
+
+  function arrayBufferToBase64(buffer) {
+    if (!buffer) {
+      return '';
+    }
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(bytes.length, i + chunkSize));
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  if (typeof btoa === 'function') {
+    return btoa(binary);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(binary, 'binary').toString('base64');
+  }
+  throw new Error('Base64 encoding is not supported in this environment.');
+}
+
+  function base64ToArrayBuffer(base64) {
+    if (!base64 || typeof base64 !== 'string') {
+      return new ArrayBuffer(0);
+  }
+  let binary;
+  if (typeof atob === 'function') {
+    binary = atob(base64);
+  } else if (typeof Buffer !== 'undefined') {
+    binary = Buffer.from(base64, 'base64').toString('binary');
+  } else {
+    throw new Error('Base64 decoding is not supported in this environment.');
+  }
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function countWeightsFromSpecs(weightSpecs) {
+    if (!Array.isArray(weightSpecs) || !weightSpecs.length) {
+      return 0;
+    }
+    let total = 0;
+    for (let i = 0; i < weightSpecs.length; i += 1) {
+      const spec = weightSpecs[i];
+      if (!spec || !spec.shape) {
+        total += 1;
+        continue;
+      }
+      const shape = Array.isArray(spec.shape) ? spec.shape : [];
+      if (!shape.length) {
+        total += 1;
+        continue;
+      }
+      let size = 1;
+      for (let j = 0; j < shape.length; j += 1) {
+        const dimRaw = shape[j];
+        const dim = Number.isFinite(dimRaw) ? Math.max(1, Math.floor(dimRaw)) : 1;
+        size *= dim;
+      }
+      total += size;
+    }
+    return total;
+  }
 
 function createTrainingProfiler() {
   const stats = new Map();
@@ -241,6 +319,9 @@ export function initTraining(game, renderer) {
     const ALPHATETRIS_MODEL_LABEL = 'AlphaTetris (ConvNet)';
     const ALPHATETRIS_ARCHITECTURE_LABEL = 'ConvNet dual head policy/value network';
     const ALPHATETRIS_DEFAULT_ARCHITECTURE = `${ALPHATETRIS_MODEL_LABEL} — ${ALPHATETRIS_ARCHITECTURE_LABEL}`;
+    const ALPHA_BOARD_SIZE = ALPHA_BOARD_HEIGHT * ALPHA_BOARD_WIDTH * ALPHA_BOARD_CHANNELS;
+    const ALPHA_ACTION_INDEX = new Map(ALPHA_ACTIONS.map((action, index) => [`${action.rotation}|${action.column}`, index]));
+    const ALPHA_TOP_OUT_VALUE = -1;
 
     function isAlphaModelType(type) {
       return type === 'alphatetris';
@@ -531,7 +612,52 @@ export function initTraining(game, renderer) {
         config: baseConfig,
         modelPromise: null,
         latestModel: null,
+        lastRootValue: 0,
+        lastPolicyLogits: null,
       };
+    }
+
+    function ensureAlphaState(){
+      if(!train.alpha){
+        train.alpha = createAlphaState();
+      }
+      return train.alpha;
+    }
+
+    function disposeAlphaModel(alphaState){
+      if(!alphaState || !alphaState.latestModel){
+        return;
+      }
+      try {
+        if(typeof alphaState.latestModel.dispose === 'function'){
+          alphaState.latestModel.dispose();
+        }
+      } catch (err) {
+        if(typeof console !== 'undefined' && console.warn){
+          console.warn('Failed to dispose AlphaTetris model', err);
+        }
+      }
+      alphaState.latestModel = null;
+      alphaState.modelPromise = null;
+    }
+
+    function ensureAlphaModelInstance(){
+      const alphaState = ensureAlphaState();
+      if(alphaState.latestModel){
+        return alphaState.latestModel;
+      }
+      try {
+        const model = buildAlphaTetrisModel(alphaState.config || {});
+        alphaState.latestModel = model;
+        alphaState.modelPromise = Promise.resolve(model);
+        return model;
+      } catch (err) {
+        if(typeof console !== 'undefined' && console.error){
+          console.error('Failed to build AlphaTetris model', err);
+        }
+        alphaState.modelPromise = Promise.reject(err);
+        return null;
+      }
     }
 
     function describeModelArchitecture(){
@@ -763,9 +889,60 @@ export function initTraining(game, renderer) {
       return null;
     }
 
-    function createWeightSnapshot(){
+    async function createWeightSnapshot(){
       if(train && isAlphaModelType(train.modelType)){
-        return null;
+        try {
+          const alphaState = ensureAlphaState();
+          const model = alphaState.latestModel || ensureAlphaModelInstance();
+          if(!model){
+            log('AlphaTetris model is not ready to export yet.');
+            return null;
+          }
+          const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+          if(!tf){
+            log('TensorFlow.js is unavailable. Cannot export AlphaTetris model.');
+            return null;
+          }
+          let artifacts = null;
+          await model.save(tf.io.withSaveHandler(async (modelArtifacts) => {
+            artifacts = {
+              modelTopology: modelArtifacts.modelTopology,
+              weightSpecs: modelArtifacts.weightSpecs,
+              weightDataBase64: arrayBufferToBase64(modelArtifacts.weightData),
+            };
+            return {
+              modelArtifactsInfo: {
+                dateSaved: new Date(),
+                modelTopologyType: 'JSON',
+                modelTopologyBytes: modelArtifacts.modelTopology
+                  ? JSON.stringify(modelArtifacts.modelTopology).length
+                  : 0,
+                weightSpecsBytes: modelArtifacts.weightSpecs
+                  ? JSON.stringify(modelArtifacts.weightSpecs).length
+                  : 0,
+                weightDataBytes: modelArtifacts.weightData ? modelArtifacts.weightData.byteLength : 0,
+              },
+            };
+          }));
+          if(!artifacts){
+            throw new Error('Failed to capture AlphaTetris model artifacts.');
+          }
+          const architectureDescription = alphaState && alphaState.config && alphaState.config.architectureDescription
+            ? alphaState.config.architectureDescription
+            : ALPHATETRIS_DEFAULT_ARCHITECTURE;
+          return {
+            version: 1,
+            createdAt: new Date().toISOString(),
+            modelType: 'alphatetris',
+            dtype: 'f32',
+            architectureDescription,
+            alphaModel: artifacts,
+          };
+        } catch (err) {
+          console.error(err);
+          log('Failed to export AlphaTetris model.');
+          return null;
+        }
       }
       const weights = activeWeightArray();
       if(!weights || !weights.length){
@@ -800,18 +977,18 @@ export function initTraining(game, renderer) {
       return snapshot;
     }
 
-    function downloadCurrentWeights(){
+    async function downloadCurrentWeights(){
       try {
-        const snapshot = createWeightSnapshot();
+        const snapshot = await createWeightSnapshot();
         if(!snapshot){
           log('Weights unavailable for download yet. Start a game or training session first.');
           return;
         }
         const text = JSON.stringify(snapshot, null, 2);
-        const blob = new Blob([text], { type: 'text/plain' });
+        const blob = new Blob([text], { type: 'application/json' });
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const safeModel = (snapshot.modelType || 'model').toLowerCase();
-        const fileName = `tetris-${safeModel}-weights-${timestamp}.txt`;
+        const fileName = `tetris-${safeModel}-weights-${timestamp}.json`;
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
         link.download = fileName;
@@ -825,7 +1002,13 @@ export function initTraining(game, renderer) {
             link.parentNode.removeChild(link);
           }
         }, 0);
-        log(`Saved ${modelDisplayName(snapshot.modelType)} weights (${snapshot.weights.length} params) to ${fileName}.`);
+        const isAlpha = isAlphaModelType(snapshot.modelType);
+        const paramCount = isAlpha
+          ? countWeightsFromSpecs(snapshot.alphaModel && snapshot.alphaModel.weightSpecs)
+          : (Array.isArray(snapshot.weights) ? snapshot.weights.length : 0);
+        const formattedCount = Number.isFinite(paramCount) ? paramCount.toLocaleString() : 'unknown';
+        const noun = isAlpha ? 'model' : 'weights';
+        log(`Saved ${modelDisplayName(snapshot.modelType)} ${noun} (${formattedCount} params) to ${fileName}.`);
       } catch (err) {
         console.error(err);
         const message = (err && err.message) ? err.message : 'unknown error';
@@ -849,13 +1032,54 @@ export function initTraining(game, renderer) {
       if(data.version && Number(data.version) !== 1){
         throw new Error(`Unsupported snapshot version ${data.version}`);
       }
-      if(data.modelType !== 'linear' && !isMlpModelType(data.modelType)){
+      const modelType = data.modelType;
+      if(!modelType){
+        throw new Error('Snapshot missing model type');
+      }
+      if(isAlphaModelType(modelType)){
+        const alpha = data.alphaModel;
+        if(!alpha || typeof alpha !== 'object'){
+          throw new Error('AlphaTetris snapshot missing model artifacts');
+        }
+        const topology = alpha.modelTopology;
+        const weightSpecs = Array.isArray(alpha.weightSpecs) ? alpha.weightSpecs : null;
+        const base64 = typeof alpha.weightDataBase64 === 'string' && alpha.weightDataBase64
+          ? alpha.weightDataBase64
+          : null;
+        const fallbackBuffer = alpha.weightData instanceof ArrayBuffer ? alpha.weightData : null;
+        const weightData = base64 ? base64ToArrayBuffer(base64) : fallbackBuffer;
+        if(!topology){
+          throw new Error('AlphaTetris snapshot missing model topology');
+        }
+        if(!weightSpecs || !weightSpecs.length){
+          throw new Error('AlphaTetris snapshot missing weight specs');
+        }
+        if(!weightData || !weightData.byteLength){
+          throw new Error('AlphaTetris snapshot missing weight data');
+        }
+        const descriptionSource = typeof data.architectureDescription === 'string'
+          ? data.architectureDescription
+          : (typeof data.alphaDescription === 'string' ? data.alphaDescription : '');
+        const normalizedDescription = normalizeAlphaArchitectureDescription(descriptionSource)
+          || ALPHATETRIS_DEFAULT_ARCHITECTURE;
+        data.alphaModel = {
+          modelTopology: topology,
+          weightSpecs,
+          weightData,
+          weightDataBase64: base64 || arrayBufferToBase64(weightData),
+        };
+        data.architectureDescription = normalizedDescription;
+        data.dtype = 'f32';
+        data.version = 1;
+        return data;
+      }
+      if(modelType !== 'linear' && !isMlpModelType(modelType)){
         throw new Error('Snapshot missing model type');
       }
       if(!Array.isArray(data.weights) || !data.weights.length){
         throw new Error('Snapshot missing weights');
       }
-      const expectedFeatures = inputDimForModel(data.modelType || 'linear');
+      const expectedFeatures = inputDimForModel(modelType || 'linear');
       if(data.featureCount && data.featureCount !== expectedFeatures){
         throw new Error(`Snapshot expects ${data.featureCount} features but this build uses ${expectedFeatures}`);
       }
@@ -863,7 +1087,7 @@ export function initTraining(game, renderer) {
       return data;
     }
 
-    function applyWeightSnapshot(snapshot, context){
+    async function applyWeightSnapshot(snapshot, context){
       if(!snapshot){
         throw new Error('Snapshot missing');
       }
@@ -874,6 +1098,71 @@ export function initTraining(game, renderer) {
       }
       if(dtype !== 'f16' && dtype !== 'f32'){
         dtype = 'f32';
+      }
+
+      const wasRunning = train && train.enabled;
+      if(wasRunning){
+        stopTraining();
+      }
+
+      if(modelSel){
+        modelSel.value = modelType;
+      }
+
+      if(isAlphaModelType(modelType)){
+        const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+        if(!tf){
+          throw new Error('TensorFlow.js is unavailable. Cannot load AlphaTetris model.');
+        }
+        const alphaArtifacts = snapshot.alphaModel || {};
+        const modelTopology = alphaArtifacts.modelTopology;
+        const weightSpecs = Array.isArray(alphaArtifacts.weightSpecs) ? alphaArtifacts.weightSpecs : null;
+        const weightData = alphaArtifacts.weightData instanceof ArrayBuffer
+          ? alphaArtifacts.weightData
+          : (typeof alphaArtifacts.weightDataBase64 === 'string'
+            ? base64ToArrayBuffer(alphaArtifacts.weightDataBase64)
+            : null);
+        if(!modelTopology || !weightSpecs || !weightSpecs.length || !weightData || !weightData.byteLength){
+          throw new Error('AlphaTetris snapshot was missing model parameters.');
+        }
+        const normalizedDescription = normalizeAlphaArchitectureDescription(snapshot.architectureDescription)
+          || ALPHATETRIS_DEFAULT_ARCHITECTURE;
+        if(train.alpha){
+          disposeAlphaModel(train.alpha);
+        }
+        train.alpha = createAlphaState({ architectureDescription: normalizedDescription });
+        train.modelType = modelType;
+        currentModelType = modelType;
+        train.dtype = 'f32';
+        dtypePreference = 'f32';
+        resetTraining();
+        syncMlpConfigVisibility();
+        const alphaState = ensureAlphaState();
+        alphaState.config = alphaState.config || {};
+        alphaState.config.architectureDescription = normalizedDescription;
+        alphaState.config.description = normalizedDescription;
+        const handler = tf.io.fromMemory(modelTopology, weightSpecs, weightData);
+        const loadedModel = await tf.loadLayersModel(handler);
+        alphaState.latestModel = loadedModel;
+        alphaState.modelPromise = Promise.resolve(loadedModel);
+        alphaState.lastPolicyLogits = null;
+        alphaState.lastRootValue = 0;
+        train.bestEverFitness = Number.isFinite(snapshot.bestEverFitness)
+          ? snapshot.bestEverFitness
+          : -Infinity;
+        const snapGen = Number(snapshot.generation);
+        if(Number.isFinite(snapGen) && snapGen >= 0){
+          train.gen = snapGen;
+        }
+        updateTrainStatus();
+        const origin = context && context.fileName ? ` from ${context.fileName}` : '';
+        const paramCount = countWeightsFromSpecs(weightSpecs);
+        const formattedCount = Number.isFinite(paramCount) ? paramCount.toLocaleString() : 'unknown';
+        log(`Loaded ${modelDisplayName(modelType)} model (${formattedCount} params)${origin}.`);
+        if(wasRunning){
+          log('Training paused. Restart AI training to continue with imported model.');
+        }
+        return;
       }
 
       const weights = snapshot.weights.map((v) => Number(v));
@@ -903,15 +1192,6 @@ export function initTraining(game, renderer) {
 
       const masterWeights = allocFloat32(expectedDim);
       copyValues(weights, masterWeights);
-
-      const wasRunning = train && train.enabled;
-      if(wasRunning){
-        stopTraining();
-      }
-
-      if(modelSel){
-        modelSel.value = modelType;
-      }
 
       if(isMlpModelType(modelType)){
         applyMlpHiddenLayers(snapshotHidden, { rerenderControls: true, syncInputs: true });
@@ -1424,6 +1704,7 @@ export function initTraining(game, renderer) {
     const featureScratch = new Float32Array(FEAT_DIM);
     const rawFeatureScratch = new Float32Array(RAW_FEAT_DIM);
     const pooledPiece = new Piece('I');
+    const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
     // After `train` exists, honor train.dtype for future allocations
@@ -1756,13 +2037,28 @@ export function initTraining(game, renderer) {
         train.std = initialStd(train.modelType);
         train.meanView = createDisplayView(train.mean, train.meanView);
         train.stdView = createDisplayView(train.std, train.stdView);
+        if(train.alpha){
+          disposeAlphaModel(train.alpha);
+        }
         train.alpha = null;
       } else {
         train.mean = null;
         train.std = null;
         train.meanView = null;
         train.stdView = null;
-        train.alpha = createAlphaState(train.alpha ? train.alpha.config : null);
+        const prevAlpha = train.alpha || null;
+        const prevConfig = prevAlpha && prevAlpha.config ? prevAlpha.config : null;
+        const prevModel = prevAlpha && prevAlpha.latestModel ? prevAlpha.latestModel : null;
+        const prevPromise = prevAlpha && prevAlpha.modelPromise ? prevAlpha.modelPromise : null;
+        const prevRootValue = prevAlpha && Number.isFinite(prevAlpha.lastRootValue)
+          ? prevAlpha.lastRootValue
+          : 0;
+        const prevPolicy = prevAlpha && prevAlpha.lastPolicyLogits ? prevAlpha.lastPolicyLogits : null;
+        train.alpha = createAlphaState(prevConfig);
+        train.alpha.latestModel = prevModel || null;
+        train.alpha.modelPromise = prevPromise || (prevModel ? Promise.resolve(prevModel) : null);
+        train.alpha.lastRootValue = prevRootValue;
+        train.alpha.lastPolicyLogits = prevPolicy;
       }
       train.gen = 0;
       train.candWeights = [];
@@ -2480,8 +2776,189 @@ export function initTraining(game, renderer) {
     }
     function scoreFeats(weights, feats){ return isMlpModelType(train.modelType) ? mlpScore(weights, feats, train.modelType) : dot(weights, feats); }
 
+    function evaluateAlphaPlacements(grid, curShape){
+      return trainingProfiler.section('train.alpha.evaluate_all', () => {
+        const placements = enumeratePlacements(grid, curShape);
+        if(!placements.length){
+          return [];
+        }
+        const model = ensureAlphaModelInstance();
+        if(!model){
+          return [];
+        }
+        const alphaState = ensureAlphaState();
+        const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+        if(!tf){
+          if(typeof console !== 'undefined' && console.warn){
+            console.warn('TensorFlow.js unavailable for AlphaTetris evaluation.');
+          }
+          return [];
+        }
+
+        let rootPolicyLogits = null;
+        let rootMask = null;
+        try {
+          const baseInputs = prepareAlphaInputs({
+            grid,
+            active: state.active,
+            next: state.next,
+            preview: state.preview || null,
+            nextQueue: state.nextQueue || null,
+            score: state.score,
+            level: state.level,
+            pieces: state.pieces,
+            gravity: state.gravity,
+          });
+          rootMask = baseInputs.policyMask;
+          const rootResult = runAlphaInference(model, { board: baseInputs.board, aux: baseInputs.aux }, { reuseGraph: true, tf });
+          if(rootResult && Array.isArray(rootResult.policyLogits) && rootResult.policyLogits.length){
+            rootPolicyLogits = rootResult.policyLogits[0];
+            alphaState.lastPolicyLogits = rootPolicyLogits ? rootPolicyLogits.slice() : null;
+          } else {
+            alphaState.lastPolicyLogits = null;
+          }
+          if(rootResult && rootResult.values && rootResult.values.length){
+            const rv = rootResult.values[0];
+            alphaState.lastRootValue = Number.isFinite(rv) ? rv : 0;
+          } else {
+            alphaState.lastRootValue = 0;
+          }
+        } catch (err) {
+          if(typeof console !== 'undefined' && console.error){
+            console.error('AlphaTetris root inference failed', err);
+          }
+          rootPolicyLogits = null;
+          rootMask = null;
+          alphaState.lastPolicyLogits = null;
+          alphaState.lastRootValue = 0;
+        }
+
+        const boards = [];
+        const auxes = [];
+        const candidates = [];
+        const basePieces = Number.isFinite(state.pieces) ? state.pieces : 0;
+        const baseLevel = Number.isFinite(state.level) ? state.level : 0;
+        const baseScore = Number.isFinite(state.score) ? state.score : 0;
+        const nextShape = state.next;
+
+        for(const placement of placements){
+          const policyIndex = ALPHA_ACTION_INDEX.get(`${placement.rot}|${placement.col}`);
+          if(policyIndex === undefined){
+            continue;
+          }
+          if(rootMask && rootMask.length > policyIndex && rootMask[policyIndex] <= 0){
+            continue;
+          }
+          const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
+          if(!sim){
+            continue;
+          }
+          const lines = Number.isFinite(sim.lines) ? sim.lines : 0;
+          const dropRow = Number.isFinite(sim.dropRow) ? sim.dropRow : null;
+          const reward = Number.isFinite(lines) ? lines / 4 : 0;
+          const newPieces = basePieces + 1;
+          const newLevel = baseLevel + ((newPieces % 20 === 0) ? 1 : 0);
+          const newGravity = gravityForLevel(newLevel);
+          const scoreDelta = lines ? lines * 100 * (lines > 1 ? lines : 1) : 0;
+          const newScore = baseScore + scoreDelta;
+          const topOut = sim.grid[0].some((cell) => cell !== 0);
+
+          let activePieceForNext = null;
+          if(!topOut && nextShape){
+            alphaSpawnPiece.shape = nextShape;
+            alphaSpawnPiece.rot = 0;
+            alphaSpawnPiece.row = 0;
+            alphaSpawnPiece.col = Math.floor(WIDTH / 2) - 2;
+            activePieceForNext = alphaSpawnPiece;
+          }
+
+          const candidateState = {
+            grid: sim.grid,
+            active: activePieceForNext,
+            next: null,
+            score: newScore,
+            level: newLevel,
+            pieces: newPieces,
+            gravity: newGravity,
+          };
+
+          const prepared = prepareAlphaInputs(candidateState);
+          boards.push(prepared.board);
+          auxes.push(prepared.aux);
+          candidates.push({
+            key: `${placement.rot}|${placement.col}`,
+            rot: placement.rot,
+            col: placement.col,
+            dropRow,
+            lines,
+            reward,
+            policyIndex,
+            topOut,
+            policyLogit: 0,
+            alpha: {
+              value: 0,
+              topOut,
+              policyIndex,
+            },
+          });
+        }
+
+        const count = candidates.length;
+        if(!count){
+          return [];
+        }
+
+        const boardTensorData = new Float32Array(count * ALPHA_BOARD_SIZE);
+        const auxTensorData = new Float32Array(count * ALPHA_AUX_FEATURE_COUNT);
+        for(let i = 0; i < count; i += 1){
+          boardTensorData.set(boards[i], i * ALPHA_BOARD_SIZE);
+          auxTensorData.set(auxes[i], i * ALPHA_AUX_FEATURE_COUNT);
+        }
+
+        let boardTensor = null;
+        let auxTensor = null;
+        let inferenceResult = null;
+        try {
+          boardTensor = tf.tensor(boardTensorData, [count, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS], 'float32');
+          auxTensor = tf.tensor(auxTensorData, [count, ALPHA_AUX_FEATURE_COUNT], 'float32');
+          inferenceResult = runAlphaInference(model, { boardTensor, auxTensor }, { reuseGraph: true, tf });
+        } catch (err) {
+          if(typeof console !== 'undefined' && console.error){
+            console.error('AlphaTetris placement inference failed', err);
+          }
+          inferenceResult = null;
+        } finally {
+          if(boardTensor){ boardTensor.dispose(); }
+          if(auxTensor){ auxTensor.dispose(); }
+        }
+
+        const values = inferenceResult && inferenceResult.values ? inferenceResult.values : null;
+        for(let i = 0; i < candidates.length; i += 1){
+          const candidate = candidates[i];
+          const predicted = values && values.length > i ? values[i] : 0;
+          const sanitized = Number.isFinite(predicted) ? predicted : 0;
+          candidate.value = candidate.topOut ? ALPHA_TOP_OUT_VALUE : sanitized;
+          candidate.alpha.value = sanitized;
+          if(rootPolicyLogits && rootPolicyLogits.length > candidate.policyIndex){
+            const logit = rootPolicyLogits[candidate.policyIndex];
+            candidate.policyLogit = Number.isFinite(logit) ? logit : candidate.value;
+          } else {
+            candidate.policyLogit = candidate.value;
+          }
+        }
+
+        return candidates;
+      });
+    }
+
     function evaluatePlacementsForSearch(weights, grid, curShape){
       return trainingProfiler.section('train.plan.evaluate_all', () => {
+        if(isAlphaModelType(train.modelType)){
+          const alphaEvaluations = evaluateAlphaPlacements(grid, curShape);
+          if(alphaEvaluations && alphaEvaluations.length){
+            return alphaEvaluations;
+          }
+        }
         const actions = [];
         const placements = enumeratePlacements(grid, curShape);
         if(placements.length === 0){
@@ -2527,6 +3004,18 @@ export function initTraining(game, renderer) {
         if(evaluations.length === 0){
           return null;
         }
+        if(isAlphaModelType(train.modelType)){
+          let bestEntry = null;
+          for(let i = 0; i < evaluations.length; i += 1){
+            const candidate = evaluations[i];
+            const metric = Number.isFinite(candidate.policyLogit) ? candidate.policyLogit : candidate.value;
+            if(!bestEntry || metric > bestEntry.metric){
+              bestEntry = { candidate, metric };
+            }
+          }
+          const selected = bestEntry ? bestEntry.candidate : evaluations[0];
+          return { rot: selected.rot, col: selected.col, dropRow: selected.dropRow, lines: selected.lines };
+        }
         let best = evaluations[0];
         for(let i = 1; i < evaluations.length; i += 1){
           const candidate = evaluations[i];
@@ -2550,7 +3039,13 @@ export function initTraining(game, renderer) {
           return null;
         }
 
-        const logits = evaluations.map((action) => action.value);
+        const usePolicyLogits = isAlphaModelType(train.modelType);
+        const logits = evaluations.map((action) => {
+          if(usePolicyLogits){
+            return Number.isFinite(action.policyLogit) ? action.policyLogit : action.value;
+          }
+          return action.value;
+        });
         const priors = softmax(logits);
         for(let i = 0; i < evaluations.length; i += 1){
           evaluations[i].prior = priors.length > i ? priors[i] : 0;
@@ -2647,7 +3142,12 @@ export function initTraining(game, renderer) {
         const cur = state.active.rot % len;
         const needRot = (selectedMeta.rot - cur + len) % len;
         const targetRow = Number.isFinite(selectedMeta.dropRow) ? selectedMeta.dropRow : null;
-        const rootValue = root.visitCount > 0 ? root.valueSum / root.visitCount : selectedMeta.value;
+        const alphaRootValue = usePolicyLogits && train.alpha && Number.isFinite(train.alpha.lastRootValue)
+          ? train.alpha.lastRootValue
+          : null;
+        const rootValue = root.visitCount > 0
+          ? root.valueSum / root.visitCount
+          : (alphaRootValue !== null ? alphaRootValue : selectedMeta.value);
         train.ai.lastSearchStats = {
           rootValue,
           totalVisits,
@@ -3326,7 +3826,7 @@ export function initTraining(game, renderer) {
 
     const downloadBtn = document.getElementById('download-weights');
     if(downloadBtn){
-      downloadBtn.addEventListener('click', downloadCurrentWeights);
+      downloadBtn.addEventListener('click', () => { void downloadCurrentWeights(); });
     }
     const uploadInput = document.getElementById('upload-weights');
     const uploadBtn = document.getElementById('upload-weights-button');
@@ -3340,11 +3840,11 @@ export function initTraining(game, renderer) {
           return;
         }
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
           try {
             const text = typeof event.target.result === 'string' ? event.target.result : '';
             const snapshot = parseWeightSnapshot(text);
-            applyWeightSnapshot(snapshot, { fileName: file.name });
+            await applyWeightSnapshot(snapshot, { fileName: file.name });
           } catch (err) {
             console.error(err);
             const message = (err && err.message) ? err.message : 'unknown error';
@@ -3434,6 +3934,7 @@ export function initTraining(game, renderer) {
       if(mt !== 'linear' && !isMlpModelType(mt) && !isAlphaModelType(mt)) return;
       const wasRunning = train.enabled;
       if(wasRunning) stopTraining();
+      const prevModelType = train.modelType;
       train.modelType = mt;
       currentModelType = mt;
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
@@ -3451,7 +3952,15 @@ export function initTraining(game, renderer) {
         train.currentWeightsOverride = null;
         train.bestEverWeights = null;
         train.bestEverFitness = -Infinity;
-        train.alpha = createAlphaState(train.alpha ? train.alpha.config : null);
+        const prevAlpha = train.alpha || null;
+        const prevConfig = prevAlpha && prevAlpha.config ? prevAlpha.config : null;
+        train.alpha = createAlphaState(prevConfig);
+        if(prevAlpha && prevAlpha.latestModel && prevModelType === 'alphatetris'){
+          train.alpha.latestModel = prevAlpha.latestModel;
+          train.alpha.modelPromise = prevAlpha.modelPromise || Promise.resolve(prevAlpha.latestModel);
+          train.alpha.lastRootValue = prevAlpha.lastRootValue;
+          train.alpha.lastPolicyLogits = prevAlpha.lastPolicyLogits;
+        }
       } else {
         // Prefer f16 for MLP if available, else f32
         train.dtype = (isMlpModelType(mt) && HAS_F16) ? 'f16' : 'f32';
@@ -3461,6 +3970,9 @@ export function initTraining(game, renderer) {
         train.meanView = createDisplayView(train.mean, train.meanView);
         train.std  = initialStd(mt);
         train.stdView = createDisplayView(train.std, train.stdView);
+        if(train.alpha && prevModelType === 'alphatetris'){
+          disposeAlphaModel(train.alpha);
+        }
         train.alpha = null;
       }
       updateTrainStatus();

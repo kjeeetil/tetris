@@ -506,41 +506,112 @@ export function buildAlphaTetrisModel(config = {}) {
   return model;
 }
 
-export function runAlphaInference(model, inputs, options = {}) {
+export function runAlphaInference(model, inputs = {}, options = {}) {
   if (!model) {
     throw new Error('A TensorFlow.js model instance is required for inference.');
   }
-  if (!inputs || !inputs.board || !inputs.aux) {
-    throw new Error('AlphaTetris inference requires prepared board and auxiliary inputs.');
+  const hasBoardTensor = inputs && inputs.boardTensor;
+  const hasAuxTensor = inputs && inputs.auxTensor;
+  if (!hasBoardTensor && (!inputs || !inputs.board)) {
+    throw new Error('AlphaTetris inference requires prepared board inputs.');
   }
+  if (!hasAuxTensor && (!inputs || !inputs.aux)) {
+    throw new Error('AlphaTetris inference requires prepared auxiliary inputs.');
+  }
+
   const tf = resolveTensorFlow(options.tf);
   const reuseGraph = options.reuseGraph !== false;
 
-  return tf.tidy(() => {
-    const boardTensor = inputs.boardTensor
-      ? inputs.boardTensor
-      : tf.tensor(inputs.board, [1, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS], 'float32');
-    const auxTensor = inputs.auxTensor
-      ? inputs.auxTensor
-      : tf.tensor(inputs.aux, [1, ALPHA_AUX_FEATURE_COUNT], 'float32');
-    const predictFn = reuseGraph ? getPredictFunction(model) : model.predict.bind(model);
-    const rawOutput = predictFn([boardTensor, auxTensor]);
+  const boardShape = inputs.boardShape
+    || (hasBoardTensor ? inputs.boardTensor.shape : [1, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS]);
+  const auxShape = inputs.auxShape
+    || (hasAuxTensor ? inputs.auxTensor.shape : [1, ALPHA_AUX_FEATURE_COUNT]);
+
+  const boardTensor = hasBoardTensor
+    ? inputs.boardTensor
+    : tf.tensor(inputs.board, boardShape, 'float32');
+  const auxTensor = hasAuxTensor
+    ? inputs.auxTensor
+    : tf.tensor(inputs.aux, auxShape, 'float32');
+
+  const predictFn = reuseGraph ? getPredictFunction(model) : model.predict.bind(model);
+
+  let rawOutput;
+  let policyTensor;
+  let valueTensor;
+  try {
+    rawOutput = predictFn([boardTensor, auxTensor]);
     const outputs = Array.isArray(rawOutput) ? rawOutput : [rawOutput];
-    const policyTensor = outputs[0];
-    const valueTensor = outputs[1] || null;
+    policyTensor = outputs[0];
+    valueTensor = outputs[1] || null;
 
-    const logitsArray = policyTensor.dataSync();
-    const policyLogits = logitsArray instanceof Float32Array
-      ? new Float32Array(logitsArray)
-      : Float32Array.from(logitsArray);
+    const batchSize = policyTensor && policyTensor.shape && policyTensor.shape.length > 0
+      ? policyTensor.shape[0]
+      : 1;
+    const actionCount = policyTensor && policyTensor.shape && policyTensor.shape.length >= 2
+      ? policyTensor.shape[1]
+      : ALPHA_POLICY_SIZE;
 
-    let value = 0;
-    if (valueTensor) {
-      const valueArray = valueTensor.dataSync();
-      value = valueArray && valueArray.length ? valueArray[0] : 0;
+    const logitsData = policyTensor.dataSync();
+    const policyLogits = new Array(batchSize);
+    for (let i = 0; i < batchSize; i += 1) {
+      const start = i * actionCount;
+      const end = start + actionCount;
+      const slice = typeof logitsData.subarray === 'function'
+        ? logitsData.subarray(start, end)
+        : Array.prototype.slice.call(logitsData, start, end);
+      const sample = new Float32Array(actionCount);
+      sample.set(slice);
+      policyLogits[i] = sample;
     }
 
-    return { policyLogits, value };
-  });
+    let values = null;
+    if (valueTensor) {
+      const valueData = valueTensor.dataSync();
+      const total = valueData.length;
+      const stride = Math.max(1, Math.floor(total / Math.max(1, batchSize)));
+      values = new Float32Array(batchSize);
+      for (let i = 0; i < batchSize; i += 1) {
+        const idx = Math.min(total - 1, i * stride);
+        const raw = valueData[idx];
+        values[i] = Number.isFinite(raw) ? raw : 0;
+      }
+    }
+
+    return {
+      batchSize,
+      policyLogits,
+      values,
+      value: values && values.length ? values[0] : 0,
+    };
+  } finally {
+    if (!hasBoardTensor && boardTensor && typeof boardTensor.dispose === 'function') {
+      boardTensor.dispose();
+    }
+    if (!hasAuxTensor && auxTensor && typeof auxTensor.dispose === 'function') {
+      auxTensor.dispose();
+    }
+    if (policyTensor && typeof policyTensor.dispose === 'function') {
+      policyTensor.dispose();
+    }
+    if (valueTensor && valueTensor !== policyTensor && typeof valueTensor.dispose === 'function') {
+      valueTensor.dispose();
+    }
+    if (rawOutput) {
+      if (Array.isArray(rawOutput)) {
+        for (let i = 0; i < rawOutput.length; i += 1) {
+          const tensor = rawOutput[i];
+          if (!tensor || tensor === policyTensor || tensor === valueTensor) {
+            continue;
+          }
+          if (typeof tensor.dispose === 'function') {
+            tensor.dispose();
+          }
+        }
+      } else if (rawOutput !== policyTensor && rawOutput !== valueTensor && typeof rawOutput.dispose === 'function') {
+        rawOutput.dispose();
+      }
+    }
+  }
 }
 
