@@ -2798,11 +2798,19 @@ export function initTraining(game, renderer) {
           return [];
         }
 
-        computeGridMetrics(grid);
+        const baselineMetrics = computeGridMetrics(grid);
+        const baselineHoles = baselineMetrics ? baselineMetrics.holes : 0;
         for(let c = 0; c < WIDTH; c += 1){
           baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
           baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
         }
+        const rootFeatureScratch = featuresFromGrid(grid, 0, {
+          holeBaseline: baselineHoles,
+          baselineColumnMasks: baselineColumnMaskScratch,
+          clearedRows: null,
+        });
+        const rootEngineeredFeatures = new Float32Array(rootFeatureScratch.length);
+        rootEngineeredFeatures.set(rootFeatureScratch);
         const alphaState = ensureAlphaState();
         const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
         if(!tf){
@@ -2825,6 +2833,9 @@ export function initTraining(game, renderer) {
             level: state.level,
             pieces: state.pieces,
             gravity: state.gravity,
+            lines: 0,
+            newHoles: 0,
+            engineeredFeatures: rootEngineeredFeatures,
           });
           rootMask = baseInputs.policyMask;
           const rootResult = runAlphaInference(model, { board: baseInputs.board, aux: baseInputs.aux }, { reuseGraph: true, tf });
@@ -2889,6 +2900,17 @@ export function initTraining(game, renderer) {
             activePieceForNext = alphaSpawnPiece;
           }
 
+          const featureScratch = featuresFromGrid(sim.grid, lines, {
+            holeBaseline: baselineHoles,
+            baselineColumnMasks: baselineColumnMaskScratch,
+            clearedRows: sim.clearedRows,
+          });
+          const engineeredFeatures = new Float32Array(featureScratch.length);
+          engineeredFeatures.set(featureScratch);
+          const newHoleCount = engineeredFeatures.length > 7
+            ? Math.max(0, engineeredFeatures[7] * BOARD_AREA)
+            : 0;
+
           const candidateState = {
             grid: sim.grid,
             active: activePieceForNext,
@@ -2897,6 +2919,9 @@ export function initTraining(game, renderer) {
             level: newLevel,
             pieces: newPieces,
             gravity: newGravity,
+            lines,
+            newHoles: newHoleCount,
+            engineeredFeatures,
           };
 
           const prepared = prepareAlphaInputs(candidateState);
