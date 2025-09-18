@@ -3033,6 +3033,26 @@ export function initTraining(game, renderer) {
           return null;
         }
         const w = train.currentWeightsOverride || train.candWeights[train.candIndex] || train.mean;
+        if(usesPopulationModel(train.modelType)){
+          const placement = choosePlacement(w, state.grid, state.active.shape);
+          if(!placement){
+            train.ai.lastSearchStats = null;
+            return null;
+          }
+          const len = SHAPES[state.active.shape].length;
+          const cur = state.active.rot % len;
+          const needRot = (placement.rot - cur + len) % len;
+          const targetRow = Number.isFinite(placement.dropRow) ? placement.dropRow : null;
+          train.ai.lastSearchStats = null;
+          return {
+            targetRot: placement.rot,
+            targetCol: placement.col,
+            targetRow,
+            rotLeft: needRot,
+            stage: 'rotate',
+            search: null,
+          };
+        }
         const evaluations = evaluatePlacementsForSearch(w, state.grid, state.active.shape);
         if(!evaluations.length){
           train.ai.lastSearchStats = null;
