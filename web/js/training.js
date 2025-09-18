@@ -1124,6 +1124,28 @@ export function initTraining(game, renderer) {
     };
     const baselineColumnMaskScratch =
       typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
+    const baselineColumnHeightScratch = new Array(WIDTH).fill(0);
+    const pieceBottomProfiles = Object.fromEntries(
+      Object.entries(SHAPES).map(([shape, rotations]) => {
+        const perRotation = rotations.map((state) => {
+          const columnBottoms = new Map();
+          for (let i = 0; i < state.length; i += 1) {
+            const [rowOffset, colOffset] = state[i];
+            const prev = columnBottoms.get(colOffset);
+            if (prev === undefined || rowOffset > prev) {
+              columnBottoms.set(colOffset, rowOffset);
+            }
+          }
+          const entries = [];
+          for (const [colIndex, bottomRow] of columnBottoms.entries()) {
+            entries.push({ col: colIndex, bottom: bottomRow });
+          }
+          entries.sort((a, b) => a.col - b.col);
+          return entries;
+        });
+        return [shape, perRotation];
+      })
+    );
     const clearedRowsScratch = [];
     const featureScratch = new Float32Array(FEAT_DIM);
     const pooledPiece = new Piece('I');
@@ -1591,7 +1613,58 @@ export function initTraining(game, renderer) {
       }
       return gridScratch;
     }
-    function dropRowSim(grid, piece){ if(!canMove(grid,piece,0,0)) return null; while(canMove(grid,piece,0,1)) piece.move(0,1); return piece.row; }
+    function landingRowForPlacement(shape, rot, col, baselineHeights){
+      if(!baselineHeights || baselineHeights.length < WIDTH){
+        return null;
+      }
+      const states = SHAPES[shape];
+      if(!states || !states.length){
+        return null;
+      }
+      const len = states.length;
+      let rotIdx = Number.isFinite(rot) ? rot : 0;
+      rotIdx %= len;
+      if(rotIdx < 0){
+        rotIdx += len;
+      }
+      const rotations = pieceBottomProfiles[shape];
+      if(!rotations || rotations.length <= rotIdx){
+        return null;
+      }
+      const profile = rotations[rotIdx];
+      if(!profile || profile.length === 0){
+        return null;
+      }
+      let landingRow = HEIGHT;
+      let hasColumn = false;
+      for(let i = 0; i < profile.length; i += 1){
+        const entry = profile[i];
+        if(!entry || !Number.isFinite(entry.bottom)){
+          continue;
+        }
+        const boardCol = col + entry.col;
+        if(boardCol < 0 || boardCol >= WIDTH){
+          return null;
+        }
+        const baseHeight = baselineHeights[boardCol] || 0;
+        const stackTopRow = HEIGHT - baseHeight - 1;
+        if(!Number.isFinite(stackTopRow)){
+          return null;
+        }
+        const allowed = stackTopRow - entry.bottom;
+        if(allowed < 0){
+          return null;
+        }
+        if(allowed < landingRow){
+          landingRow = allowed;
+        }
+        hasColumn = true;
+      }
+      if(!hasColumn || landingRow === HEIGHT){
+        return null;
+      }
+      return landingRow;
+    }
 
     function enumeratePlacements(grid, shape){
       return trainingProfiler.section('train.full.enumerate', () => {
@@ -1677,14 +1750,19 @@ export function initTraining(game, renderer) {
         piece.rot = rot;
         piece.row = 0;
         piece.col = col;
-        const fr = dropRowSim(g, piece);
-        if(fr === null) return null;
-        piece.row = fr;
+        const dropRow = landingRowForPlacement(shape, piece.rot, col, baselineColumnHeightScratch);
+        if(dropRow === null) return null;
+        piece.row = dropRow;
+        for(const [r,c] of piece.blocks()){
+          if(r < 0 || r >= HEIGHT || c < 0 || c >= WIDTH || g[r][c]){
+            return null;
+          }
+        }
         lockSim(g, piece);
         const lines = clearLinesInScratch(g, clearedRowsScratch);
         simulateResultScratch.lines = lines;
         simulateResultScratch.grid = g;
-        simulateResultScratch.dropRow = fr;
+        simulateResultScratch.dropRow = dropRow;
         simulateResultScratch.clearedRows = clearedRowsScratch;
         simulateResultScratch.clearedRowCount = clearedRowsScratch.length;
         return simulateResultScratch;
@@ -2006,6 +2084,7 @@ export function initTraining(game, renderer) {
         const baselineHoles = baselineMetrics ? baselineMetrics.holes : 0;
         for(let c = 0; c < WIDTH; c += 1){
           baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
+          baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
         }
         let best = null;
         let bestScore = -Infinity;
