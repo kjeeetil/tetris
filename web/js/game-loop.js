@@ -205,7 +205,12 @@ export function createGame(dom, renderer) {
       return;
     }
     if (canvas && typeof canvas.focus === 'function') {
-      canvas.focus();
+      try {
+        // Prevent the focus call from forcing the page to scroll back to the canvas.
+        canvas.focus({ preventScroll: true });
+      } catch (err) {
+        canvas.focus();
+      }
     }
     state.grid = emptyGrid();
     state.score = 0;
