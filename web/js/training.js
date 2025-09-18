@@ -215,6 +215,37 @@ export function initTraining(game, renderer) {
       'Aggregate Height',
     ];
     const FEAT_DIM = FEATURE_NAMES.length;
+    const RAW_FEATURE_NAMES = (() => {
+      const names = [];
+      for (let r = 0; r < HEIGHT; r += 1) {
+        for (let c = 0; c < WIDTH; c += 1) {
+          names.push(`Cell r${r + 1}c${c + 1}`);
+        }
+      }
+      return names;
+    })();
+    const RAW_FEAT_DIM = RAW_FEATURE_NAMES.length;
+    function isMlpModelType(type) {
+      return type === 'mlp' || type === 'mlp_raw';
+    }
+    function resolveMlpType(type) {
+      return type === 'mlp_raw' ? 'mlp_raw' : 'mlp';
+    }
+    function inputDimForModel(type) {
+      return type === 'mlp_raw' ? RAW_FEAT_DIM : FEAT_DIM;
+    }
+    function featureNamesForModel(type) {
+      return type === 'mlp_raw' ? RAW_FEATURE_NAMES : FEATURE_NAMES;
+    }
+    function modelDisplayName(type) {
+      if (type === 'mlp_raw') {
+        return 'MLP (board occupancy)';
+      }
+      if (type === 'mlp') {
+        return 'MLP (engineered features)';
+      }
+      return 'Linear';
+    }
     const AI_STEP_MS = 28; // ms between AI animation steps
 
     const ROW_MASK_LIMIT = (1 << WIDTH) - 1;
@@ -286,12 +317,14 @@ export function initTraining(game, renderer) {
       return Math.max(MLP_MIN_UNITS, Math.min(MLP_MAX_UNITS, rounded));
     }
 
-    function mlpParamDim(layers = mlpHiddenLayers){
+    function mlpParamDim(layers = mlpHiddenLayers, modelType = currentModelType){
+      const resolvedType = resolveMlpType(modelType);
+      const inputDim = inputDimForModel(resolvedType);
       const count = Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, layers.length || 0));
       let dim = 0;
-      let prev = FEAT_DIM;
+      let prev = inputDim;
       for(let i = 0; i < count; i++){
-        const size = sanitizeHiddenUnits(layers[i], i, mlpHiddenLayers[i]);
+        const size = sanitizeHiddenUnits(layers[i], i, layers[i]);
         dim += prev * size + size;
         prev = size;
       }
@@ -299,13 +332,15 @@ export function initTraining(game, renderer) {
       return dim;
     }
 
-    function currentMlpLayerSizes(){
-      const count = Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, mlpHiddenLayers.length || 0));
+    function currentMlpLayerSizes(modelType = currentModelType, layers = mlpHiddenLayers){
+      const resolvedType = resolveMlpType(modelType);
+      const count = Math.max(MLP_MIN_HIDDEN_LAYERS, Math.min(MLP_MAX_HIDDEN_LAYERS, layers.length || 0));
       const sizes = [];
       for(let i = 0; i < count; i++){
-        sizes.push(sanitizeHiddenUnits(mlpHiddenLayers[i], i, mlpHiddenLayers[i]));
+        sizes.push(sanitizeHiddenUnits(layers[i], i, layers[i]));
       }
-      return [FEAT_DIM, ...sizes, 1];
+      const inputDim = inputDimForModel(resolvedType);
+      return [inputDim, ...sizes, 1];
     }
 
     // Numeric dtype for weight arrays
@@ -350,7 +385,7 @@ export function initTraining(game, renderer) {
     const INITIAL_MEAN_LINEAR_BASE = [0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.4, 0.2, 0.2, 0.1, 0.1, 0.0, 0.0, 0.0, 0.1, 0.1, 0.2];
     const INITIAL_STD_LINEAR_BASE  = new Array(FEAT_DIM).fill(0.4);
 
-    function paramDim(){ return currentModelType === 'mlp' ? mlpParamDim() : FEAT_DIM; }
+    function paramDim(){ return isMlpModelType(currentModelType) ? mlpParamDim(mlpHiddenLayers, currentModelType) : FEAT_DIM; }
     function makeStatsArray(vals){ return createFloat32ArrayFrom(vals); }
     function cloneWeightsArray(source){
       if(!source || !source.length){
@@ -363,16 +398,16 @@ export function initTraining(game, renderer) {
       return copy;
     }
     function initialMean(model, layers = mlpHiddenLayers){
-      if(model === 'mlp'){
-        const dim = mlpParamDim(layers);
+      if(isMlpModelType(model)){
+        const dim = mlpParamDim(layers, model);
         const base = new Array(dim).fill(0.0);
         return makeStatsArray(base);
       }
       return makeStatsArray(INITIAL_MEAN_LINEAR_BASE);
     }
     function initialStd(model, layers = mlpHiddenLayers){
-      if(model === 'mlp'){
-        const dim = mlpParamDim(layers);
+      if(isMlpModelType(model)){
+        const dim = mlpParamDim(layers, model);
         const base = new Array(dim).fill(0.2);
         return makeStatsArray(base);
       }
@@ -380,15 +415,16 @@ export function initTraining(game, renderer) {
     }
 
     function describeModelArchitecture(){
-      if(currentModelType === 'mlp'){
-        const sizes = currentMlpLayerSizes();
+      if(isMlpModelType(currentModelType)){
+        const sizes = currentMlpLayerSizes(currentModelType);
         if(!sizes.length) return 'Architecture: unavailable';
         const parts = sizes.map((size, idx) => {
           if(idx === 0) return `${size} in`;
           if(idx === sizes.length - 1) return `${size} out`;
           return `${size}`;
         });
-        return `Architecture: ${parts.join(' → ')}`;
+        const descriptor = currentModelType === 'mlp_raw' ? 'Raw board MLP' : 'MLP';
+        return `Architecture: ${descriptor} — ${parts.join(' → ')}`;
       }
       return `Linear policy with ${FEAT_DIM} inputs`;
     }
@@ -399,13 +435,14 @@ export function initTraining(game, renderer) {
       }
       const genLabel = Number.isFinite(entry.gen) ? `Gen ${entry.gen}` : 'Saved model';
       const layerSizes = Array.isArray(entry.layerSizes) ? entry.layerSizes : null;
-      if(entry.modelType === 'mlp' && layerSizes && layerSizes.length >= 2){
+      if(isMlpModelType(entry.modelType) && layerSizes && layerSizes.length >= 2){
         const parts = layerSizes.map((size, idx) => {
           if(idx === 0) return `${size} in`;
           if(idx === layerSizes.length - 1) return `${size} out`;
           return `${size}`;
         });
-        return `${genLabel} — ${parts.join(' → ')}`;
+        const descriptor = entry.modelType === 'mlp_raw' ? 'Raw board MLP' : 'MLP';
+        return `${genLabel} — ${descriptor}: ${parts.join(' → ')}`;
       }
       if(entry.modelType === 'linear'){
         const inputCount = layerSizes && layerSizes.length ? layerSizes[0] : FEAT_DIM;
@@ -477,12 +514,12 @@ export function initTraining(game, renderer) {
           const info = [];
           if(Number.isFinite(latest.gen)) info.push(`Latest stored: Gen ${latest.gen}`);
           if(Number.isFinite(latest.fitness)) info.push(`Score ${formatScore(latest.fitness)}`);
-          if(latest.modelType) info.push(latest.modelType.toUpperCase());
+          if(latest.modelType) info.push(modelDisplayName(latest.modelType));
           historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
         } else {
           const entry = train.bestByGeneration[activeIndex];
           const info = [];
-          if(entry.modelType) info.push(entry.modelType.toUpperCase());
+          if(entry.modelType) info.push(modelDisplayName(entry.modelType));
           if(Number.isFinite(entry.fitness)) info.push(`Score ${formatScore(entry.fitness)}`);
           historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
         }
@@ -539,9 +576,10 @@ export function initTraining(game, renderer) {
         return null;
       }
       const values = Array.from(weights, (v) => Number(v));
-      const hiddenLayersSnapshot = (train && train.modelType === 'mlp')
+      const activeModelType = train ? train.modelType : currentModelType;
+      const hiddenLayersSnapshot = (train && isMlpModelType(activeModelType))
         ? (() => {
-            const sizes = currentMlpLayerSizes();
+            const sizes = currentMlpLayerSizes(activeModelType);
             if(!sizes || sizes.length <= 2){
               return [];
             }
@@ -551,9 +589,9 @@ export function initTraining(game, renderer) {
       const snapshot = {
         version: 1,
         createdAt: new Date().toISOString(),
-        modelType: train ? train.modelType : currentModelType,
+        modelType: activeModelType,
         dtype: (train && train.dtype) ? train.dtype : DEFAULT_DTYPE,
-        featureCount: FEAT_DIM,
+        featureCount: inputDimForModel(activeModelType),
         hiddenLayers: hiddenLayersSnapshot,
         weights: values,
       };
@@ -591,7 +629,7 @@ export function initTraining(game, renderer) {
             link.parentNode.removeChild(link);
           }
         }, 0);
-        log(`Saved ${snapshot.modelType.toUpperCase()} weights (${snapshot.weights.length} params) to ${fileName}.`);
+        log(`Saved ${modelDisplayName(snapshot.modelType)} weights (${snapshot.weights.length} params) to ${fileName}.`);
       } catch (err) {
         console.error(err);
         const message = (err && err.message) ? err.message : 'unknown error';
@@ -615,14 +653,15 @@ export function initTraining(game, renderer) {
       if(data.version && Number(data.version) !== 1){
         throw new Error(`Unsupported snapshot version ${data.version}`);
       }
-      if(data.modelType !== 'linear' && data.modelType !== 'mlp'){
+      if(data.modelType !== 'linear' && !isMlpModelType(data.modelType)){
         throw new Error('Snapshot missing model type');
       }
       if(!Array.isArray(data.weights) || !data.weights.length){
         throw new Error('Snapshot missing weights');
       }
-      if(data.featureCount && data.featureCount !== FEAT_DIM){
-        throw new Error(`Snapshot expects ${data.featureCount} features but this build uses ${FEAT_DIM}`);
+      const expectedFeatures = inputDimForModel(data.modelType || 'linear');
+      if(data.featureCount && data.featureCount !== expectedFeatures){
+        throw new Error(`Snapshot expects ${data.featureCount} features but this build uses ${expectedFeatures}`);
       }
       data.version = 1;
       return data;
@@ -642,16 +681,16 @@ export function initTraining(game, renderer) {
       }
 
       const weights = snapshot.weights.map((v) => Number(v));
-      let expectedDim = FEAT_DIM;
+      let expectedDim = inputDimForModel(modelType);
       let snapshotHidden = [];
-      if(modelType === 'mlp'){
+      if(isMlpModelType(modelType)){
         const raw = Array.isArray(snapshot.hiddenLayers) ? snapshot.hiddenLayers : [];
         snapshotHidden = raw.slice(0, MLP_MAX_HIDDEN_LAYERS).map((value, idx) => sanitizeHiddenUnits(value, idx, value));
         if(snapshotHidden.length === 0){
           const fallback = DEFAULT_MLP_HIDDEN[0] || 8;
           snapshotHidden.push(sanitizeHiddenUnits(fallback, 0, fallback));
         }
-        let prev = FEAT_DIM;
+        let prev = inputDimForModel(modelType);
         expectedDim = 0;
         for(let i = 0; i < snapshotHidden.length; i++){
           const size = sanitizeHiddenUnits(snapshotHidden[i], i, snapshotHidden[i]);
@@ -663,7 +702,7 @@ export function initTraining(game, renderer) {
       }
 
       if(weights.length !== expectedDim){
-        throw new Error(`Expected ${expectedDim} weights for ${modelType.toUpperCase()} model, received ${weights.length}`);
+        throw new Error(`Expected ${expectedDim} weights for ${modelDisplayName(modelType)} model, received ${weights.length}`);
       }
 
       const masterWeights = allocFloat32(expectedDim);
@@ -678,7 +717,7 @@ export function initTraining(game, renderer) {
         modelSel.value = modelType;
       }
 
-      if(modelType === 'mlp'){
+      if(isMlpModelType(modelType)){
         applyMlpHiddenLayers(snapshotHidden, { rerenderControls: true, syncInputs: true });
       }
 
@@ -709,7 +748,7 @@ export function initTraining(game, renderer) {
       updateTrainStatus();
 
       const origin = context && context.fileName ? ` from ${context.fileName}` : '';
-      log(`Loaded ${modelType.toUpperCase()} weights (${masterWeights.length} params)${origin}.`);
+      log(`Loaded ${modelDisplayName(modelType)} weights (${masterWeights.length} params)${origin}.`);
       if(wasRunning){
         log('Training paused. Restart AI training to continue with imported weights.');
       }
@@ -748,7 +787,7 @@ export function initTraining(game, renderer) {
       if(train){
         train.mlpHiddenLayers = sanitized.slice();
         if(changed){
-          if(train.modelType === 'mlp'){
+          if(isMlpModelType(train.modelType)){
             const wasRunning = train.enabled;
             resetTraining();
             if(wasRunning){
@@ -826,7 +865,7 @@ export function initTraining(game, renderer) {
 
     function syncMlpConfigVisibility(){
       if(!mlpConfigEl) return;
-      if(train && train.modelType === 'mlp'){
+      if(train && isMlpModelType(train.modelType)){
         mlpConfigEl.classList.remove('hidden');
       } else {
         mlpConfigEl.classList.add('hidden');
@@ -855,8 +894,8 @@ export function initTraining(game, renderer) {
       return arr.slice(start, end);
     }
 
-    function inferLayerSizesFromWeights(weights, override){
-      const inputDim = FEATURE_NAMES.length;
+    function inferLayerSizesFromWeights(weights, override, inputDimOverride){
+      const inputDim = Number.isFinite(inputDimOverride) ? inputDimOverride : FEATURE_NAMES.length;
       if(Array.isArray(override) && override.length >= 2){
         return override.slice();
       }
@@ -930,7 +969,7 @@ export function initTraining(game, renderer) {
       return slices;
     }
 
-    function renderNetworkD3(weights, overrideLayerSizes){
+    function renderNetworkD3(weights, overrideLayerSizes, options = {}){
       if(!networkVizEl || typeof d3 === 'undefined'){
         return;
       }
@@ -963,7 +1002,7 @@ export function initTraining(game, renderer) {
         return;
       }
 
-      const layerSizes = inferLayerSizesFromWeights(weights, overrideLayerSizes);
+      const layerSizes = inferLayerSizesFromWeights(weights, overrideLayerSizes, options.inputDim);
       const slices = sliceWeightMatrices(weights, layerSizes);
       const totalLayers = layerSizes.length;
       const innerWidth = Math.max(width - 2 * marginX, 10);
@@ -971,6 +1010,7 @@ export function initTraining(game, renderer) {
 
       const nodes = [];
       const nodeLookup = new Map();
+      const featureNames = Array.isArray(options.featureNames) ? options.featureNames : FEATURE_NAMES;
       for(let layerIdx = 0; layerIdx < totalLayers; layerIdx++){
         const layerSize = layerSizes[layerIdx];
         const x = totalLayers === 1 ? width / 2 : marginX + (innerWidth * layerIdx) / Math.max(1, totalLayers - 1);
@@ -980,7 +1020,7 @@ export function initTraining(game, renderer) {
           const y = layerSize > 1 ? marginY + step * i : height / 2;
           const id = `${layerIdx}-${i}`;
           const label = layerIdx === 0
-            ? (FEATURE_NAMES[i] || `x${i + 1}`)
+            ? (featureNames[i] || `x${i + 1}`)
             : (layerIdx === totalLayers - 1
               ? (layerSize === 1 ? 'Output' : `y${i + 1}`)
               : `h${layerIdx}-${i + 1}`);
@@ -1148,6 +1188,7 @@ export function initTraining(game, renderer) {
     );
     const clearedRowsScratch = [];
     const featureScratch = new Float32Array(FEAT_DIM);
+    const rawFeatureScratch = new Float32Array(RAW_FEAT_DIM);
     const pooledPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
@@ -1190,10 +1231,11 @@ export function initTraining(game, renderer) {
 
     function updateTrainStatus(){
       if(trainStatus){
+        const statusLabel = modelDisplayName(train.modelType);
         if(train.enabled){
-          trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${train.modelType.toUpperCase()}`;
+          trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${train.candIndex+1}/${train.popSize} — Model: ${statusLabel}`;
         } else {
-          trainStatus.textContent = `Training stopped — Model: ${train.modelType.toUpperCase()}`;
+          trainStatus.textContent = `Training stopped — Model: ${statusLabel}`;
         }
       }
       const historySelection = getHistorySelection();
@@ -1205,32 +1247,35 @@ export function initTraining(game, renderer) {
         currentWeights = snapshot.weights || null;
         if(Array.isArray(snapshot.layerSizes) && snapshot.layerSizes.length >= 2){
           overrideLayers = snapshot.layerSizes.slice();
-        } else if(snapshot.modelType === 'mlp'){
-          overrideLayers = currentMlpLayerSizes();
+        } else if(isMlpModelType(snapshot.modelType)){
+          overrideLayers = currentMlpLayerSizes(snapshot.modelType);
         } else if(snapshot.modelType === 'linear'){
           overrideLayers = [FEAT_DIM, 1];
         }
       } else if(train.currentWeightsOverride){
         currentWeights = train.currentWeightsOverride;
-        if(train.modelType === 'mlp'){
-          overrideLayers = currentMlpLayerSizes();
+        if(isMlpModelType(train.modelType)){
+          overrideLayers = currentMlpLayerSizes(train.modelType);
         }
       } else if(train.enabled && train.candIndex >= 0 && train.candIndex < train.candWeights.length){
         currentWeights = train.candWeights[train.candIndex];
-        if(train.modelType === 'mlp'){
-          overrideLayers = currentMlpLayerSizes();
+        if(isMlpModelType(train.modelType)){
+          overrideLayers = currentMlpLayerSizes(train.modelType);
         }
       } else if(train.mean){
         currentWeights = train.mean;
-        if(train.modelType === 'mlp'){
-          overrideLayers = currentMlpLayerSizes();
+        if(isMlpModelType(train.modelType)){
+          overrideLayers = currentMlpLayerSizes(train.modelType);
         }
       }
 
       if(!snapshot && !currentWeights && train.bestEverWeights){
         currentWeights = train.bestEverWeights;
-        overrideLayers = (train.modelType === 'mlp') ? currentMlpLayerSizes() : [FEAT_DIM, 1];
+        overrideLayers = isMlpModelType(train.modelType) ? currentMlpLayerSizes(train.modelType) : [FEAT_DIM, 1];
       }
+
+      const fallbackModelType = train ? train.modelType : currentModelType;
+      const displayModelType = snapshot && snapshot.modelType ? snapshot.modelType : fallbackModelType;
 
       if(architectureEl){
         if(snapshot){
@@ -1245,8 +1290,10 @@ export function initTraining(game, renderer) {
       } else if(currentWeights){
         displayWeights = getDisplayWeightsForUi(currentWeights);
       }
+      const vizFeatureNames = featureNamesForModel(displayModelType);
+      const vizInputDim = inputDimForModel(displayModelType);
       try {
-        renderNetworkD3(displayWeights, overrideLayers);
+        renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
       } catch (_) {
         /* ignore render failures */
       }
@@ -1557,7 +1604,7 @@ export function initTraining(game, renderer) {
             fitness: bestThisGen,
             modelType: train.modelType,
             dtype: train.dtype,
-            layerSizes: train.modelType === 'mlp' ? currentMlpLayerSizes() : [FEAT_DIM, 1],
+            layerSizes: isMlpModelType(train.modelType) ? currentMlpLayerSizes(train.modelType) : [FEAT_DIM, 1],
             weights: bestWeights ? cloneWeightsArray(bestWeights) : null,
             scoreIndex: Math.max(0, train.totalGamesPlayed - train.popSize + bestIdx),
           };
@@ -1979,8 +2026,24 @@ export function initTraining(game, renderer) {
             newHoleCount = diff;
           }
         }
-        return fillFeatureVector(featureScratch, lines, metrics, newHoleCount);
-      });
+      return fillFeatureVector(featureScratch, lines, metrics, newHoleCount);
+    });
+    }
+
+    function fillRawFeatureVector(target, grid){
+      let idx = 0;
+      for(let r = 0; r < HEIGHT; r += 1){
+        const row = grid[r];
+        for(let c = 0; c < WIDTH; c += 1){
+          target[idx] = row && row[c] ? 1 : 0;
+          idx += 1;
+        }
+      }
+      return target;
+    }
+
+    function rawFeaturesFromGrid(g){
+      return trainingProfiler.section('train.full.features_raw', () => fillRawFeatureVector(rawFeatureScratch, g));
     }
 
     function dot(weights, feats){ let s=0; for(let d=0; d<FEAT_DIM; d++) s+=weights[d]*feats[d]; return s; }
@@ -2019,13 +2082,14 @@ export function initTraining(game, renderer) {
       return mlpInputScratch;
     }
 
-    function mlpScore(weights, feats){
+    function mlpScore(weights, feats, modelType = train.modelType){
       if(!weights || !weights.length){
         return 0;
       }
+      const resolvedType = resolveMlpType(modelType);
       const hiddenLayers = mlpHiddenLayers.length ? mlpHiddenLayers : DEFAULT_MLP_HIDDEN;
       let offset = 0;
-      let prevSize = FEAT_DIM;
+      let prevSize = inputDimForModel(resolvedType);
       let activations = ensureFloat32Activations(feats, prevSize);
       const weightLen = weights.length;
       for(let layerIdx = 0; layerIdx < hiddenLayers.length; layerIdx++){
@@ -2075,7 +2139,7 @@ export function initTraining(game, renderer) {
       const bias = (outBiasIndex < weightLen) ? weights[outBiasIndex] : 0;
       return outputScratch[0] + bias;
     }
-    function scoreFeats(weights, feats){ return (train.modelType === 'mlp') ? mlpScore(weights, feats) : dot(weights, feats); }
+    function scoreFeats(weights, feats){ return isMlpModelType(train.modelType) ? mlpScore(weights, feats, train.modelType) : dot(weights, feats); }
     function choosePlacement(weights, grid, curShape){
       return trainingProfiler.section('train.plan.single', () => {
         const acts = enumeratePlacements(grid, curShape);
@@ -2094,11 +2158,13 @@ export function initTraining(game, renderer) {
           if(!sim) continue;
           const lines = sim.lines;
           const dropRow = sim.dropRow;
-          const baseFeats = featuresFromGrid(sim.grid, lines, {
-            holeBaseline: baselineHoles,
-            baselineColumnMasks: baselineColumnMaskScratch,
-            clearedRows: sim.clearedRows,
-          });
+          const baseFeats = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw'
+            ? rawFeaturesFromGrid(sim.grid)
+            : featuresFromGrid(sim.grid, lines, {
+                holeBaseline: baselineHoles,
+                baselineColumnMasks: baselineColumnMaskScratch,
+                clearedRows: sim.clearedRows,
+              });
           const score = scoreFeats(weights, baseFeats);
           a.dropRow = dropRow;
           a.lines = lines;
@@ -2275,7 +2341,7 @@ export function initTraining(game, renderer) {
       ctx.fillText(String(tick), x, H - padB + 8);
     });
 
-    const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b' };
+    const COLORS = { linear: '#76b3ff', mlp: '#ff9a6b', mlp_raw: '#facc15' };
     const safeMaxY = maxY || 1;
     const pointPositions = [];
     for(let i=0; i<count; i++){
@@ -2719,14 +2785,14 @@ export function initTraining(game, renderer) {
     initMlpConfigUi();
     const modelSel = document.getElementById('model-select');
     function setModelType(mt){
-      if(mt !== 'linear' && mt !== 'mlp') return;
+      if(mt !== 'linear' && mt !== 'mlp' && mt !== 'mlp_raw') return;
       const wasRunning = train.enabled;
       if(wasRunning) stopTraining();
       train.modelType = mt;
       currentModelType = mt;
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
       // Prefer f16 for MLP if available, else f32
-      train.dtype = (mt==='mlp' && HAS_F16) ? 'f16' : 'f32';
+      train.dtype = (isMlpModelType(mt) && HAS_F16) ? 'f16' : 'f32';
       dtypePreference = train.dtype;
       // Re-init mean/std to the appropriate initial values for this model
       train.mean = initialMean(mt);
