@@ -10,6 +10,10 @@ const DEFAULT_ACTIVATION = 'relu';
 const DEFAULT_VALUE_ACTIVATION = 'tanh';
 const DEFAULT_POOL_SIZE = [2, 2];
 
+const BOARD_AREA = WIDTH * HEIGHT;
+const BUMP_NORMALIZER = Math.max(1, (WIDTH - 1) * HEIGHT);
+const CONTACT_NORMALIZER = Math.max(1, BOARD_AREA * 2);
+
 const MODEL_CACHE = new Map();
 const PREDICT_FUNCTION_CACHE = new WeakMap();
 
@@ -31,10 +35,10 @@ export const ALPHA_ACTIONS = (() => {
 })();
 
 export const ALPHA_POLICY_SIZE = ALPHA_ACTIONS.length;
-const ALPHA_HEURISTIC_FEATURES = 6;
+const ALPHA_ENGINEERED_FEATURES = 17;
 const ALPHA_GAME_SCALARS = 4;
 const PIECE_FEATURES = ALPHA_PIECES.length * (1 + ALPHA_PREVIEW_SLOTS);
-export const ALPHA_AUX_FEATURE_COUNT = PIECE_FEATURES + ALPHA_HEURISTIC_FEATURES + ALPHA_GAME_SCALARS;
+export const ALPHA_AUX_FEATURE_COUNT = PIECE_FEATURES + ALPHA_ENGINEERED_FEATURES + ALPHA_GAME_SCALARS;
 
 function clamp01(value) {
   if (!Number.isFinite(value)) {
@@ -173,65 +177,156 @@ function getPredictFunction(model) {
   return fn;
 }
 
-function computeColumnStats(grid) {
+function countBits32(value) {
+  let v = value;
+  v -= (v >> 1) & 0x55555555;
+  v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
+  return (((v + (v >> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
+function computeWellMetrics(heights) {
+  let wellSum = 0;
+  let edgeWell = 0;
+  let maxWellDepth = 0;
+  let wellCount = 0;
+  for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
+    const left = col > 0 ? heights[col - 1] : Infinity;
+    const right = col < ALPHA_BOARD_WIDTH - 1 ? heights[col + 1] : Infinity;
+    const minNeighbor = Math.min(left, right);
+    const depth = minNeighbor - heights[col];
+    if (depth > 0) {
+      wellSum += depth;
+      wellCount += 1;
+      if (depth > maxWellDepth) {
+        maxWellDepth = depth;
+      }
+    }
+    if (col === 0) {
+      edgeWell = Math.max(edgeWell, right - heights[0]);
+    } else if (col === ALPHA_BOARD_WIDTH - 1) {
+      edgeWell = Math.max(edgeWell, left - heights[col]);
+    }
+  }
+  const safeEdgeWell = Math.max(0, edgeWell);
+  const tetrisWell = wellCount === 1 ? maxWellDepth : 0;
+  return { wellSum, edgeWell: safeEdgeWell, tetrisWell };
+}
+
+function computeBoardStats(grid) {
   const heights = new Array(ALPHA_BOARD_WIDTH).fill(0);
   const columnHoles = new Array(ALPHA_BOARD_WIDTH).fill(0);
+  const columnMasks = new Array(ALPHA_BOARD_WIDTH).fill(0);
   let aggregateHeight = 0;
   let maxHeight = 0;
   let filledCells = 0;
-  for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
-    let columnHeight = 0;
-    let seenBlock = false;
-    let holes = 0;
-    for (let row = 0; row < ALPHA_BOARD_HEIGHT; row += 1) {
-      const cell = grid[row] && grid[row][col] ? 1 : 0;
-      if (cell) {
+  let contact = 0;
+  let rowTransitions = 0;
+  let colTransitions = 0;
+  let prevMask = 0;
+
+  for (let row = 0; row < ALPHA_BOARD_HEIGHT; row += 1) {
+    const rowData = grid[row] || [];
+    let mask = 0;
+    let prevFilled = 0;
+    let transitions = 0;
+    for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
+      const filled = rowData[col] ? 1 : 0;
+      if (filled) {
+        const bit = 1 << col;
+        mask |= bit;
+        columnMasks[col] |= 1 << (ALPHA_BOARD_HEIGHT - 1 - row);
         filledCells += 1;
-        if (!seenBlock) {
-          columnHeight = ALPHA_BOARD_HEIGHT - row;
-          seenBlock = true;
-        }
-      } else if (seenBlock) {
-        holes += 1;
+      }
+      if (filled !== prevFilled) {
+        transitions += 1;
+        prevFilled = filled;
+      }
+      if (filled && col > 0 && rowData[col - 1]) {
+        contact += 2;
       }
     }
-    heights[col] = columnHeight;
-    columnHoles[col] = holes;
-    aggregateHeight += columnHeight;
-    if (columnHeight > maxHeight) {
-      maxHeight = columnHeight;
+    if (prevFilled !== 0) {
+      transitions += 1;
+    }
+    rowTransitions += transitions;
+
+    const shared = mask & prevMask;
+    if (shared) {
+      contact += countBits32(shared);
+    }
+    const diff = mask ^ prevMask;
+    if (diff) {
+      colTransitions += countBits32(diff);
+    }
+
+    prevMask = mask;
+  }
+
+  if (prevMask) {
+    const bottomPop = countBits32(prevMask);
+    colTransitions += bottomPop;
+    contact += bottomPop;
+  }
+
+  let holes = 0;
+  for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
+    const mask = columnMasks[col] || 0;
+    if (mask) {
+      const topBit = 31 - Math.clz32(mask);
+      const height = topBit + 1;
+      heights[col] = height;
+      aggregateHeight += height;
+      if (height > maxHeight) {
+        maxHeight = height;
+      }
+      if (topBit > 0) {
+        const belowMask = mask & ((1 << topBit) - 1);
+        const filledBelow = countBits32(belowMask);
+        const columnHole = topBit - filledBelow;
+        columnHoles[col] = columnHole;
+        holes += columnHole;
+      } else {
+        columnHoles[col] = 0;
+      }
+    } else {
+      heights[col] = 0;
+      columnHoles[col] = 0;
     }
   }
+
   let bumpiness = 0;
   for (let col = 0; col < ALPHA_BOARD_WIDTH - 1; col += 1) {
     bumpiness += Math.abs(heights[col] - heights[col + 1]);
   }
-  let wells = 0;
-  for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
-    const left = col > 0 ? heights[col - 1] : heights[col];
-    const right = col < ALPHA_BOARD_WIDTH - 1 ? heights[col + 1] : heights[col];
-    const minAdjacent = Math.min(left, right);
-    if (minAdjacent > heights[col]) {
-      wells += minAdjacent - heights[col];
-    }
-  }
-  const totalCells = ALPHA_BOARD_WIDTH * ALPHA_BOARD_HEIGHT;
+
+  const wellStats = computeWellMetrics(heights);
+  const wells = wellStats.wellSum;
+  const edgeWell = wellStats.edgeWell;
+  const tetrisWell = holes > 0 ? 0 : wellStats.tetrisWell;
+
   return {
     heights,
     columnHoles,
+    columnMasks,
     aggregateHeight,
     maxHeight,
     filledCells,
     bumpiness,
     wells,
-    holes: columnHoles.reduce((acc, value) => acc + value, 0),
-    totalCells,
+    wellSum: wells,
+    edgeWell,
+    tetrisWell,
+    holes,
+    totalCells: BOARD_AREA,
+    contact,
+    rowTransitions,
+    colTransitions,
   };
 }
 
 function fillBoardTensor(boardBuffer, grid, active) {
   const stride = ALPHA_BOARD_CHANNELS;
-  const stats = computeColumnStats(grid);
+  const stats = computeBoardStats(grid);
   for (let row = 0; row < ALPHA_BOARD_HEIGHT; row += 1) {
     for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
       const cell = grid[row] && grid[row][col] ? 1 : 0;
@@ -254,6 +349,61 @@ function fillBoardTensor(boardBuffer, grid, active) {
     }
   }
   return stats;
+}
+
+function resolveEngineeredSource(raw) {
+  if (!raw) {
+    return null;
+  }
+  if (ArrayBuffer.isView(raw) || Array.isArray(raw)) {
+    return raw.length >= ALPHA_ENGINEERED_FEATURES ? raw : null;
+  }
+  return null;
+}
+
+function copyEngineeredFeatures(target, offset, source) {
+  for (let i = 0; i < ALPHA_ENGINEERED_FEATURES; i += 1) {
+    const value = source[i];
+    target[offset + i] = Number.isFinite(value) ? clamp01(value) : 0;
+  }
+}
+
+function fillEngineeredFeatureVector(target, offset, stats, gameState = {}) {
+  const linesRaw = Number.isFinite(gameState.lines) ? gameState.lines : 0;
+  const lines = Math.max(0, Math.min(4, Math.floor(linesRaw)));
+  const newHolesRaw = Number.isFinite(gameState.newHoles) ? gameState.newHoles : 0;
+  const newHoles = Math.max(0, newHolesRaw);
+  const holes = Math.max(0, stats.holes || 0);
+  const bumpiness = Math.max(0, stats.bumpiness || 0);
+  const maxHeight = Math.max(0, stats.maxHeight || 0);
+  const wellSum = Math.max(0, stats.wellSum !== undefined ? stats.wellSum : stats.wells || 0);
+  const edgeWell = Math.max(0, stats.edgeWell || 0);
+  const contact = Math.max(0, stats.contact || 0);
+  const rowTransitions = Math.max(0, stats.rowTransitions || 0);
+  const colTransitions = Math.max(0, stats.colTransitions || 0);
+  const aggregateHeight = Math.max(0, stats.aggregateHeight || 0);
+  let tetrisWell = Math.max(0, stats.tetrisWell || 0);
+  if (holes > 0) {
+    tetrisWell = 0;
+  }
+
+  target[offset + 0] = clamp01(lines / 4);
+  target[offset + 1] = clamp01((lines * lines) / 16);
+  target[offset + 2] = lines === 1 ? 1 : 0;
+  target[offset + 3] = lines === 2 ? 1 : 0;
+  target[offset + 4] = lines === 3 ? 1 : 0;
+  target[offset + 5] = lines === 4 ? 1 : 0;
+  target[offset + 6] = clamp01(holes / BOARD_AREA);
+  target[offset + 7] = clamp01(newHoles / BOARD_AREA);
+  target[offset + 8] = clamp01(bumpiness / BUMP_NORMALIZER);
+  target[offset + 9] = clamp01(maxHeight / ALPHA_BOARD_HEIGHT);
+  target[offset + 10] = clamp01(wellSum / BOARD_AREA);
+  target[offset + 11] = clamp01(edgeWell / ALPHA_BOARD_HEIGHT);
+  target[offset + 12] = clamp01(tetrisWell / ALPHA_BOARD_HEIGHT);
+  target[offset + 13] = clamp01(contact / CONTACT_NORMALIZER);
+  target[offset + 14] = clamp01(rowTransitions / BOARD_AREA);
+  target[offset + 15] = clamp01(colTransitions / BOARD_AREA);
+  target[offset + 16] = clamp01(aggregateHeight / BOARD_AREA);
 }
 
 function encodePieceOneHot(shape, target, offset = 0) {
@@ -351,22 +501,13 @@ export function prepareAlphaInputs(gameState = {}, options = {}) {
     offset += ALPHA_PIECES.length;
   }
 
-  const aggregateHeightNorm = stats.totalCells > 0 ? stats.aggregateHeight / stats.totalCells : 0;
-  const maxHeightNorm = stats.maxHeight / ALPHA_BOARD_HEIGHT;
-  const holesNorm = stats.totalCells > 0 ? stats.holes / stats.totalCells : 0;
-  const bumpinessNorm = (ALPHA_BOARD_WIDTH > 1)
-    ? stats.bumpiness / ((ALPHA_BOARD_WIDTH - 1) * ALPHA_BOARD_HEIGHT)
-    : 0;
-  const wellsNorm = stats.totalCells > 0 ? stats.wells / stats.totalCells : 0;
-  const filledNorm = stats.totalCells > 0 ? stats.filledCells / stats.totalCells : 0;
-
-  aux[offset + 0] = clamp01(aggregateHeightNorm);
-  aux[offset + 1] = clamp01(maxHeightNorm);
-  aux[offset + 2] = clamp01(holesNorm);
-  aux[offset + 3] = clamp01(bumpinessNorm);
-  aux[offset + 4] = clamp01(wellsNorm);
-  aux[offset + 5] = clamp01(filledNorm);
-  offset += ALPHA_HEURISTIC_FEATURES;
+  const engineeredSource = resolveEngineeredSource(gameState.engineeredFeatures);
+  if (engineeredSource) {
+    copyEngineeredFeatures(aux, offset, engineeredSource);
+  } else {
+    fillEngineeredFeatureVector(aux, offset, stats, gameState);
+  }
+  offset += ALPHA_ENGINEERED_FEATURES;
 
   const level = Number.isFinite(gameState.level) ? gameState.level : 0;
   const score = Number.isFinite(gameState.score) ? gameState.score : 0;
