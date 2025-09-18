@@ -238,7 +238,9 @@ export function initTraining(game, renderer) {
       return names;
     })();
     const RAW_FEAT_DIM = RAW_FEATURE_NAMES.length;
-    const ALPHATETRIS_DEFAULT_ARCHITECTURE = 'AlphaTetris ConvNet — convolutional policy/value network';
+    const ALPHATETRIS_MODEL_LABEL = 'AlphaTetris (ConvNet)';
+    const ALPHATETRIS_ARCHITECTURE_LABEL = 'ConvNet dual head policy/value network';
+    const ALPHATETRIS_DEFAULT_ARCHITECTURE = `${ALPHATETRIS_MODEL_LABEL} — ${ALPHATETRIS_ARCHITECTURE_LABEL}`;
 
     function isAlphaModelType(type) {
       return type === 'alphatetris';
@@ -254,13 +256,13 @@ export function initTraining(game, renderer) {
     }
     function inputDimForModel(type) {
       if (isAlphaModelType(type)) {
-        return RAW_FEAT_DIM;
+        return null;
       }
       return type === 'mlp_raw' ? RAW_FEAT_DIM : FEAT_DIM;
     }
     function featureNamesForModel(type) {
       if (isAlphaModelType(type)) {
-        return RAW_FEATURE_NAMES;
+        return null;
       }
       return type === 'mlp_raw' ? RAW_FEATURE_NAMES : FEATURE_NAMES;
     }
@@ -272,9 +274,30 @@ export function initTraining(game, renderer) {
         return 'MLP (engineered features)';
       }
       if (isAlphaModelType(type)) {
-        return 'AlphaTetris ConvNet';
+        return ALPHATETRIS_MODEL_LABEL;
       }
       return 'Linear';
+    }
+    function normalizeAlphaArchitectureDescription(text) {
+      if (typeof text !== 'string') {
+        return '';
+      }
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return '';
+      }
+      const lower = trimmed.toLowerCase();
+      if (lower.includes('alphatetris')) {
+        let normalized = trimmed;
+        if (lower.includes('alphatetris convnet') && !lower.includes('alphatetris (convnet)')) {
+          normalized = normalized.replace(/alphatetris\s*convnet/gi, ALPHATETRIS_MODEL_LABEL);
+        }
+        if (normalized.trim().toLowerCase() === ALPHATETRIS_MODEL_LABEL.toLowerCase()) {
+          return ALPHATETRIS_DEFAULT_ARCHITECTURE;
+        }
+        return normalized;
+      }
+      return `${ALPHATETRIS_MODEL_LABEL} — ${trimmed}`;
     }
     const AI_STEP_MS = 28; // ms between AI animation steps
 
@@ -482,12 +505,18 @@ export function initTraining(game, renderer) {
 
     function createAlphaState(prevConfig = null){
       const baseConfig = prevConfig && typeof prevConfig === 'object' ? { ...prevConfig } : {};
-      if(typeof baseConfig.architectureDescription !== 'string' || !baseConfig.architectureDescription.trim()){
-        const fallback =
+      const existingDescription =
+        typeof baseConfig.architectureDescription === 'string' ? baseConfig.architectureDescription : '';
+      const normalizedExisting = normalizeAlphaArchitectureDescription(existingDescription);
+      if(normalizedExisting){
+        baseConfig.architectureDescription = normalizedExisting;
+      } else {
+        const fallbackSource =
           typeof baseConfig.description === 'string' && baseConfig.description.trim()
             ? baseConfig.description.trim()
-            : ALPHATETRIS_DEFAULT_ARCHITECTURE;
-        baseConfig.architectureDescription = fallback;
+            : ALPHATETRIS_ARCHITECTURE_LABEL;
+        const normalizedFallback = normalizeAlphaArchitectureDescription(fallbackSource);
+        baseConfig.architectureDescription = normalizedFallback || ALPHATETRIS_DEFAULT_ARCHITECTURE;
       }
       return {
         config: baseConfig,
@@ -526,11 +555,12 @@ export function initTraining(game, renderer) {
                 ? config.description.trim()
                 : '');
         if(description){
-          return `Architecture: ${description}`;
+          const normalized = normalizeAlphaArchitectureDescription(description) || ALPHATETRIS_DEFAULT_ARCHITECTURE;
+          return `Architecture: ${normalized}`;
         }
         if(Array.isArray(config.layers) && config.layers.length){
           const parts = config.layers.map((layer) => String(layer));
-          return `Architecture: AlphaTetris ConvNet — ${parts.join(' → ')}`;
+          return `Architecture: ${ALPHATETRIS_MODEL_LABEL} — ${parts.join(' → ')}`;
         }
       }
       return `Architecture: ${ALPHATETRIS_DEFAULT_ARCHITECTURE}`;
@@ -556,12 +586,13 @@ export function initTraining(game, renderer) {
         return `${genLabel} — Linear policy with ${inputCount} inputs`;
       }
       if(isAlphaModelType(entry.modelType)){
-        const alphaDesc =
+        const rawAlphaDesc =
           (entry && typeof entry.architectureDescription === 'string' && entry.architectureDescription.trim())
             ? entry.architectureDescription.trim()
             : (entry && typeof entry.alphaDescription === 'string' && entry.alphaDescription.trim()
                 ? entry.alphaDescription.trim()
                 : ALPHATETRIS_DEFAULT_ARCHITECTURE);
+        const alphaDesc = normalizeAlphaArchitectureDescription(rawAlphaDesc) || ALPHATETRIS_DEFAULT_ARCHITECTURE;
         return `${genLabel} — ${alphaDesc}`;
       }
       return `${genLabel} — Architecture unavailable`;
@@ -1047,13 +1078,13 @@ export function initTraining(game, renderer) {
         return;
       }
       if(typeof document === 'undefined'){
-        networkVizEl.textContent = message || 'AlphaTetris ConvNet visualization managed by TensorFlow.js.';
+        networkVizEl.textContent = message || `${ALPHATETRIS_MODEL_LABEL} visualization managed by TensorFlow.js.`;
         return;
       }
       networkVizEl.innerHTML = '';
       const container = document.createElement('div');
       container.className = 'alpha-network-placeholder';
-      container.textContent = message || 'AlphaTetris ConvNet visualization managed by TensorFlow.js.';
+      container.textContent = message || `${ALPHATETRIS_MODEL_LABEL} visualization managed by TensorFlow.js.`;
       networkVizEl.appendChild(container);
     }
 
@@ -3364,7 +3395,7 @@ export function initTraining(game, renderer) {
     initMlpConfigUi();
     const modelSel = document.getElementById('model-select');
     function setModelType(mt){
-      if(mt !== 'linear' && mt !== 'mlp' && mt !== 'mlp_raw' && mt !== 'alphatetris') return;
+      if(mt !== 'linear' && !isMlpModelType(mt) && !isAlphaModelType(mt)) return;
       const wasRunning = train.enabled;
       if(wasRunning) stopTraining();
       train.modelType = mt;
