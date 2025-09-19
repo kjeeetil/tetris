@@ -12,8 +12,8 @@ const sharedTheme = {
       shell: '#F9F5FF',
     },
     fontFamily: {
-      display: ['"Instrument Serif"', 'serif'],
-      body: ['"Instrument Serif"', 'serif'],
+      display: ['var(--font-family-display)'],
+      body: ['var(--font-family-base)'],
     },
     boxShadow: {
       glow: '0 30px 60px rgba(32, 19, 72, 0.4)',

@@ -1,5 +1,7 @@
 :root {
   color-scheme: dark;
+  --font-family-base: "Instrument Serif", serif;
+  --font-family-display: "Instrument Serif", serif;
   --button-gradient: linear-gradient(135deg, #1f6f4d, #4fb272);
   --button-text-color: #f4fff6;
 }
@@ -7,7 +9,7 @@ body {
   position: relative;
   margin: 0;
   min-height: 100vh;
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-base);
   text-align: center;
   color: #f9f5ff;
   background:
@@ -16,6 +18,14 @@ body {
     radial-gradient(120% 120% at 82% 82%, rgba(141, 225, 173, 0.24) 0%, transparent 68%),
     linear-gradient(135deg, #161629 0%, #241b4b 48%, #0f3b2e 100%);
   overflow-x: hidden;
+}
+
+.font-body {
+  font-family: var(--font-family-base);
+}
+
+.font-display {
+  font-family: var(--font-family-display);
 }
 body::before {
   content: "";
@@ -40,7 +50,7 @@ body::before {
   border: 1px solid rgba(249, 245, 255, 0.22);
   background: linear-gradient(135deg, rgba(94, 74, 227, 0.45), rgba(244, 247, 121, 0.35));
   color: #f9f5ff;
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-display);
   font-size: 13px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -144,6 +154,7 @@ canvas {
 }
 #network-viz text {
   font-size: 10px;
+  font-family: var(--font-family-base);
   fill: rgba(249, 245, 255, 0.82);
   pointer-events: none;
 }
@@ -225,7 +236,7 @@ canvas {
 .alpha-metrics-heading__title {
   margin: 0;
   font-size: 1.8rem;
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-display);
   color: #f9f5ff;
   text-shadow: 0 12px 28px rgba(15, 15, 36, 0.4);
 }
@@ -384,7 +395,7 @@ canvas {
   text-align: right;
 }
 .alpha-metric-card__value {
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-display);
   font-size: 1.32rem;
   color: #f9f5ff;
   position: relative;
@@ -574,7 +585,7 @@ canvas {
   background: rgba(12, 59, 46, 0.12);
   box-shadow: inset 0 0 0 1px rgba(249, 245, 255, 0.05);
   overflow-y: auto;
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-base);
 }
 .glass-panel {
   border-radius: 28px;
@@ -735,13 +746,15 @@ canvas {
   outline-offset: 2px;
 }
 .control-toggle__text {
-  font-family: "Instrument Serif", serif;
+  font-family: var(--font-family-base);
   font-size: 13px;
   letter-spacing: 0.08em;
 }
+button,
+input,
 select,
-input[type='range'] {
-  font-family: "Instrument Serif", serif;
+textarea {
+  font-family: var(--font-family-base);
 }
 select {
   background: rgba(249, 245, 255, 0.14);
