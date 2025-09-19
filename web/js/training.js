@@ -291,10 +291,6 @@ export function initTraining(game, renderer) {
   const alphaMetricEmptyEl = document.getElementById('alpha-metric-empty');
   const alphaMetricToggleEl = document.getElementById('alpha-metrics-toggle');
   const alphaMetricToggleStatusEl = document.getElementById('alpha-metrics-toggle-status');
-  const blockMetricsCanvas = document.getElementById('block-metrics-canvas');
-  const blockMetricsLegendEl = document.getElementById('block-metrics-legend');
-  const blockMetricsFavouriteEl = document.getElementById('block-metrics-favourite');
-  const blockMetricsEmptyEl = document.getElementById('block-metrics-empty');
   const historySlider = document.getElementById('model-history-slider');
   const historyLabel = document.getElementById('model-history-label');
   const historyMeta = document.getElementById('model-history-meta');
@@ -306,16 +302,19 @@ export function initTraining(game, renderer) {
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
 
   let alphaMetricChoices = null;
-  const ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
+  const BLOCK_REWARD_METRIC_NAME = 'block_reward';
+  const ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss', BLOCK_REWARD_METRIC_NAME];
   const ALPHA_METRIC_LABELS = {
     loss: 'Total Loss',
     policy_loss: 'Policy Loss',
     value_loss: 'Value Loss',
+    [BLOCK_REWARD_METRIC_NAME]: 'Tetromino Objective Quality',
   };
   const ALPHA_METRIC_STYLES = {
     loss: { stroke: 'rgba(244, 247, 121, 0.92)', fill: 'rgba(244, 247, 121, 0.18)' },
     policy_loss: { stroke: 'rgba(94, 74, 227, 0.9)', fill: 'rgba(94, 74, 227, 0.18)' },
     value_loss: { stroke: 'rgba(79, 178, 114, 0.9)', fill: 'rgba(79, 178, 114, 0.16)' },
+    [BLOCK_REWARD_METRIC_NAME]: { stroke: 'rgba(236, 72, 153, 0.88)', fill: 'rgba(236, 72, 153, 0.18)' },
   };
   const DEFAULT_ALPHA_METRIC_SELECTION = ['value_loss'];
   let alphaMetricSelection = DEFAULT_ALPHA_METRIC_SELECTION.slice();
@@ -407,7 +406,7 @@ export function initTraining(game, renderer) {
       const training = alphaState && alphaState.training ? alphaState.training : null;
       if (training && training.metricsHistory) {
         training.metricsHistory.selected = alphaMetricSelection.slice();
-        renderAlphaMetricHistory(training);
+        renderAlphaMetricHistory(training, trainState);
       } else if (!alphaMetricSelection.length) {
         showAlphaMetricMessage('Select at least one metric to plot.');
       } else {
@@ -424,7 +423,7 @@ export function initTraining(game, renderer) {
         const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
         const training = alphaState && alphaState.training ? alphaState.training : null;
         if (training) {
-          renderAlphaMetricHistory(training);
+          renderAlphaMetricHistory(training, trainState);
         }
       }
     });
@@ -821,7 +820,7 @@ export function initTraining(game, renderer) {
       if (metrics && Number.isFinite(training.steps) && training.steps > prevSteps) {
         const appended = appendAlphaMetricHistory(training, training.steps, metrics);
         if (appended) {
-          renderAlphaMetricHistory(training);
+          renderAlphaMetricHistory(training, train);
         }
         training.lastConvMetrics = metrics;
       }
@@ -2454,38 +2453,61 @@ export function initTraining(game, renderer) {
       ctx.fillText(String(lastStep), margin.left + chartWidth, margin.top + chartHeight + 22);
     }
 
-    function renderAlphaMetricHistory(training){
+    function renderAlphaMetricHistory(training, trainStateOverride = null){
       if(!alphaMetricPlotsEl){
         return;
       }
-      if(!training || !training.metricsHistory){
-        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
-        return;
+      const trainState = trainStateOverride
+        || ((typeof window !== 'undefined' && window.__train) ? window.__train : null);
+      const blockMetrics = trainState && trainState.blockMetrics ? trainState.blockMetrics : null;
+      const history = training && training.metricsHistory ? training.metricsHistory : null;
+      const steps = history && Array.isArray(history.epoch) ? history.epoch.slice() : [];
+      const ranges = history && Array.isArray(history.stepRange) ? history.stepRange.slice() : [];
+      const tracked = history && Array.isArray(history.metrics) ? history.metrics.slice() : [];
+      if(!tracked.includes(BLOCK_REWARD_METRIC_NAME)){
+        tracked.push(BLOCK_REWARD_METRIC_NAME);
       }
-      const history = training.metricsHistory;
-      const steps = Array.isArray(history.epoch) ? history.epoch.slice() : [];
-      const ranges = Array.isArray(history.stepRange) ? history.stepRange.slice() : [];
-      const tracked = Array.isArray(history.metrics) ? history.metrics.slice() : [];
-      if(!steps.length || !tracked.length){
-        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
-        return;
+      const available = new Set(tracked.length ? tracked : ALPHA_METRIC_NAMES);
+      available.add(BLOCK_REWARD_METRIC_NAME);
+      const baseSelection = history && Array.isArray(history.selected) && history.selected.length
+        ? history.selected.slice()
+        : alphaMetricSelection.slice();
+      const selected = [];
+      for(let i = 0; i < baseSelection.length; i += 1){
+        const name = baseSelection[i];
+        if(!available.has(name)){
+          continue;
+        }
+        if(selected.includes(name)){
+          continue;
+        }
+        selected.push(name);
       }
-      let selected = Array.isArray(history.selected) && history.selected.length
-        ? history.selected.filter((name) => tracked.includes(name))
-        : alphaMetricSelection.filter((name) => tracked.includes(name));
       if(!selected.length){
         showAlphaMetricMessage('Select at least one metric to plot.');
         return;
       }
-      history.selected = selected.slice();
-      alphaMetricSelection = history.selected.slice();
+      if(history){
+        history.selected = selected.slice();
+      }
+      alphaMetricSelection = selected.slice();
       hideAlphaMetricMessage();
       alphaMetricPlotsEl.innerHTML = '';
       let rendered = 0;
       for(let i = 0; i < selected.length; i += 1){
         const name = selected[i];
+        if(name === BLOCK_REWARD_METRIC_NAME){
+          const blockCard = createBlockMetricCard();
+          alphaMetricPlotsEl.appendChild(blockCard.card);
+          updateBlockMetricCard(blockCard, blockMetrics);
+          rendered += 1;
+          continue;
+        }
+        if(!history){
+          continue;
+        }
         const series = history.history[name];
-        if(!Array.isArray(series) || series.length !== steps.length){
+        if(!Array.isArray(series) || !steps.length || series.length !== steps.length){
           continue;
         }
         const meanSeries = series.map((entry) => {
@@ -2570,6 +2592,219 @@ export function initTraining(game, renderer) {
       }
       if(rendered === 0){
         showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
+      }
+    }
+
+    function blockMetricsHaveSamples(metrics){
+      if(!metrics || !metrics.shapes){
+        return false;
+      }
+      const order = Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order
+        : Object.keys(metrics.shapes);
+      for(let i = 0; i < order.length; i += 1){
+        const shape = order[i];
+        const entry = metrics.shapes[shape];
+        if(entry && Number.isFinite(entry.count) && entry.count > 0){
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function buildBlockMetricLegendItems(metrics){
+      const items = [];
+      if(!metrics || !metrics.shapes){
+        return items;
+      }
+      const order = Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order.slice()
+        : Object.keys(metrics.shapes);
+      const fallbackIndex = new Map(order.map((shape, idx) => [shape, idx]));
+      for(let i = 0; i < order.length; i += 1){
+        const shape = order[i];
+        const entry = metrics.shapes[shape] || {};
+        const count = Number.isFinite(entry.count) ? entry.count : 0;
+        let average = null;
+        if(Number.isFinite(entry.average)){
+          average = entry.average;
+        } else if(count > 0 && Number.isFinite(entry.sum)){
+          average = entry.sum / count;
+        }
+        const hasData = Number.isFinite(average);
+        items.push({
+          shape,
+          label: BLOCK_METRIC_LABELS[shape] || `${shape} Block`,
+          color: (BLOCK_METRIC_COLORS[shape] && BLOCK_METRIC_COLORS[shape].stroke) || BLOCK_METRIC_COLOR_FALLBACK,
+          count,
+          average: hasData ? average : null,
+          hasData,
+          order: fallbackIndex.has(shape) ? fallbackIndex.get(shape) : order.length + i,
+        });
+      }
+      items.sort((a, b) => {
+        const aHas = a.hasData;
+        const bHas = b.hasData;
+        if(aHas && bHas){
+          if(b.average !== a.average){
+            return b.average - a.average;
+          }
+          if(b.count !== a.count){
+            return b.count - a.count;
+          }
+        } else if(aHas){
+          return -1;
+        } else if(bHas){
+          return 1;
+        }
+        return a.order - b.order;
+      });
+      return items;
+    }
+
+    function renderBlockMetricLegend(container, metrics){
+      if(!container){
+        return;
+      }
+      const items = buildBlockMetricLegendItems(metrics);
+      const fragment = document.createDocumentFragment();
+      let highlighted = false;
+      for(let i = 0; i < items.length; i += 1){
+        const item = items[i];
+        const element = document.createElement('div');
+        element.className = 'block-metrics-legend__item';
+        if(item.hasData && !highlighted){
+          element.classList.add('is-favourite');
+          highlighted = true;
+        }
+        const swatch = document.createElement('span');
+        swatch.className = 'block-metrics-legend__swatch';
+        if(item.color){
+          swatch.style.setProperty('--block-metric-color', item.color);
+        }
+        const text = document.createElement('div');
+        text.className = 'block-metrics-legend__text';
+        const label = document.createElement('span');
+        label.className = 'block-metrics-legend__label';
+        label.textContent = item.label;
+        const value = document.createElement('span');
+        value.className = 'block-metrics-legend__value';
+        if(item.hasData){
+          value.textContent = `Avg ${item.average.toFixed(3)}`;
+        } else {
+          value.textContent = 'No samples yet';
+        }
+        text.appendChild(label);
+        text.appendChild(value);
+        element.appendChild(swatch);
+        element.appendChild(text);
+        fragment.appendChild(element);
+      }
+      container.innerHTML = '';
+      container.appendChild(fragment);
+      container.setAttribute('aria-hidden', highlighted ? 'false' : 'true');
+    }
+
+    function createBlockMetricCard(){
+      const card = document.createElement('div');
+      card.className = 'alpha-metric-card alpha-metric-card--block';
+
+      const header = document.createElement('div');
+      header.className = 'alpha-metric-card__header';
+      const title = document.createElement('div');
+      title.className = 'alpha-metric-card__title';
+      const swatch = document.createElement('span');
+      swatch.className = 'alpha-metric-card__swatch';
+      const style = ALPHA_METRIC_STYLES[BLOCK_REWARD_METRIC_NAME] || null;
+      if(style && style.stroke){
+        swatch.style.setProperty('--alpha-metric-color', style.stroke);
+      }
+      title.appendChild(swatch);
+      const nameEl = document.createElement('span');
+      nameEl.className = 'alpha-metric-card__name';
+      nameEl.textContent = ALPHA_METRIC_LABELS[BLOCK_REWARD_METRIC_NAME] || 'Tetromino Objective Quality';
+      title.appendChild(nameEl);
+      header.appendChild(title);
+      card.appendChild(header);
+
+      const meta = document.createElement('div');
+      meta.className = 'alpha-metric-card__meta';
+      meta.textContent = 'Awaiting block placements';
+      card.appendChild(meta);
+
+      const empty = document.createElement('p');
+      empty.className = 'block-metrics-empty';
+      empty.textContent = 'Block reward statistics will appear once planning data is available.';
+      card.appendChild(empty);
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'block-metrics-canvas is-hidden';
+      canvas.setAttribute('role', 'img');
+      canvas.setAttribute('aria-label', 'Average reward per tetromino');
+      card.appendChild(canvas);
+
+      const legend = document.createElement('div');
+      legend.className = 'block-metrics-legend';
+      legend.setAttribute('aria-hidden', 'true');
+      card.appendChild(legend);
+
+      return { card, canvas, legend, empty, meta };
+    }
+
+    function updateBlockMetricCard(elements, metrics){
+      if(!elements){
+        return;
+      }
+      const { canvas, legend, empty, meta } = elements;
+      const hasSamples = metrics ? blockMetricsHaveSamples(metrics) : false;
+      const totalPlacements = metrics && Number.isFinite(metrics.totalPlacements) ? metrics.totalPlacements : 0;
+      const windowStart = metrics && Number.isFinite(metrics.windowStart) ? metrics.windowStart : 1;
+      if(meta){
+        if(hasSamples){
+          const start = Math.max(1, windowStart);
+          const end = Math.max(start, totalPlacements);
+          let rangeText = end >= start ? `Placements ${start}–${end}` : `Placements ${end}`;
+          if(!Number.isFinite(end) || end <= 0){
+            rangeText = 'Recent placements';
+          }
+          const favourite = metrics && metrics.favourite ? metrics.favourite : computeBlockMetricsFavourite(metrics);
+          if(favourite && favourite.shape){
+            const label = BLOCK_METRIC_LABELS[favourite.shape] || `${favourite.shape} Block`;
+            if(Number.isFinite(favourite.average)){
+              meta.textContent = `${rangeText} · Top ${label} avg ${favourite.average.toFixed(3)}`;
+            } else {
+              meta.textContent = `${rangeText} · Top ${label}`;
+            }
+          } else {
+            meta.textContent = rangeText;
+          }
+        } else {
+          meta.textContent = 'Awaiting block placements';
+        }
+      }
+      if(!hasSamples){
+        if(empty){
+          empty.classList.remove('is-hidden');
+          empty.textContent = 'Block reward statistics will appear once planning data is available.';
+        }
+        if(canvas){
+          canvas.classList.add('is-hidden');
+        }
+        if(legend){
+          legend.innerHTML = '';
+          legend.setAttribute('aria-hidden', 'true');
+        }
+        return;
+      }
+      if(empty){
+        empty.classList.add('is-hidden');
+      }
+      if(canvas){
+        canvas.classList.remove('is-hidden');
+        drawBlockMetricChart(canvas, metrics);
+      }
+      if(legend){
+        renderBlockMetricLegend(legend, metrics);
       }
     }
 
@@ -2876,130 +3111,21 @@ export function initTraining(game, renderer) {
       ctx.fillText(String(maxStep), margin.left + chartWidth, margin.top + chartHeight + 24);
     }
 
-    function renderBlockMetrics(){
-      if(!blockMetricsCanvas && !blockMetricsLegendEl && !blockMetricsFavouriteEl && !blockMetricsEmptyEl){
+    function renderBlockMetrics(trainStateOverride = null){
+      if(!alphaMetricsPlottingEnabled){
         return;
       }
-      const metrics = train && train.blockMetrics ? train.blockMetrics : null;
-      const order = metrics && Array.isArray(metrics.order) && metrics.order.length
-        ? metrics.order
-        : BLOCK_METRIC_SHAPE_ORDER;
-      let hasData = false;
-      if(metrics){
-        for(let i = 0; i < order.length && !hasData; i += 1){
-          const shape = order[i];
-          const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
-          if(!entry || !Array.isArray(entry.history)){
-            continue;
-          }
-          for(let j = 0; j < entry.history.length; j += 1){
-            const sample = entry.history[j];
-            if(sample && Number.isFinite(sample.value)){
-              hasData = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if(!hasData){
-        if(blockMetricsCanvas){
-          blockMetricsCanvas.classList.add('is-hidden');
-        }
-        if(blockMetricsLegendEl){
-          blockMetricsLegendEl.innerHTML = '';
-          blockMetricsLegendEl.setAttribute('aria-hidden', 'true');
-        }
-        if(blockMetricsEmptyEl){
-          blockMetricsEmptyEl.classList.remove('is-hidden');
-        }
-        if(blockMetricsFavouriteEl){
-          blockMetricsFavouriteEl.innerHTML = '';
-          const label = document.createElement('span');
-          label.className = 'block-metrics-favourite__label';
-          label.textContent = 'Favourite block';
-          const value = document.createElement('span');
-          value.className = 'block-metrics-favourite__value';
-          value.textContent = '—';
-          blockMetricsFavouriteEl.appendChild(label);
-          blockMetricsFavouriteEl.appendChild(value);
-        }
+      const trainState = trainStateOverride
+        || ((typeof window !== 'undefined' && window.__train) ? window.__train : null);
+      if(!trainState){
         return;
       }
-
-      if(blockMetricsEmptyEl){
-        blockMetricsEmptyEl.classList.add('is-hidden');
+      if(Array.isArray(alphaMetricSelection) && !alphaMetricSelection.includes(BLOCK_REWARD_METRIC_NAME)){
+        return;
       }
-      if(blockMetricsCanvas){
-        blockMetricsCanvas.classList.remove('is-hidden');
-        drawBlockMetricChart(blockMetricsCanvas, metrics);
-      }
-      if(blockMetricsLegendEl){
-        const fragment = document.createDocumentFragment();
-        for(let i = 0; i < order.length; i += 1){
-          const shape = order[i];
-          const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
-          if(!entry){
-            continue;
-          }
-          const item = document.createElement('div');
-          item.className = 'block-metrics-legend__item';
-          if(metrics.favourite && metrics.favourite.shape === shape){
-            item.classList.add('is-favourite');
-          }
-          const swatch = document.createElement('span');
-          swatch.className = 'block-metrics-legend__swatch';
-          const color = (BLOCK_METRIC_COLORS[shape] && BLOCK_METRIC_COLORS[shape].stroke) || BLOCK_METRIC_COLOR_FALLBACK;
-          swatch.style.setProperty('--block-metric-color', color);
-          const label = document.createElement('span');
-          label.className = 'block-metrics-legend__label';
-          label.textContent = BLOCK_METRIC_LABELS[shape] || `${shape} Block`;
-          const value = document.createElement('span');
-          value.className = 'block-metrics-legend__value';
-          if(entry.count > 0){
-            const avg = Number.isFinite(entry.average)
-              ? entry.average
-              : (entry.count > 0 ? entry.sum / entry.count : null);
-            const avgText = Number.isFinite(avg) ? avg.toFixed(3) : '—';
-            value.textContent = `Avg ${avgText}`;
-          } else {
-            value.textContent = 'No samples yet';
-          }
-          const text = document.createElement('div');
-          text.className = 'block-metrics-legend__text';
-          text.appendChild(label);
-          text.appendChild(value);
-          item.appendChild(swatch);
-          item.appendChild(text);
-          fragment.appendChild(item);
-        }
-        blockMetricsLegendEl.innerHTML = '';
-        blockMetricsLegendEl.appendChild(fragment);
-        blockMetricsLegendEl.setAttribute('aria-hidden', 'false');
-      }
-      if(blockMetricsFavouriteEl){
-        const favourite = metrics.favourite || computeBlockMetricsFavourite(metrics);
-        blockMetricsFavouriteEl.innerHTML = '';
-        const label = document.createElement('span');
-        label.className = 'block-metrics-favourite__label';
-        label.textContent = 'Favourite block';
-        blockMetricsFavouriteEl.appendChild(label);
-        const value = document.createElement('span');
-        value.className = 'block-metrics-favourite__value';
-        if(favourite){
-          value.textContent = BLOCK_METRIC_LABELS[favourite.shape] || `${favourite.shape} Block`;
-          blockMetricsFavouriteEl.appendChild(value);
-          if(Number.isFinite(favourite.average)){
-            const meta = document.createElement('span');
-            meta.className = 'block-metrics-favourite__meta';
-            meta.textContent = `Avg ${favourite.average.toFixed(3)}`;
-            blockMetricsFavouriteEl.appendChild(meta);
-          }
-        } else {
-          value.textContent = '—';
-          blockMetricsFavouriteEl.appendChild(value);
-        }
-      }
+      const alphaState = trainState.alpha || null;
+      const training = alphaState && alphaState.training ? alphaState.training : null;
+      renderAlphaMetricHistory(training, trainState);
     }
 
     function ensureBlockMetricsState(){
@@ -3026,7 +3152,7 @@ export function initTraining(game, renderer) {
         ? existing.historyLimit
         : BLOCK_METRIC_HISTORY_LIMIT;
       train.blockMetrics = createBlockMetricsState(limit);
-      renderBlockMetrics();
+      renderBlockMetrics(train);
     }
 
     function recordBlockObjectiveSample(shapeOverride){
@@ -3058,7 +3184,7 @@ export function initTraining(game, renderer) {
       const metrics = ensureBlockMetricsState();
       const appended = appendBlockMetricSample(metrics, shape, reward);
       if(appended){
-        renderBlockMetrics();
+        renderBlockMetrics(train);
       }
       return appended;
     }
@@ -3716,7 +3842,7 @@ export function initTraining(game, renderer) {
     const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
-    renderBlockMetrics();
+    renderBlockMetrics(train);
     window.__placementSurrogate = placementSurrogate;
     // After `train` exists, honor train.dtype for future allocations
     dtypePreference = train.dtype || DEFAULT_DTYPE;

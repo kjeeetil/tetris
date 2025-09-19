@@ -252,6 +252,7 @@
                   <option value="loss">Total Loss</option>
                   <option value="policy_loss">Policy Loss</option>
                   <option value="value_loss" selected>Value Loss</option>
+                  <option value="block_reward">Tetromino Objective Quality</option>
                 </select>
               </div>
             </div>
@@ -260,37 +261,6 @@
             ConvNet loss statistics will appear once AlphaTetris training runs.
           </p>
           <div id="alpha-metric-plots" class="alpha-metric-plots" aria-live="polite"></div>
-        </div>
-        <div
-          id="block-metrics-panel"
-          class="glass-panel mx-auto w-full max-w-5xl rounded-3xl px-6 py-6 text-left"
-        >
-          <div class="block-metrics-header">
-            <div class="block-metrics-heading">
-              <span class="block-metrics-heading__eyebrow">AlphaTetris</span>
-              <h3 class="block-metrics-heading__title">Tetromino Objective Quality</h3>
-              <p class="block-metrics-description">
-                Stream the planner's reward for every block placement and see which tetromino the
-                agent excels with.
-              </p>
-            </div>
-            <div id="block-metrics-favourite" class="block-metrics-favourite" aria-live="polite">
-              <span class="block-metrics-favourite__label">Favourite block</span>
-              <span class="block-metrics-favourite__value">—</span>
-            </div>
-          </div>
-          <p id="block-metrics-empty" class="block-metrics-empty" aria-live="polite">
-            Block reward statistics will appear once planning data is available.
-          </p>
-          <canvas
-            id="block-metrics-canvas"
-            width="520"
-            height="260"
-            class="block-metrics-canvas is-hidden"
-            role="img"
-            aria-label="Average reward per tetromino"
-          ></canvas>
-          <div id="block-metrics-legend" class="block-metrics-legend" aria-hidden="true"></div>
         </div>
         <div class="mx-auto mt-4 w-full max-w-5xl space-y-2">
           <div class="flex items-center justify-between text-xs uppercase tracking-[0.35em] text-plum/70">
