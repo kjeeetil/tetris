@@ -2720,7 +2720,12 @@ export function initTraining(game, renderer) {
         return actions;
       });
     }
-    function lockSim(grid, piece){ for(const [r,c] of piece.blocks()) grid[r][c]=1; }
+    function lockSim(grid, piece){
+      const shape = piece && typeof piece.shape === 'string' ? piece.shape : 1;
+      for(const [r,c] of piece.blocks()){
+        grid[r][c] = shape;
+      }
+    }
     function clearLinesInScratch(grid, clearedRows){
       if(clearedRows){
         clearedRows.length = 0;
@@ -2749,6 +2754,39 @@ export function initTraining(game, renderer) {
       for(let row = write; row >= 0; row--){
         const dst = grid[row];
         for(let col = 0; col < WIDTH; col++) dst[col] = 0;
+      }
+      return cleared;
+    }
+    function createEmptyRow(){
+      const row = new Array(WIDTH);
+      for(let col = 0; col < WIDTH; col += 1){
+        row[col] = 0;
+      }
+      return row;
+    }
+    function applyClearedRowsToGrid(grid, clearedRows){
+      if(!grid || !Array.isArray(clearedRows) || clearedRows.length === 0){
+        return 0;
+      }
+      const sorted = clearedRows.slice().sort((a,b) => b - a);
+      let cleared = 0;
+      for(let i = 0; i < sorted.length; i += 1){
+        const rawIndex = sorted[i];
+        const rowIndex = Number.isFinite(rawIndex) ? Math.floor(rawIndex) : -1;
+        if(rowIndex < 0 || rowIndex >= grid.length){
+          continue;
+        }
+        grid.splice(rowIndex, 1);
+        cleared += 1;
+      }
+      for(let i = 0; i < cleared; i += 1){
+        grid.unshift(createEmptyRow());
+      }
+      while(grid.length > HEIGHT){
+        grid.pop();
+      }
+      while(grid.length < HEIGHT){
+        grid.unshift(createEmptyRow());
       }
       return cleared;
     }
@@ -3438,6 +3476,9 @@ export function initTraining(game, renderer) {
           const prepared = prepareAlphaInputs(candidateState);
           boards.push(prepared.board);
           auxes.push(prepared.aux);
+          const clearedRowsCopy = sim.clearedRows && sim.clearedRows.length
+            ? sim.clearedRows.slice()
+            : [];
           candidates.push({
             key: `${placement.rot}|${placement.col}`,
             rot: placement.rot,
@@ -3452,6 +3493,15 @@ export function initTraining(game, renderer) {
               value: 0,
               topOut,
               policyIndex,
+              headless: {
+                clearedRows: clearedRowsCopy,
+                lines,
+                nextPieces: newPieces,
+                nextLevel: newLevel,
+                nextGravity: newGravity,
+                nextScore: newScore,
+                topOut,
+              },
             },
           });
         }
@@ -3750,6 +3800,22 @@ export function initTraining(game, renderer) {
         const cur = state.active.rot % len;
         const needRot = (selectedMeta.rot - cur + len) % len;
         const targetRow = Number.isFinite(selectedMeta.dropRow) ? selectedMeta.dropRow : null;
+        const rawHeadless = selectedMeta.alpha && selectedMeta.alpha.headless
+          ? selectedMeta.alpha.headless
+          : null;
+        const alphaHeadless = rawHeadless
+          ? {
+              clearedRows: Array.isArray(rawHeadless.clearedRows)
+                ? rawHeadless.clearedRows.slice()
+                : [],
+              lines: rawHeadless.lines,
+              nextPieces: rawHeadless.nextPieces,
+              nextLevel: rawHeadless.nextLevel,
+              nextGravity: rawHeadless.nextGravity,
+              nextScore: rawHeadless.nextScore,
+              topOut: !!rawHeadless.topOut,
+            }
+          : null;
         train.ai.lastSearchStats = {
           rootValue,
           totalVisits,
@@ -3785,6 +3851,7 @@ export function initTraining(game, renderer) {
             policy: policyStats,
             selected: train.ai.lastSearchStats.selected,
           },
+          alphaHeadless,
         };
       });
     }
@@ -4172,6 +4239,80 @@ export function initTraining(game, renderer) {
       }
     }
 
+    function applyAlphaHeadlessPlacement(plan, alphaData){
+      if(!plan || !alphaData || !state.active){
+        return null;
+      }
+      const { targetRot, targetCol, targetRow } = plan;
+      if(!Number.isFinite(targetRot) || !Number.isFinite(targetCol) || !Number.isFinite(targetRow)){
+        return null;
+      }
+      const piece = state.active;
+      const prevRot = piece.rot;
+      const prevCol = piece.col;
+      const prevRow = piece.row;
+
+      piece.rot = targetRot;
+      piece.col = targetCol;
+      piece.row = targetRow;
+
+      if(!canMove(state.grid, piece, 0, 0)){
+        piece.rot = prevRot;
+        piece.col = prevCol;
+        piece.row = prevRow;
+        return null;
+      }
+
+      state.active = piece;
+      lock(state.grid, piece);
+
+      let clearedCount = 0;
+      if(Array.isArray(alphaData.clearedRows) && alphaData.clearedRows.length){
+        clearedCount = applyClearedRowsToGrid(state.grid, alphaData.clearedRows);
+      }
+
+      const prevPieces = Number.isFinite(state.pieces) ? state.pieces : 0;
+      const nextPieces = Number.isFinite(alphaData.nextPieces) ? alphaData.nextPieces : prevPieces + 1;
+      state.pieces = nextPieces;
+
+      const prevLevel = Number.isFinite(state.level) ? state.level : 0;
+      const fallbackLevel = prevLevel + (nextPieces % 20 === 0 ? 1 : 0);
+      const nextLevel = Number.isFinite(alphaData.nextLevel) ? alphaData.nextLevel : fallbackLevel;
+      const levelChanged = nextLevel !== prevLevel;
+      const nextGravity = Number.isFinite(alphaData.nextGravity) ? alphaData.nextGravity : gravityForLevel(nextLevel);
+      state.level = nextLevel;
+      state.gravity = nextGravity;
+      if(levelChanged){
+        updateLevel();
+      }
+
+      const prevScore = Number.isFinite(state.score) ? state.score : 0;
+      const lines = Number.isFinite(alphaData.lines) ? alphaData.lines : clearedCount;
+      const fallbackScoreDelta = lines ? lines * 100 * (lines > 1 ? lines : 1) : 0;
+      const nextScore = Number.isFinite(alphaData.nextScore) ? alphaData.nextScore : prevScore + fallbackScoreDelta;
+      state.score = nextScore;
+      if(lines > 0){
+        updateScore();
+        recordClear(lines);
+      }
+
+      if(maybeEndForLevelCap('AI')){
+        return false;
+      }
+
+      if(alphaData.topOut){
+        logTrainingEvent('AI: top-out after drop');
+        resetAiPlanState();
+        onGameOver();
+        return false;
+      }
+
+      spawn();
+      resetAiPlanState();
+      if(!canMove(state.grid, state.active, 0, 0)) onGameOver();
+      return false;
+    }
+
     function runHeadlessPlacement(){
       return trainingProfiler.section('train.ai.headless_placement', () => {
         if(!state.active){
@@ -4227,6 +4368,13 @@ export function initTraining(game, renderer) {
         const { targetRot, targetCol, targetRow } = plan;
         if(!Number.isFinite(targetRot) || !Number.isFinite(targetCol) || !Number.isFinite(targetRow)){
           return forceDropActive();
+        }
+
+        if(isAlphaModelType(train.modelType) && plan.alphaHeadless){
+          const alphaResult = applyAlphaHeadlessPlacement(plan, plan.alphaHeadless);
+          if(alphaResult !== null){
+            return alphaResult;
+          }
         }
 
         const piece = state.active;
