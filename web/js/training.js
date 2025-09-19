@@ -479,6 +479,7 @@ export function initTraining(game, renderer) {
     const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
     const ALPHA_METRIC_HISTORY_LIMIT = 400;
     const BLOCK_METRIC_HISTORY_LIMIT = 400;
+    const BLOCK_METRIC_SMOOTHING_WINDOW = 24;
     const DEFAULT_BLOCK_ORDER = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
     const BLOCK_METRIC_LABELS = {
       I: 'I Block',
@@ -2583,7 +2584,7 @@ export function initTraining(game, renderer) {
       const shapes = {};
       for(let i = 0; i < order.length; i += 1){
         const shape = order[i];
-        shapes[shape] = { sum: 0, count: 0, average: null, history: [] };
+        shapes[shape] = { sum: 0, count: 0, average: null, history: [], backlog: [] };
       }
       return {
         totalPlacements: 0,
@@ -2631,7 +2632,7 @@ export function initTraining(game, renderer) {
       }
       const key = shape.toUpperCase();
       if(!metrics.shapes[key]){
-        metrics.shapes[key] = { sum: 0, count: 0, average: null, history: [] };
+        metrics.shapes[key] = { sum: 0, count: 0, average: null, history: [], backlog: [] };
         if(Array.isArray(metrics.order) && !metrics.order.includes(key)){
           metrics.order.push(key);
         }
@@ -2643,6 +2644,7 @@ export function initTraining(game, renderer) {
       }
       entry.history.push({ step: metrics.totalPlacements, value: reward });
       const cutoff = Math.max(1, metrics.totalPlacements - metrics.historyLimit + 1);
+      const backlogLimit = Math.max(0, BLOCK_METRIC_SMOOTHING_WINDOW - 1);
       metrics.windowStart = cutoff;
       const order = Array.isArray(metrics.order) && metrics.order.length
         ? metrics.order
@@ -2654,8 +2656,23 @@ export function initTraining(game, renderer) {
           continue;
         }
         const series = Array.isArray(shapeEntry.history) ? shapeEntry.history : [];
+        if(!Array.isArray(shapeEntry.backlog)){
+          shapeEntry.backlog = [];
+        }
+        const backlog = shapeEntry.backlog;
         while(series.length && series[0].step < cutoff){
-          series.shift();
+          const removed = series.shift();
+          if(removed && backlogLimit > 0){
+            backlog.push(removed);
+            if(backlog.length > backlogLimit){
+              backlog.shift();
+            }
+          }
+        }
+        if(backlogLimit <= 0){
+          shapeEntry.backlog = [];
+        } else if(backlog.length > backlogLimit){
+          backlog.splice(0, backlog.length - backlogLimit);
         }
         let sum = 0;
         let count = 0;
@@ -2747,10 +2764,9 @@ export function initTraining(game, renderer) {
           continue;
         }
         const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
-        let windowSize = entry && Number.isFinite(entry.count) && entry.count > 0
-          ? Math.floor(entry.count)
-          : rawSeries.length;
-        windowSize = Math.max(1, Math.min(windowSize, rawSeries.length));
+        const backlog = entry && Array.isArray(entry.backlog) ? entry.backlog : [];
+        const combinedLength = backlog.length + rawSeries.length;
+        const windowSize = Math.max(1, Math.min(BLOCK_METRIC_SMOOTHING_WINDOW, combinedLength));
         if(windowSize <= 1){
           for(let i = 0; i < rawSeries.length; i += 1){
             const value = rawSeries[i].value;
@@ -2760,17 +2776,21 @@ export function initTraining(game, renderer) {
           seriesByShape.set(shape, rawSeries);
           continue;
         }
-        const prefix = new Array(rawSeries.length + 1);
+        // Combine prior samples that fell outside the visible window so the
+        // trailing average remains stable near the left chart boundary.
+        const combined = backlog.length ? backlog.concat(rawSeries) : rawSeries.slice();
+        const prefix = new Array(combined.length + 1);
         prefix[0] = 0;
-        for(let i = 0; i < rawSeries.length; i += 1){
-          prefix[i + 1] = prefix[i] + rawSeries[i].value;
+        for(let i = 0; i < combined.length; i += 1){
+          prefix[i + 1] = prefix[i] + combined[i].value;
         }
         const smoothed = new Array(rawSeries.length);
+        const tailLength = combined.length - rawSeries.length;
         for(let i = 0; i < rawSeries.length; i += 1){
-          const end = i + 1;
-          const start = Math.max(0, end - windowSize);
-          const count = end - start;
-          const sum = prefix[end] - prefix[start];
+          const idx = tailLength + i;
+          const start = Math.max(0, idx - windowSize + 1);
+          const sum = prefix[idx + 1] - prefix[start];
+          const count = Math.max(1, idx - start + 1);
           const avg = count > 0 ? sum / count : rawSeries[i].value;
           const point = { step: rawSeries[i].step, value: avg };
           smoothed[i] = point;
