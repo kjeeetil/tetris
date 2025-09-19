@@ -2892,7 +2892,7 @@ export function initTraining(game, renderer) {
       updateTrainStatus();
       const btn = document.getElementById('start-training');
       if(btn){
-        btn.textContent = 'Stop Training';
+        btn.textContent = 'Stop';
         btn.classList.remove('icon-btn--violet');
         btn.classList.add('icon-btn--emerald');
         btn.setAttribute('title', 'Stop training');
@@ -2922,7 +2922,7 @@ export function initTraining(game, renderer) {
       resetAiPlanState();
       const btn = document.getElementById('start-training');
       if(btn){
-        btn.textContent = 'Start Training';
+        btn.textContent = 'Start';
         btn.classList.remove('icon-btn--emerald');
         btn.classList.add('icon-btn--violet');
         btn.setAttribute('title', 'Start training');
