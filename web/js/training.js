@@ -322,6 +322,364 @@ export function initTraining(game, renderer) {
     const ALPHA_BOARD_SIZE = ALPHA_BOARD_HEIGHT * ALPHA_BOARD_WIDTH * ALPHA_BOARD_CHANNELS;
     const ALPHA_ACTION_INDEX = new Map(ALPHA_ACTIONS.map((action, index) => [`${action.rotation}|${action.column}`, index]));
     const ALPHA_TOP_OUT_VALUE = -1;
+    const DEFAULT_ALPHA_BATCH_SIZE = 32;
+    const DEFAULT_ALPHA_REPLAY_SIZE = 2048;
+    const DEFAULT_ALPHA_LEARNING_RATE = 1e-3;
+    const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
+
+    function sanitizePositiveInt(value, fallback) {
+      if (!Number.isFinite(value) || value <= 0) {
+        return fallback;
+      }
+      return Math.max(1, Math.floor(value));
+    }
+
+    function createAlphaTrainingState(config = {}) {
+      const trainingConfig = config && typeof config.training === 'object' ? config.training : {};
+      const batchSize = sanitizePositiveInt(trainingConfig.batchSize, DEFAULT_ALPHA_BATCH_SIZE);
+      const replaySize = sanitizePositiveInt(trainingConfig.replaySize, DEFAULT_ALPHA_REPLAY_SIZE);
+      const fitBatchSizeRaw = trainingConfig.fitBatchSize !== undefined
+        ? trainingConfig.fitBatchSize
+        : Math.min(batchSize, 32);
+      const fitBatchSize = sanitizePositiveInt(fitBatchSizeRaw, Math.min(batchSize, 32));
+      const epochs = sanitizePositiveInt(trainingConfig.epochs, 1);
+      const learningRate = Number.isFinite(trainingConfig.learningRate) && trainingConfig.learningRate > 0
+        ? trainingConfig.learningRate
+        : DEFAULT_ALPHA_LEARNING_RATE;
+      const valueLossWeight = Number.isFinite(trainingConfig.valueLossWeight)
+        ? trainingConfig.valueLossWeight
+        : DEFAULT_ALPHA_VALUE_LOSS_WEIGHT;
+      return {
+        replay: [],
+        batchSize,
+        maxReplaySize: replaySize,
+        fitBatchSize: Math.min(batchSize, fitBatchSize),
+        epochs,
+        learningRate,
+        valueLossWeight,
+        compiledModel: null,
+        optimizer: null,
+        scheduled: false,
+        trainingPromise: null,
+        steps: 0,
+        lastLoss: null,
+        lastPolicyLoss: null,
+        lastValueLoss: null,
+      };
+    }
+
+    function ensureAlphaTrainingState(alphaState) {
+      if (!alphaState) {
+        return null;
+      }
+      if (!alphaState.training) {
+        alphaState.training = createAlphaTrainingState(alphaState.config || {});
+      }
+      return alphaState.training;
+    }
+
+    function resetAlphaTrainingState(alphaState) {
+      if (!alphaState) {
+        return;
+      }
+      const existing = alphaState.training;
+      if (existing && existing.optimizer && typeof existing.optimizer.dispose === 'function') {
+        try {
+          existing.optimizer.dispose();
+        } catch (_) {
+          /* ignore optimizer disposal failures */
+        }
+      }
+      alphaState.training = createAlphaTrainingState(alphaState.config || {});
+      alphaState.lastPreparedInputs = null;
+    }
+
+    function prepareAlphaModelForTraining(model, alphaState) {
+      if (!model) {
+        return;
+      }
+      const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+      if (!tf || typeof model.compile !== 'function') {
+        return;
+      }
+      const training = ensureAlphaTrainingState(alphaState);
+      if (!training) {
+        return;
+      }
+      if (training.optimizer && training.compiledModel === model) {
+        return;
+      }
+      if (training.optimizer && typeof training.optimizer.dispose === 'function') {
+        try {
+          training.optimizer.dispose();
+        } catch (_) {
+          /* ignore optimizer disposal failures */
+        }
+      }
+      training.optimizer = null;
+      training.compiledModel = null;
+      const learningRate = Number.isFinite(training.learningRate) && training.learningRate > 0
+        ? training.learningRate
+        : DEFAULT_ALPHA_LEARNING_RATE;
+      const valueLossWeight = Number.isFinite(training.valueLossWeight)
+        ? training.valueLossWeight
+        : DEFAULT_ALPHA_VALUE_LOSS_WEIGHT;
+      const optimizer = tf.train.adam(learningRate);
+      const policyLoss = (labels, logits) => tf.tidy(() => tf.losses.softmaxCrossEntropy(labels, logits));
+      const valueLoss = (labels, preds) => tf.tidy(() => tf.losses.meanSquaredError(labels, preds));
+      model.compile({
+        optimizer,
+        loss: {
+          policy: policyLoss,
+          value: valueLoss,
+        },
+        lossWeights: { policy: 1, value: valueLossWeight },
+      });
+      training.optimizer = optimizer;
+      training.compiledModel = model;
+    }
+
+    function clampAlphaValueTarget(value) {
+      if (!Number.isFinite(value)) {
+        return 0;
+      }
+      if (value > 1) {
+        return 1;
+      }
+      if (value < -1) {
+        return -1;
+      }
+      return value;
+    }
+
+    function buildAlphaPolicyTarget(policyStats, mask) {
+      const target = new Float32Array(ALPHA_POLICY_SIZE);
+      let sum = 0;
+      if (Array.isArray(policyStats)) {
+        for (let i = 0; i < policyStats.length; i += 1) {
+          const entry = policyStats[i];
+          if (!entry) {
+            continue;
+          }
+          const index = ALPHA_ACTION_INDEX.get(entry.key);
+          if (index === undefined) {
+            continue;
+          }
+          const prob = Number.isFinite(entry.policy) ? entry.policy : 0;
+          if (prob <= 0) {
+            continue;
+          }
+          target[index] = prob;
+          sum += prob;
+        }
+      }
+      if (sum > 0 && Math.abs(sum - 1) > 1e-3) {
+        for (let i = 0; i < target.length; i += 1) {
+          target[i] /= sum;
+        }
+        sum = 1;
+      }
+      if (sum <= 0 && mask && mask.length === target.length) {
+        let active = 0;
+        for (let i = 0; i < mask.length; i += 1) {
+          if (mask[i] > 0) {
+            active += 1;
+          }
+        }
+        if (active > 0) {
+          const uniform = 1 / active;
+          for (let i = 0; i < mask.length; i += 1) {
+            if (mask[i] > 0) {
+              target[i] = uniform;
+            }
+          }
+          sum = 1;
+        }
+      }
+      if (sum <= 0) {
+        return null;
+      }
+      return target;
+    }
+
+    function sampleAlphaBatchIndices(total, count) {
+      const indices = Array.from({ length: total }, (_, i) => i);
+      for (let i = indices.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = tmp;
+      }
+      return indices.slice(0, count);
+    }
+
+    async function runAlphaTrainingStep(alphaState) {
+      const training = ensureAlphaTrainingState(alphaState);
+      if (!training || !training.replay.length) {
+        return;
+      }
+      const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+      if (!tf) {
+        return;
+      }
+      const model = ensureAlphaModelInstance();
+      if (!model || typeof model.fit !== 'function') {
+        return;
+      }
+      prepareAlphaModelForTraining(model, alphaState);
+      if (!training.optimizer) {
+        return;
+      }
+      const total = training.replay.length;
+      const batchSize = Math.min(training.batchSize, total);
+      if (batchSize <= 0) {
+        return;
+      }
+      const indices = sampleAlphaBatchIndices(total, batchSize);
+      const boardBatch = new Float32Array(batchSize * ALPHA_BOARD_SIZE);
+      const auxBatch = new Float32Array(batchSize * ALPHA_AUX_FEATURE_COUNT);
+      const policyBatch = new Float32Array(batchSize * ALPHA_POLICY_SIZE);
+      const valueBatch = new Float32Array(batchSize);
+      for (let i = 0; i < batchSize; i += 1) {
+        const sample = training.replay[indices[i]];
+        if (!sample) {
+          continue;
+        }
+        boardBatch.set(sample.board, i * ALPHA_BOARD_SIZE);
+        auxBatch.set(sample.aux, i * ALPHA_AUX_FEATURE_COUNT);
+        policyBatch.set(sample.policy, i * ALPHA_POLICY_SIZE);
+        valueBatch[i] = clampAlphaValueTarget(sample.value);
+      }
+      const boardTensor = tf.tensor(boardBatch, [batchSize, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS], 'float32');
+      const auxTensor = tf.tensor(auxBatch, [batchSize, ALPHA_AUX_FEATURE_COUNT], 'float32');
+      const policyTensor = tf.tensor(policyBatch, [batchSize, ALPHA_POLICY_SIZE], 'float32');
+      const valueTensor = tf.tensor(valueBatch, [batchSize, 1], 'float32');
+      try {
+        const fitBatchSize = Math.max(1, Math.min(training.fitBatchSize || batchSize, batchSize));
+        const epochs = Math.max(1, Math.floor(training.epochs || 1));
+        const history = await model.fit(
+          { board: boardTensor, aux: auxTensor },
+          { policy: policyTensor, value: valueTensor },
+          {
+            batchSize: fitBatchSize,
+            epochs,
+            shuffle: true,
+            verbose: 0,
+          },
+        );
+        training.steps += epochs;
+        if (history && history.history) {
+          const losses = history.history;
+          if (Array.isArray(losses.loss) && losses.loss.length) {
+            training.lastLoss = losses.loss[losses.loss.length - 1];
+          }
+          if (Array.isArray(losses.policy_loss) && losses.policy_loss.length) {
+            training.lastPolicyLoss = losses.policy_loss[losses.policy_loss.length - 1];
+          }
+          if (Array.isArray(losses.value_loss) && losses.value_loss.length) {
+            training.lastValueLoss = losses.value_loss[losses.value_loss.length - 1];
+          }
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('AlphaTetris training step failed', err);
+        }
+      } finally {
+        boardTensor.dispose();
+        auxTensor.dispose();
+        policyTensor.dispose();
+        valueTensor.dispose();
+      }
+    }
+
+    function scheduleAlphaTraining(alphaState) {
+      const training = ensureAlphaTrainingState(alphaState);
+      if (!training) {
+        return;
+      }
+      if (!train || !train.enabled || !isAlphaModelType(train.modelType)) {
+        return;
+      }
+      if (training.replay.length < Math.max(1, training.batchSize)) {
+        return;
+      }
+      if (training.trainingPromise || training.scheduled) {
+        return;
+      }
+      training.scheduled = true;
+      const scheduleFn = () => {
+        training.scheduled = false;
+        training.trainingPromise = runAlphaTrainingStep(alphaState)
+          .catch((err) => {
+            if (typeof console !== 'undefined' && console.error) {
+              console.error('AlphaTetris training promise rejected', err);
+            }
+          })
+          .finally(() => {
+            training.trainingPromise = null;
+            if (train && train.enabled && isAlphaModelType(train.modelType)
+              && training.replay.length >= Math.max(1, training.batchSize)) {
+              scheduleAlphaTraining(alphaState);
+            }
+          });
+      };
+      if (typeof queueMicrotask === 'function') {
+        queueMicrotask(scheduleFn);
+      } else {
+        Promise.resolve().then(scheduleFn);
+      }
+    }
+
+    function queueAlphaTrainingExample(alphaState, example) {
+      if (!alphaState || !example || !example.board || !example.aux || !example.policy) {
+        return;
+      }
+      const training = ensureAlphaTrainingState(alphaState);
+      if (!training) {
+        return;
+      }
+      const stored = {
+        board: example.board instanceof Float32Array ? example.board : new Float32Array(example.board),
+        aux: example.aux instanceof Float32Array ? example.aux : new Float32Array(example.aux),
+        policy: example.policy instanceof Float32Array ? example.policy : new Float32Array(example.policy),
+        value: clampAlphaValueTarget(example.value),
+      };
+      training.replay.push(stored);
+      if (training.replay.length > training.maxReplaySize) {
+        training.replay.splice(0, training.replay.length - training.maxReplaySize);
+      }
+      if (train && train.enabled && isAlphaModelType(train.modelType)) {
+        scheduleAlphaTraining(alphaState);
+      }
+    }
+
+    function recordAlphaTrainingExample(policyStats, rootValue) {
+      if (!train || !train.enabled || !isAlphaModelType(train.modelType)) {
+        const alphaState = train && train.alpha ? train.alpha : null;
+        if (alphaState) {
+          alphaState.lastPreparedInputs = null;
+        }
+        return;
+      }
+      const alphaState = ensureAlphaState();
+      const prepared = alphaState && alphaState.lastPreparedInputs ? alphaState.lastPreparedInputs : null;
+      if (!prepared || !prepared.board || !prepared.aux) {
+        return;
+      }
+      const policyTarget = buildAlphaPolicyTarget(policyStats, prepared.mask || null);
+      if (!policyTarget) {
+        alphaState.lastPreparedInputs = null;
+        return;
+      }
+      const sample = {
+        board: new Float32Array(prepared.board),
+        aux: new Float32Array(prepared.aux),
+        policy: policyTarget,
+        value: clampAlphaValueTarget(rootValue),
+      };
+      alphaState.lastPreparedInputs = null;
+      queueAlphaTrainingExample(alphaState, sample);
+    }
 
     function isAlphaModelType(type) {
       return type === 'alphatetris';
@@ -2838,6 +3196,13 @@ export function initTraining(game, renderer) {
             engineeredFeatures: rootEngineeredFeatures,
           });
           rootMask = baseInputs.policyMask;
+          if(alphaState){
+            alphaState.lastPreparedInputs = {
+              board: baseInputs.board,
+              aux: baseInputs.aux,
+              mask: baseInputs.policyMask ? new Float32Array(baseInputs.policyMask) : null,
+            };
+          }
           const rootResult = runAlphaInference(model, { board: baseInputs.board, aux: baseInputs.aux }, { reuseGraph: true, tf });
           if(rootResult && Array.isArray(rootResult.policyLogits) && rootResult.policyLogits.length){
             rootPolicyLogits = rootResult.policyLogits[0];
@@ -2859,6 +3224,9 @@ export function initTraining(game, renderer) {
           rootMask = null;
           alphaState.lastPolicyLogits = null;
           alphaState.lastRootValue = 0;
+          if(alphaState){
+            alphaState.lastPreparedInputs = null;
+          }
         }
 
         const boards = [];
@@ -2947,6 +3315,9 @@ export function initTraining(game, renderer) {
 
         const count = candidates.length;
         if(!count){
+          if(alphaState){
+            alphaState.lastPreparedInputs = null;
+          }
           return [];
         }
 
@@ -3187,9 +3558,22 @@ export function initTraining(game, renderer) {
           dropRow: entry.metadata ? entry.metadata.dropRow : null,
           lines: entry.metadata ? entry.metadata.lines : null,
         }));
+        const alphaRootValue = usePolicyLogits && train.alpha && Number.isFinite(train.alpha.lastRootValue)
+          ? train.alpha.lastRootValue
+          : null;
+        const avgRootValue = root.visitCount > 0 ? root.valueSum / root.visitCount : NaN;
+        const selectedValue = selectedMeta && Number.isFinite(selectedMeta.value)
+          ? selectedMeta.value
+          : 0;
+        const rootValue = Number.isFinite(avgRootValue)
+          ? avgRootValue
+          : (alphaRootValue !== null ? alphaRootValue : selectedValue);
+        if(usePolicyLogits){
+          recordAlphaTrainingExample(policyStats, rootValue);
+        }
         if(!selectedMeta){
           train.ai.lastSearchStats = {
-            rootValue: root.visitCount > 0 ? root.valueSum / root.visitCount : 0,
+            rootValue,
             totalVisits,
             simulations: simulationLimit,
             temperature,
@@ -3204,12 +3588,6 @@ export function initTraining(game, renderer) {
         const cur = state.active.rot % len;
         const needRot = (selectedMeta.rot - cur + len) % len;
         const targetRow = Number.isFinite(selectedMeta.dropRow) ? selectedMeta.dropRow : null;
-        const alphaRootValue = usePolicyLogits && train.alpha && Number.isFinite(train.alpha.lastRootValue)
-          ? train.alpha.lastRootValue
-          : null;
-        const rootValue = root.visitCount > 0
-          ? root.valueSum / root.visitCount
-          : (alphaRootValue !== null ? alphaRootValue : selectedMeta.value);
         train.ai.lastSearchStats = {
           rootValue,
           totalVisits,
