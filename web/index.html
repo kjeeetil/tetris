@@ -3,10 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Allow Tailwind CDN runtime to inject its inline stylesheet for utility classes -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://ga.jspm.io data: blob:; script-src 'self' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://ga.jspm.io; style-src 'self' 'unsafe-inline' https://pyscript.net https://fonts.googleapis.com https://cdn.jsdelivr.net; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://ga.jspm.io https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;"
+      content="default-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://ga.jspm.io data: blob:; script-src 'self' 'unsafe-eval' https://pyscript.net https://cdn.jsdelivr.net https://ga.jspm.io; style-src 'self' 'unsafe-inline' https://pyscript.net https://fonts.googleapis.com https://cdn.jsdelivr.net; connect-src 'self' https://pyscript.net https://cdn.jsdelivr.net https://ga.jspm.io https://fonts.googleapis.com https://fonts.gstatic.com data: blob:; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:;"
     />
     <title>Tetris</title>
     <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
@@ -20,10 +19,9 @@
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css"
     />
+    <link rel="stylesheet" href="./tailwind.css" />
     <link rel="stylesheet" href="./styles.css" />
-    <script src="./tailwind-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js" defer></script>
-    <script src="https://cdn.tailwindcss.com" defer></script>
 
   </head>
   <body class="relative min-h-screen overflow-x-hidden font-body antialiased text-shell">

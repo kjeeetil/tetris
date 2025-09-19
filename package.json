@@ -1,0 +1,20 @@
+{
+  "name": "tetris",
+  "version": "1.0.0",
+  "description": "This project packages a playable Tetris clone together with a lightweight reinforcement-learning lab. The web front end still renders the game with vanilla JavaScript and HTML canvas, but the gameplay, rendering, and training logic now live in dedicated ES modules under `web/js/`. The `index.html` file is a slim shell that stitches those modules together, keeping the experience bundler-free while making the codebase easier to navigate.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:tailwind": "tailwindcss -i web/tailwind.input.css -o web/tailwind.css --minify"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "tailwindcss": "^3.4.10"
+  }
+}

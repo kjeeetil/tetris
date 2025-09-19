@@ -208,3 +208,6 @@ __marimo__/
 
 # Web build artifacts
 web/tetris/
+
+# Node tooling
+node_modules/
