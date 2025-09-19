@@ -610,6 +610,18 @@ select:focus {
   border-color: rgba(244, 247, 121, 0.7);
   box-shadow: 0 0 0 3px rgba(244, 247, 121, 0.25);
 }
+@media (min-width: 768px) {
+  select option {
+    background-color: rgba(14, 22, 41, 0.92);
+    color: #f9f5ff;
+  }
+
+  select option:checked,
+  select option:hover {
+    background-color: rgba(94, 74, 227, 0.45);
+    color: #f9f5ff;
+  }
+}
 input[type='range'] {
   width: 240px;
   accent-color: #f4f779;
