@@ -2775,7 +2775,9 @@ export function initTraining(game, renderer) {
       holeReduction: 0.25,
       bumpReduction: 0.02,
       aggregateHeightReduction: 0.02,
+      aggregateHeightIncreasePenalty: 0.03,
       maxHeightReduction: 0.05,
+      maxHeightIncreasePenalty: 0.08,
       contactIncrease: 0.001,
       rowTransitionReduction: 0.02,
       colTransitionReduction: 0.02,
@@ -2820,15 +2822,37 @@ export function initTraining(game, renderer) {
         if(bumpReduction > 0){
           shaped += bumpReduction * REWARD_SHAPING_WEIGHTS.bumpReduction;
         }
-        const aggregateHeightReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO, BOARD_AREA)
-          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO, BOARD_AREA);
-        if(aggregateHeightReduction > 0){
-          shaped += aggregateHeightReduction * REWARD_SHAPING_WEIGHTS.aggregateHeightReduction;
+        const baselineAggregateHeight = engineeredFeatureValue(
+          baselineFeatures,
+          ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO,
+          BOARD_AREA
+        );
+        const newAggregateHeight = engineeredFeatureValue(
+          features,
+          ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO,
+          BOARD_AREA
+        );
+        const aggregateHeightDelta = newAggregateHeight - baselineAggregateHeight;
+        if(aggregateHeightDelta < 0){
+          shaped += (-aggregateHeightDelta) * REWARD_SHAPING_WEIGHTS.aggregateHeightReduction;
+        } else if(aggregateHeightDelta > 0){
+          shaped -= aggregateHeightDelta * REWARD_SHAPING_WEIGHTS.aggregateHeightIncreasePenalty;
         }
-        const maxHeightReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO, HEIGHT)
-          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO, HEIGHT);
-        if(maxHeightReduction > 0){
-          shaped += maxHeightReduction * REWARD_SHAPING_WEIGHTS.maxHeightReduction;
+        const baselineMaxHeight = engineeredFeatureValue(
+          baselineFeatures,
+          ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO,
+          HEIGHT
+        );
+        const newMaxHeight = engineeredFeatureValue(
+          features,
+          ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO,
+          HEIGHT
+        );
+        const maxHeightDelta = newMaxHeight - baselineMaxHeight;
+        if(maxHeightDelta < 0){
+          shaped += (-maxHeightDelta) * REWARD_SHAPING_WEIGHTS.maxHeightReduction;
+        } else if(maxHeightDelta > 0){
+          shaped -= maxHeightDelta * REWARD_SHAPING_WEIGHTS.maxHeightIncreasePenalty;
         }
         const contactIncrease = engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.CONTACT_RATIO, CONTACT_NORMALIZER)
           - engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.CONTACT_RATIO, CONTACT_NORMALIZER);
