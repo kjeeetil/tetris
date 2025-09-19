@@ -24,6 +24,8 @@ import {
 
 let randnSpare = null;
 
+const ALPHA_CONV_VIZ_ENABLED = false; // Disable convnet visualization to avoid browser freezes.
+
   function arrayBufferToBase64(buffer) {
     if (!buffer) {
       return '';
@@ -2599,15 +2601,25 @@ export function initTraining(game, renderer) {
       if(!train || !isAlphaModelType(train.modelType)){
         return false;
       }
-      const summary = captureAlphaConvSummary(model);
-      if(!summary){
+      if(!ALPHA_CONV_VIZ_ENABLED && !metrics){
+        training.lastConvSummary = null;
+        training.lastConvSummaryStep = null;
+        training.lastConvMetrics = null;
         return false;
       }
-      if(Number.isFinite(milestoneStep)){
-        summary.step = milestoneStep;
+      const shouldCaptureConv = ALPHA_CONV_VIZ_ENABLED;
+      const summary = shouldCaptureConv ? captureAlphaConvSummary(model) : null;
+      if(shouldCaptureConv && !summary){
+        return false;
+      }
+      const snapshotStep = Number.isFinite(milestoneStep)
+        ? milestoneStep
+        : (summary && Number.isFinite(summary.step) ? summary.step : null);
+      if(summary && Number.isFinite(snapshotStep)){
+        summary.step = snapshotStep;
       }
       training.lastConvSummary = summary;
-      training.lastConvSummaryStep = summary.step;
+      training.lastConvSummaryStep = snapshotStep;
       training.lastConvMetrics = metrics || null;
       const alphaConfig = alphaState && alphaState.config ? alphaState.config : {};
       const rawDescription = typeof alphaConfig.architectureDescription === 'string'
@@ -2618,10 +2630,10 @@ export function initTraining(game, renderer) {
       const snapshot = {
         modelType: 'alphatetris',
         dtype: 'f32',
-        step: summary.step,
-        gen: summary.step,
+        step: snapshotStep,
+        gen: snapshotStep,
         metrics: metrics || null,
-        convSummary: summary,
+        convSummary: shouldCaptureConv ? summary : null,
         architectureDescription,
       };
       recordGenerationSnapshot(snapshot);
@@ -3143,20 +3155,24 @@ export function initTraining(game, renderer) {
       const skipNetworkViz = isAlphaDisplay ? false : (headlessSkip || !displayUsesPopulation);
       if(!skipNetworkViz){
         if(isAlphaDisplay){
-          const alphaState = ensureAlphaState();
-          const alphaTraining = alphaState && alphaState.training ? alphaState.training : null;
-          const liveSummary = alphaTraining && alphaTraining.lastConvSummary ? alphaTraining.lastConvSummary : null;
-          const liveMetrics = alphaTraining && alphaTraining.lastConvMetrics ? alphaTraining.lastConvMetrics : null;
-          const liveStep = alphaTraining && Number.isFinite(alphaTraining.lastConvSummaryStep)
-            ? alphaTraining.lastConvSummaryStep
-            : null;
-          const summary = snapshot && snapshot.convSummary ? snapshot.convSummary : liveSummary;
-          const metrics = snapshot && snapshot.metrics ? snapshot.metrics : liveMetrics;
-          const step = snapshot && Number.isFinite(snapshot.step) ? snapshot.step : liveStep;
-          if(summary){
-            renderAlphaConvFilters(summary, { step, metrics });
+          if(ALPHA_CONV_VIZ_ENABLED){
+            const alphaState = ensureAlphaState();
+            const alphaTraining = alphaState && alphaState.training ? alphaState.training : null;
+            const liveSummary = alphaTraining && alphaTraining.lastConvSummary ? alphaTraining.lastConvSummary : null;
+            const liveMetrics = alphaTraining && alphaTraining.lastConvMetrics ? alphaTraining.lastConvMetrics : null;
+            const liveStep = alphaTraining && Number.isFinite(alphaTraining.lastConvSummaryStep)
+              ? alphaTraining.lastConvSummaryStep
+              : null;
+            const summary = snapshot && snapshot.convSummary ? snapshot.convSummary : liveSummary;
+            const metrics = snapshot && snapshot.metrics ? snapshot.metrics : liveMetrics;
+            const step = snapshot && Number.isFinite(snapshot.step) ? snapshot.step : liveStep;
+            if(summary){
+              renderAlphaConvFilters(summary, { step, metrics });
+            } else {
+              renderAlphaNetworkPlaceholder('ConvNet filters will appear after a few training updates.');
+            }
           } else {
-            renderAlphaNetworkPlaceholder('ConvNet filters will appear after a few training updates.');
+            renderAlphaNetworkPlaceholder('AlphaTetris ConvNet visualization disabled to improve training stability.');
           }
         } else {
           try {
