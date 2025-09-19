@@ -5475,8 +5475,7 @@ export function initTraining(game, renderer) {
           }
         }
 
-        const boards = [];
-        const auxes = [];
+        const candidateStates = [];
         const candidates = [];
         const basePieces = Number.isFinite(state.pieces) ? state.pieces : 0;
         const baseLevel = Number.isFinite(state.level) ? state.level : 0;
@@ -5545,9 +5544,7 @@ export function initTraining(game, renderer) {
             engineeredFeatures,
           };
 
-          const prepared = prepareAlphaInputs(candidateState);
-          boards.push(prepared.board);
-          auxes.push(prepared.aux);
+          candidateStates.push(candidateState);
           const clearedRowsCopy = sim.clearedRows && sim.clearedRows.length
             ? sim.clearedRows.slice()
             : [];
@@ -5589,8 +5586,14 @@ export function initTraining(game, renderer) {
         const boardTensorData = new Float32Array(count * ALPHA_BOARD_SIZE);
         const auxTensorData = new Float32Array(count * ALPHA_AUX_FEATURE_COUNT);
         for(let i = 0; i < count; i += 1){
-          boardTensorData.set(boards[i], i * ALPHA_BOARD_SIZE);
-          auxTensorData.set(auxes[i], i * ALPHA_AUX_FEATURE_COUNT);
+          const boardOffset = i * ALPHA_BOARD_SIZE;
+          const auxOffset = i * ALPHA_AUX_FEATURE_COUNT;
+          prepareAlphaInputs(candidateStates[i], {
+            boardBuffer: boardTensorData,
+            boardOffset,
+            auxBuffer: auxTensorData,
+            auxOffset,
+          });
         }
 
         let boardTensor = null;
