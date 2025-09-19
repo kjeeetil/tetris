@@ -220,6 +220,7 @@ canvas {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   width: 62px;
   height: 62px;
   border-radius: 22px;
@@ -317,6 +318,7 @@ canvas {
   min-width: 150px;
   padding: 0 1.8rem;
   font-size: 18px;
+  white-space: nowrap;
 }
 .control-toggle {
   display: inline-flex;
