@@ -272,7 +272,7 @@ function createTrainingProfiler() {
   };
 }
 
-export function initTraining(game, renderer) {
+export function initTraining(game, renderer, options = {}) {
   const state = game.state;
   const start = game.start;
   const updateScore = game.updateScore;
@@ -302,6 +302,11 @@ export function initTraining(game, renderer) {
   const mctsSimulationInput = document.getElementById('mcts-simulations');
   const mctsCpuctInput = document.getElementById('mcts-cpuct');
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
+
+  const tensorflowReadyPromise =
+    options && options.tensorflowReady && typeof options.tensorflowReady.then === 'function'
+      ? options.tensorflowReady
+      : null;
 
   let alphaMetricChoices = null;
   const BLOCK_REWARD_METRIC_NAME = 'block_reward';
@@ -3828,6 +3833,10 @@ export function initTraining(game, renderer) {
       stdView: null,
       alpha: null,
       blockMetrics: createBlockMetricsState(BLOCK_METRIC_HISTORY_LIMIT),
+      tensorflow: {
+        ready: !tensorflowReadyPromise,
+        error: null,
+      },
     };
     function shouldLogTrainingEvent(){
       return !(train && train.enabled && train.visualizeBoard === false);
@@ -3958,6 +3967,29 @@ export function initTraining(game, renderer) {
     const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
+    if(tensorflowReadyPromise){
+      tensorflowReadyPromise
+        .then((loaded) => {
+          const success = typeof loaded === 'object'
+            ? !!loaded.ok
+            : (loaded === undefined ? true : Boolean(loaded));
+          const error = typeof loaded === 'object' && loaded && 'error' in loaded ? loaded.error : null;
+          train.tensorflow.ready = success;
+          train.tensorflow.error = success ? null : (error instanceof Error ? error : new Error('TensorFlow.js failed to load.'));
+          if(success){
+            log('TensorFlow.js loaded. AlphaTetris training features are available.');
+          } else {
+            log('TensorFlow.js failed to load. AlphaTetris training features are disabled.');
+          }
+          updateTrainStatus();
+        })
+        .catch((error) => {
+          train.tensorflow.ready = false;
+          train.tensorflow.error = error instanceof Error ? error : new Error('TensorFlow.js failed to load.');
+          log('TensorFlow.js failed to load. AlphaTetris training features are disabled.');
+          updateTrainStatus();
+        });
+    }
     renderBlockMetrics(train);
     window.__placementSurrogate = placementSurrogate;
     // After `train` exists, honor train.dtype for future allocations
@@ -4003,23 +4035,35 @@ export function initTraining(game, renderer) {
 
     function updateTrainStatus(){
       if(trainStatus){
+        const statusParts = [];
+        if(train.tensorflow){
+          if(train.tensorflow.error){
+            statusParts.push('TensorFlow.js unavailable — AlphaTetris disabled.');
+          } else if(!train.tensorflow.ready && train.modelType === 'alphatetris'){
+            statusParts.push('Loading TensorFlow.js…');
+          }
+        }
+
         const statusLabel = modelDisplayName(train.modelType);
         const populationModel = usesPopulationModel(train.modelType);
+        let baseStatus;
         if(train.enabled){
           if(populationModel){
             const maxIndex = Math.max(0, (Array.isArray(train.candWeights) ? train.candWeights.length : 0) - 1);
             const safeIndex = Number.isFinite(train.candIndex) ? Math.max(0, Math.min(maxIndex, Math.floor(train.candIndex))) : 0;
             const candidateNumber = safeIndex + 1;
             const popSize = Number.isFinite(train.popSize) && train.popSize > 0 ? train.popSize : (maxIndex + 1 || 1);
-            trainStatus.textContent = `Gen ${train.gen+1}, Candidate ${candidateNumber}/${popSize} — Model: ${statusLabel}`;
+            baseStatus = `Gen ${train.gen+1}, Candidate ${candidateNumber}/${popSize} — Model: ${statusLabel}`;
           } else {
             const gamesPlayed = Number.isFinite(train.totalGamesPlayed) ? train.totalGamesPlayed : 0;
             const nextGame = gamesPlayed + 1;
-            trainStatus.textContent = `Training active — Model: ${statusLabel} (Game ${nextGame})`;
+            baseStatus = `Training active — Model: ${statusLabel} (Game ${nextGame})`;
           }
         } else {
-          trainStatus.textContent = `Training stopped — Model: ${statusLabel}`;
+          baseStatus = `Training stopped — Model: ${statusLabel}`;
         }
+        statusParts.push(baseStatus);
+        trainStatus.textContent = statusParts.join(' ');
       }
       const historySelection = getHistorySelection();
       const snapshot = historySelection ? historySelection.entry : null;
@@ -4189,6 +4233,16 @@ export function initTraining(game, renderer) {
     }
 
     function startTraining(){
+      if(train.modelType === 'alphatetris'){
+        if(train.tensorflow && train.tensorflow.error){
+          log('Cannot start AlphaTetris training: TensorFlow.js failed to load.');
+          return;
+        }
+        if(train.tensorflow && !train.tensorflow.ready){
+          log('TensorFlow.js is still loading. AlphaTetris training will start once it is ready.');
+          return;
+        }
+      }
       if(!state.running){ start(); }
       trainingProfiler.reset();
       trainingProfiler.enable();
