@@ -15,9 +15,9 @@ bundler-free while making the codebase easier to navigate.
 
 - `web/index.html` – Static markup, analytics panels, and script/style tags that
   load the rest of the client without a build step.
-- `web/styles.css` – Custom gradients, layout polish, and component styling that
-  complement the Tailwind utility classes.
-- `web/tailwind.css` – Precompiled Tailwind utilities generated from the shared
+- `web/tailwind.input.css` – Tailwind entry point housing the shared theme plus
+  the bespoke gradients and component styling compiled into the bundle.
+- `web/tailwind.css` – Precompiled Tailwind output generated from the shared
   theme configuration so no runtime CDN is required.
 - `tailwind.config.cjs` – Source of the shared theme used when building the
   utility bundle with the Tailwind CLI.
