@@ -109,35 +109,50 @@
             <span class="control-toggle__text">Show training (slow)</span>
           </label>
         </div>
-        <div id="mcts-controls" class="controls hidden flex flex-wrap items-center justify-center gap-4">
-          <label for="mcts-simulations" class="text-xs uppercase tracking-[0.35em] text-plum/70">Simulations</label>
-          <input
-            id="mcts-simulations"
-            type="number"
-            min="1"
-            max="64"
-            step="1"
-            value="48"
-            class="w-20 bg-transparent text-base font-display text-center"
-          />
-          <label for="mcts-cpuct" class="text-xs uppercase tracking-[0.35em] text-plum/70">Exploration c<sub>PUCT</sub></label>
-          <input
-            id="mcts-cpuct"
-            type="number"
-            min="0.01"
-            step="0.05"
-            value="1.5"
-            class="w-24 bg-transparent text-base font-display text-center"
-          />
-          <label for="mcts-temperature" class="text-xs uppercase tracking-[0.35em] text-plum/70">Temperature</label>
-          <input
-            id="mcts-temperature"
-            type="number"
-            min="0"
-            step="0.05"
-            value="1"
-            class="w-20 bg-transparent text-base font-display text-center"
-          />
+        <div
+          id="mcts-controls"
+          class="controls hidden flex w-full max-w-xs flex-col items-start gap-4 text-left"
+        >
+          <div class="flex w-full flex-col gap-1">
+            <label for="mcts-simulations" class="text-xs uppercase tracking-[0.35em] text-plum/70"
+              >Simulations</label
+            >
+            <input
+              id="mcts-simulations"
+              type="number"
+              min="1"
+              max="64"
+              step="1"
+              value="48"
+              class="w-full bg-transparent text-base font-display text-left"
+            />
+          </div>
+          <div class="flex w-full flex-col gap-1">
+            <label for="mcts-cpuct" class="text-xs uppercase tracking-[0.35em] text-plum/70"
+              >Exploration c<sub>PUCT</sub></label
+            >
+            <input
+              id="mcts-cpuct"
+              type="number"
+              min="0.01"
+              step="0.05"
+              value="1.5"
+              class="w-full bg-transparent text-base font-display text-left"
+            />
+          </div>
+          <div class="flex w-full flex-col gap-1">
+            <label for="mcts-temperature" class="text-xs uppercase tracking-[0.35em] text-plum/70"
+              >Temperature</label
+            >
+            <input
+              id="mcts-temperature"
+              type="number"
+              min="0"
+              step="0.05"
+              value="1"
+              class="w-full bg-transparent text-base font-display text-left"
+            />
+          </div>
         </div>
         <div class="controls flex flex-wrap items-center justify-center gap-4">
           <button
