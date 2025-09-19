@@ -291,6 +291,10 @@ export function initTraining(game, renderer) {
   const alphaMetricEmptyEl = document.getElementById('alpha-metric-empty');
   const alphaMetricToggleEl = document.getElementById('alpha-metrics-toggle');
   const alphaMetricToggleStatusEl = document.getElementById('alpha-metrics-toggle-status');
+  const blockMetricsCanvas = document.getElementById('block-metrics-canvas');
+  const blockMetricsLegendEl = document.getElementById('block-metrics-legend');
+  const blockMetricsFavouriteEl = document.getElementById('block-metrics-favourite');
+  const blockMetricsEmptyEl = document.getElementById('block-metrics-empty');
   const historySlider = document.getElementById('model-history-slider');
   const historyLabel = document.getElementById('model-history-label');
   const historyMeta = document.getElementById('model-history-meta');
@@ -474,6 +478,52 @@ export function initTraining(game, renderer) {
     const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
     const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
     const ALPHA_METRIC_HISTORY_LIMIT = 400;
+    const BLOCK_METRIC_HISTORY_LIMIT = 400;
+    const DEFAULT_BLOCK_ORDER = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
+    const BLOCK_METRIC_LABELS = {
+      I: 'I Block',
+      J: 'J Block',
+      L: 'L Block',
+      O: 'O Block',
+      S: 'S Block',
+      T: 'T Block',
+      Z: 'Z Block',
+    };
+    const BLOCK_METRIC_COLORS = {
+      I: { stroke: 'rgba(56, 189, 248, 0.94)' },
+      J: { stroke: 'rgba(59, 130, 246, 0.94)' },
+      L: { stroke: 'rgba(249, 115, 22, 0.94)' },
+      O: { stroke: 'rgba(244, 247, 121, 0.94)' },
+      S: { stroke: 'rgba(34, 197, 94, 0.94)' },
+      T: { stroke: 'rgba(168, 85, 247, 0.94)' },
+      Z: { stroke: 'rgba(239, 68, 68, 0.94)' },
+    };
+    const BLOCK_METRIC_COLOR_FALLBACK = 'rgba(249, 245, 255, 0.82)';
+    const BLOCK_METRIC_SHAPE_ORDER = (() => {
+      const seen = new Set();
+      const order = [];
+      const available = SHAPES && typeof SHAPES === 'object'
+        ? Object.keys(SHAPES)
+        : [];
+      for(let i = 0; i < DEFAULT_BLOCK_ORDER.length; i += 1){
+        const shape = DEFAULT_BLOCK_ORDER[i];
+        if(available.includes(shape) && !seen.has(shape)){
+          seen.add(shape);
+          order.push(shape);
+        }
+      }
+      for(let i = 0; i < available.length; i += 1){
+        const shape = available[i];
+        if(!seen.has(shape)){
+          seen.add(shape);
+          order.push(shape);
+        }
+      }
+      if(order.length === 0){
+        return DEFAULT_BLOCK_ORDER.slice();
+      }
+      return order;
+    })();
     const MAX_ALPHA_SNAPSHOTS = 200;
 
     function sanitizePositiveInt(value, fallback) {
@@ -2523,6 +2573,438 @@ export function initTraining(game, renderer) {
       }
     }
 
+    function createBlockMetricsState(historyLimit = BLOCK_METRIC_HISTORY_LIMIT){
+      const limit = Number.isFinite(historyLimit) && historyLimit > 0
+        ? Math.max(10, Math.floor(historyLimit))
+        : BLOCK_METRIC_HISTORY_LIMIT;
+      const order = Array.isArray(BLOCK_METRIC_SHAPE_ORDER)
+        ? BLOCK_METRIC_SHAPE_ORDER.slice()
+        : [];
+      const shapes = {};
+      for(let i = 0; i < order.length; i += 1){
+        const shape = order[i];
+        shapes[shape] = { sum: 0, count: 0, average: null, history: [] };
+      }
+      return {
+        totalPlacements: 0,
+        historyLimit: limit,
+        shapes,
+        order,
+        favourite: null,
+        windowStart: 1,
+      };
+    }
+
+    function computeBlockMetricsFavourite(metrics){
+      if(!metrics || !metrics.shapes){
+        return null;
+      }
+      const order = Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order
+        : Object.keys(metrics.shapes);
+      let best = null;
+      for(let i = 0; i < order.length; i += 1){
+        const shape = order[i];
+        const entry = metrics.shapes[shape];
+        if(!entry || !Number.isFinite(entry.count) || entry.count <= 0){
+          continue;
+        }
+        const avg = Number.isFinite(entry.average)
+          ? entry.average
+          : (Number.isFinite(entry.sum) && entry.count > 0 ? entry.sum / entry.count : null);
+        if(!Number.isFinite(avg)){
+          continue;
+        }
+        if(!best || avg > best.average){
+          best = { shape, average: avg, count: entry.count };
+        }
+      }
+      return best;
+    }
+
+    function appendBlockMetricSample(metrics, shape, reward){
+      if(!metrics || !Number.isFinite(reward)){
+        return false;
+      }
+      if(typeof shape !== 'string' || !shape){
+        return false;
+      }
+      const key = shape.toUpperCase();
+      if(!metrics.shapes[key]){
+        metrics.shapes[key] = { sum: 0, count: 0, average: null, history: [] };
+        if(Array.isArray(metrics.order) && !metrics.order.includes(key)){
+          metrics.order.push(key);
+        }
+      }
+      metrics.totalPlacements += 1;
+      const entry = metrics.shapes[key];
+      entry.sum = (entry.sum || 0) + reward;
+      entry.count = (entry.count || 0) + 1;
+      entry.average = entry.count > 0 ? entry.sum / entry.count : null;
+      entry.history.push({ step: metrics.totalPlacements, value: reward });
+      const cutoff = Math.max(1, metrics.totalPlacements - metrics.historyLimit + 1);
+      metrics.windowStart = cutoff;
+      const order = Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order
+        : Object.keys(metrics.shapes);
+      for(let i = 0; i < order.length; i += 1){
+        const shapeKey = order[i];
+        const series = metrics.shapes[shapeKey] && metrics.shapes[shapeKey].history;
+        if(!Array.isArray(series)){
+          continue;
+        }
+        while(series.length && series[0].step < cutoff){
+          series.shift();
+        }
+      }
+      metrics.favourite = computeBlockMetricsFavourite(metrics);
+      return true;
+    }
+
+    function drawBlockMetricChart(canvas, metrics){
+      if(!canvas || !metrics){
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if(!ctx){
+        return;
+      }
+      const ratio = (typeof window !== 'undefined' && window.devicePixelRatio)
+        ? window.devicePixelRatio
+        : 1;
+      const rect = canvas.getBoundingClientRect();
+      const baseWidth = rect && rect.width ? rect.width : canvas.width || 520;
+      const baseHeight = rect && rect.height ? rect.height : canvas.height || 260;
+      const width = Math.max(320, baseWidth);
+      const height = Math.max(220, baseHeight);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(ratio, ratio);
+      ctx.clearRect(0, 0, width, height);
+
+      const background = ctx.createLinearGradient(0, 0, 0, height);
+      background.addColorStop(0, 'rgba(94, 74, 227, 0.08)');
+      background.addColorStop(1, 'rgba(12, 59, 46, 0.32)');
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, width, height);
+
+      const margin = { top: 24, right: 28, bottom: 40, left: 64 };
+      const chartWidth = Math.max(1, width - margin.left - margin.right);
+      const chartHeight = Math.max(1, height - margin.top - margin.bottom);
+      const order = Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order
+        : Object.keys(metrics.shapes || {});
+      const seriesByShape = new Map();
+      let minStep = Infinity;
+      let maxStep = -Infinity;
+      let minValue = Infinity;
+      let maxValue = -Infinity;
+      for(let i = 0; i < order.length; i += 1){
+        const shape = order[i];
+        const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
+        const history = entry && Array.isArray(entry.history) ? entry.history : [];
+        const filtered = [];
+        for(let j = 0; j < history.length; j += 1){
+          const sample = history[j];
+          if(!sample){
+            continue;
+          }
+          const step = sample.step;
+          const value = sample.value;
+          if(!Number.isFinite(step) || !Number.isFinite(value)){
+            continue;
+          }
+          filtered.push({ step, value });
+          if(step < minStep) minStep = step;
+          if(step > maxStep) maxStep = step;
+          if(value < minValue) minValue = value;
+          if(value > maxValue) maxValue = value;
+        }
+        seriesByShape.set(shape, filtered);
+      }
+      if(!Number.isFinite(minStep) || !Number.isFinite(maxStep) || minStep === Infinity || maxStep === -Infinity){
+        return;
+      }
+      if(!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue === Infinity || maxValue === -Infinity){
+        return;
+      }
+      if(minValue === maxValue){
+        const offset = Math.abs(minValue) > 1e-6 ? Math.abs(minValue) * 0.2 : 1;
+        minValue -= offset;
+        maxValue += offset;
+      } else {
+        const pad = (maxValue - minValue) * 0.12;
+        minValue -= pad;
+        maxValue += pad;
+      }
+      const stepRange = maxStep - minStep;
+      const computeX = (step) => {
+        if(stepRange <= 0){
+          return margin.left + chartWidth / 2;
+        }
+        const norm = (step - minStep) / stepRange;
+        return margin.left + norm * chartWidth;
+      };
+      const computeY = (value) => {
+        const denom = maxValue - minValue || 1;
+        const norm = (value - minValue) / denom;
+        return margin.top + (1 - norm) * chartHeight;
+      };
+
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(249, 245, 255, 0.12)';
+      ctx.setLineDash([4, 6]);
+      const gridLines = 5;
+      for(let i = 0; i <= gridLines; i += 1){
+        const y = margin.top + (chartHeight * i) / gridLines;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, y);
+        ctx.lineTo(margin.left + chartWidth, y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      if(minValue < 0 && maxValue > 0){
+        const zeroNorm = (0 - minValue) / (maxValue - minValue || 1);
+        const zeroY = margin.top + (1 - zeroNorm) * chartHeight;
+        ctx.strokeStyle = 'rgba(249, 245, 255, 0.32)';
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(margin.left, zeroY);
+        ctx.lineTo(margin.left + chartWidth, zeroY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.lineWidth = 2.4;
+      ctx.lineJoin = 'round';
+      for(const shape of order){
+        const series = seriesByShape.get(shape) || [];
+        if(series.length === 0){
+          continue;
+        }
+        const color = (BLOCK_METRIC_COLORS[shape] && BLOCK_METRIC_COLORS[shape].stroke) || BLOCK_METRIC_COLOR_FALLBACK;
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        for(let i = 0; i < series.length; i += 1){
+          const point = series[i];
+          const x = computeX(point.step);
+          const y = computeY(point.value);
+          if(i === 0){
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.stroke();
+        const lastPoint = series[series.length - 1];
+        if(lastPoint){
+          const x = computeX(lastPoint.step);
+          const y = computeY(lastPoint.value);
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 1.2;
+          ctx.strokeStyle = 'rgba(14, 22, 41, 0.55)';
+          ctx.stroke();
+          ctx.lineWidth = 2.4;
+        }
+      }
+
+      ctx.fillStyle = 'rgba(249, 245, 255, 0.6)';
+      ctx.font = '12px "Instrument Serif", serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(maxValue.toFixed(3), margin.left - 10, margin.top + 4);
+      ctx.fillText(minValue.toFixed(3), margin.left - 10, margin.top + chartHeight);
+      ctx.textAlign = 'center';
+      ctx.fillText(String(minStep), margin.left, margin.top + chartHeight + 24);
+      ctx.fillText(String(maxStep), margin.left + chartWidth, margin.top + chartHeight + 24);
+    }
+
+    function renderBlockMetrics(){
+      if(!blockMetricsCanvas && !blockMetricsLegendEl && !blockMetricsFavouriteEl && !blockMetricsEmptyEl){
+        return;
+      }
+      const metrics = train && train.blockMetrics ? train.blockMetrics : null;
+      const order = metrics && Array.isArray(metrics.order) && metrics.order.length
+        ? metrics.order
+        : BLOCK_METRIC_SHAPE_ORDER;
+      let hasData = false;
+      if(metrics){
+        for(let i = 0; i < order.length && !hasData; i += 1){
+          const shape = order[i];
+          const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
+          if(!entry || !Array.isArray(entry.history)){
+            continue;
+          }
+          for(let j = 0; j < entry.history.length; j += 1){
+            const sample = entry.history[j];
+            if(sample && Number.isFinite(sample.value)){
+              hasData = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if(!hasData){
+        if(blockMetricsCanvas){
+          blockMetricsCanvas.classList.add('is-hidden');
+        }
+        if(blockMetricsLegendEl){
+          blockMetricsLegendEl.innerHTML = '';
+          blockMetricsLegendEl.setAttribute('aria-hidden', 'true');
+        }
+        if(blockMetricsEmptyEl){
+          blockMetricsEmptyEl.classList.remove('is-hidden');
+        }
+        if(blockMetricsFavouriteEl){
+          blockMetricsFavouriteEl.innerHTML = '';
+          const label = document.createElement('span');
+          label.className = 'block-metrics-favourite__label';
+          label.textContent = 'Favourite block';
+          const value = document.createElement('span');
+          value.className = 'block-metrics-favourite__value';
+          value.textContent = '—';
+          blockMetricsFavouriteEl.appendChild(label);
+          blockMetricsFavouriteEl.appendChild(value);
+        }
+        return;
+      }
+
+      if(blockMetricsEmptyEl){
+        blockMetricsEmptyEl.classList.add('is-hidden');
+      }
+      if(blockMetricsCanvas){
+        blockMetricsCanvas.classList.remove('is-hidden');
+        drawBlockMetricChart(blockMetricsCanvas, metrics);
+      }
+      if(blockMetricsLegendEl){
+        const fragment = document.createDocumentFragment();
+        for(let i = 0; i < order.length; i += 1){
+          const shape = order[i];
+          const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
+          if(!entry){
+            continue;
+          }
+          const item = document.createElement('div');
+          item.className = 'block-metrics-legend__item';
+          if(metrics.favourite && metrics.favourite.shape === shape){
+            item.classList.add('is-favourite');
+          }
+          const swatch = document.createElement('span');
+          swatch.className = 'block-metrics-legend__swatch';
+          const color = (BLOCK_METRIC_COLORS[shape] && BLOCK_METRIC_COLORS[shape].stroke) || BLOCK_METRIC_COLOR_FALLBACK;
+          swatch.style.setProperty('--block-metric-color', color);
+          const label = document.createElement('span');
+          label.className = 'block-metrics-legend__label';
+          label.textContent = BLOCK_METRIC_LABELS[shape] || `${shape} Block`;
+          const value = document.createElement('span');
+          value.className = 'block-metrics-legend__value';
+          if(entry.count > 0){
+            const avg = Number.isFinite(entry.average)
+              ? entry.average
+              : (entry.count > 0 ? entry.sum / entry.count : null);
+            const lastSample = entry.history && entry.history.length
+              ? entry.history[entry.history.length - 1].value
+              : null;
+            const avgText = Number.isFinite(avg) ? avg.toFixed(3) : '—';
+            const lastText = Number.isFinite(lastSample) ? lastSample.toFixed(3) : '—';
+            value.textContent = `Avg ${avgText} · Last ${lastText}`;
+          } else {
+            value.textContent = 'No samples yet';
+          }
+          item.appendChild(swatch);
+          item.appendChild(label);
+          item.appendChild(value);
+          fragment.appendChild(item);
+        }
+        blockMetricsLegendEl.innerHTML = '';
+        blockMetricsLegendEl.appendChild(fragment);
+        blockMetricsLegendEl.setAttribute('aria-hidden', 'false');
+      }
+      if(blockMetricsFavouriteEl){
+        const favourite = metrics.favourite || computeBlockMetricsFavourite(metrics);
+        blockMetricsFavouriteEl.innerHTML = '';
+        const label = document.createElement('span');
+        label.className = 'block-metrics-favourite__label';
+        label.textContent = 'Favourite block';
+        blockMetricsFavouriteEl.appendChild(label);
+        const value = document.createElement('span');
+        value.className = 'block-metrics-favourite__value';
+        if(favourite){
+          value.textContent = BLOCK_METRIC_LABELS[favourite.shape] || `${favourite.shape} Block`;
+          blockMetricsFavouriteEl.appendChild(value);
+          if(Number.isFinite(favourite.average)){
+            const meta = document.createElement('span');
+            meta.className = 'block-metrics-favourite__meta';
+            meta.textContent = `Avg ${favourite.average.toFixed(3)}`;
+            blockMetricsFavouriteEl.appendChild(meta);
+          }
+        } else {
+          value.textContent = '—';
+          blockMetricsFavouriteEl.appendChild(value);
+        }
+      }
+    }
+
+    function ensureBlockMetricsState(){
+      if(!train){
+        return null;
+      }
+      if(!train.blockMetrics || typeof train.blockMetrics !== 'object'){
+        train.blockMetrics = createBlockMetricsState(BLOCK_METRIC_HISTORY_LIMIT);
+      }
+      if(Array.isArray(train.blockMetrics.order) && train.blockMetrics.order.length === 0){
+        train.blockMetrics.order = Array.isArray(BLOCK_METRIC_SHAPE_ORDER)
+          ? BLOCK_METRIC_SHAPE_ORDER.slice()
+          : Object.keys(train.blockMetrics.shapes || {});
+      }
+      return train.blockMetrics;
+    }
+
+    function resetBlockMetrics(){
+      if(!train){
+        return;
+      }
+      const existing = train.blockMetrics;
+      const limit = existing && Number.isFinite(existing.historyLimit)
+        ? existing.historyLimit
+        : BLOCK_METRIC_HISTORY_LIMIT;
+      train.blockMetrics = createBlockMetricsState(limit);
+      renderBlockMetrics();
+    }
+
+    function recordBlockObjectiveSample(shapeOverride){
+      if(!train || !train.ai){
+        return false;
+      }
+      const stats = train.ai.lastSearchStats || null;
+      const selected = stats && stats.selected ? stats.selected : null;
+      const reward = selected && Number.isFinite(selected.reward) ? selected.reward : null;
+      if(!Number.isFinite(reward)){
+        return false;
+      }
+      let shape = shapeOverride;
+      if(!shape && state && state.active){
+        shape = state.active.shape;
+      }
+      if(typeof shape !== 'string' || !shape){
+        shape = shape !== undefined && shape !== null ? String(shape) : null;
+      }
+      if(!shape){
+        return false;
+      }
+      const metrics = ensureBlockMetricsState();
+      const appended = appendBlockMetricSample(metrics, shape, reward);
+      if(appended){
+        renderBlockMetrics();
+      }
+      return appended;
+    }
+
     function captureAlphaConvSummary(model){
       const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
       if(!model || !tf || !Array.isArray(model.layers)){
@@ -3071,6 +3553,7 @@ export function initTraining(game, renderer) {
       meanView: null,
       stdView: null,
       alpha: null,
+      blockMetrics: createBlockMetricsState(BLOCK_METRIC_HISTORY_LIMIT),
     };
     function shouldLogTrainingEvent(){
       return !(train && train.enabled && train.visualizeBoard === false);
@@ -3175,6 +3658,7 @@ export function initTraining(game, renderer) {
     const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
+    renderBlockMetrics();
     window.__placementSurrogate = placementSurrogate;
     // After `train` exists, honor train.dtype for future allocations
     dtypePreference = train.dtype || DEFAULT_DTYPE;
@@ -3422,6 +3906,7 @@ export function initTraining(game, renderer) {
       if(!state.running){ start(); }
       trainingProfiler.reset();
       trainingProfiler.enable();
+      resetBlockMetrics();
       const continuing = hasExistingTrainingProgress();
       const populationModel = usesPopulationModel(train.modelType);
       if(!continuing){
@@ -3500,6 +3985,7 @@ export function initTraining(game, renderer) {
       const wasRunning = train.enabled;
       train.enabled = false;
       resetAiPlanState();
+      resetBlockMetrics();
       const btn = document.getElementById('start-training');
       if(btn){
         btn.textContent = 'Start';
@@ -3522,6 +4008,7 @@ export function initTraining(game, renderer) {
     }
     function resetTraining(){
       stopTraining();
+      resetBlockMetrics();
       currentModelType = train.modelType;
       train.mlpHiddenLayers = mlpHiddenLayers.slice();
       const populationModel = usesPopulationModel(train.modelType);
@@ -5982,6 +6469,7 @@ export function initTraining(game, renderer) {
         recordClear(lines);
       }
 
+      recordBlockObjectiveSample(piece && piece.shape);
       if(maybeEndForLevelCap('AI')){
         return false;
       }
@@ -6020,6 +6508,7 @@ export function initTraining(game, renderer) {
             updateScore();
             recordClear(cleared);
           }
+          recordBlockObjectiveSample(piece && piece.shape);
           if(maybeEndForLevelCap('AI')){
             return false;
           }
@@ -6093,12 +6582,12 @@ export function initTraining(game, renderer) {
 
         // Watchdog: if the active piece hasn't changed state for a while, force a drop
         const sig = `${state.active.shape}:${state.active.rot}:${state.active.row}:${state.active.col}:${state.score}`;
-        if(train.ai.lastSig === sig){
-          train.ai.staleMs = (train.ai.staleMs || 0) + AI_STEP_MS;
-        } else {
-          train.ai.staleMs = 0;
-          train.ai.lastSig = sig;
-        }
+          if(train.ai.lastSig === sig){
+            train.ai.staleMs = (train.ai.staleMs || 0) + AI_STEP_MS;
+          } else {
+            train.ai.staleMs = 0;
+            train.ai.lastSig = sig;
+          }
         if(train.ai.staleMs > 1000){
           logTrainingEvent('AI: watchdog forced drop');
           while(canMove(state.grid, state.active, 0, 1)) state.active.move(0,1);
@@ -6110,14 +6599,14 @@ export function initTraining(game, renderer) {
             updateLevel();
           }
           const cleared = clearRows(state.grid);
-          if(cleared){
-            state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
-            updateScore();
-            recordClear(cleared);
-          }
-          if(maybeEndForLevelCap('AI')){
-            return false;
-          }
+            if(cleared){
+              state.score += cleared * 100 * (cleared > 1 ? cleared : 1);
+              updateScore();
+              recordClear(cleared);
+            }
+            if(maybeEndForLevelCap('AI')){
+              return false;
+            }
           if(state.grid[0].some((v) => v !== 0)) {
             resetAiPlanState();
             onGameOver();
@@ -6219,6 +6708,7 @@ export function initTraining(game, renderer) {
             updateScore();
             recordClear(cleared);
           }
+          recordBlockObjectiveSample(state.active && state.active.shape);
           if(maybeEndForLevelCap('AI')){
             return false;
           }
