@@ -5440,6 +5440,9 @@ export function initTraining(game, renderer) {
             lines: 0,
             newHoles: 0,
             engineeredFeatures: rootEngineeredFeatures,
+          }, {
+            columnHeights: baselineColumnHeightScratch,
+            columnMasks: baselineColumnMaskScratch,
           });
           rootMask = baseInputs.policyMask;
           if(alphaState){
@@ -5531,6 +5534,17 @@ export function initTraining(game, renderer) {
             topOut,
           });
 
+          const candidateColumnMasks = typeof Uint32Array !== 'undefined'
+            ? new Uint32Array(WIDTH)
+            : new Array(WIDTH).fill(0);
+          const candidateColumnHeights = typeof Uint8Array !== 'undefined'
+            ? new Uint8Array(WIDTH)
+            : new Array(WIDTH).fill(0);
+          for (let c = 0; c < WIDTH; c += 1) {
+            candidateColumnMasks[c] = columnMaskScratch[c] || 0;
+            candidateColumnHeights[c] = columnHeightScratch[c] || 0;
+          }
+
           const candidateState = {
             grid: sim.grid,
             active: activePieceForNext,
@@ -5542,6 +5556,8 @@ export function initTraining(game, renderer) {
             lines,
             newHoles: newHoleCount,
             engineeredFeatures,
+            columnMasks: candidateColumnMasks,
+            columnHeights: candidateColumnHeights,
           };
 
           candidateStates.push(candidateState);
@@ -5593,6 +5609,8 @@ export function initTraining(game, renderer) {
             boardOffset,
             auxBuffer: auxTensorData,
             auxOffset,
+            columnHeights: candidateStates[i].columnHeights,
+            columnMasks: candidateStates[i].columnMasks,
           });
         }
 
