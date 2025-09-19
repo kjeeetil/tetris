@@ -20,25 +20,26 @@ export function createNode(options = {}) {
   return node;
 }
 
-export function childQValue(child) {
+export function childQValue(child, discount = 1) {
   if (!child) {
     return 0;
   }
-  if (child.visitCount > 0) {
-    return child.valueSum / child.visitCount;
-  }
-  return safeNumber(child.valueEstimate, 0);
+  const baseValue = child.visitCount > 0
+    ? child.valueSum / Math.max(1, child.visitCount)
+    : safeNumber(child.valueEstimate, 0);
+  const reward = safeNumber(child.reward, 0);
+  return reward + discount * baseValue;
 }
 
-function ucbScore(parent, child, cPuct) {
+function ucbScore(parent, child, cPuct, discount = 1) {
   if (!child) return -Infinity;
   const totalVisits = parent ? parent.visitCount : 0;
-  const q = childQValue(child);
+  const q = childQValue(child, discount);
   const u = cPuct * child.prior * Math.sqrt((totalVisits || 0) + 1) / (1 + child.visitCount);
   return q + u;
 }
 
-export function selectChild(node, cPuct) {
+export function selectChild(node, cPuct, discount = 1) {
   if (!node || !node.children || node.children.size === 0) {
     return [null, null];
   }
@@ -46,7 +47,7 @@ export function selectChild(node, cPuct) {
   let bestEntry = null;
   for (const entry of node.children.entries()) {
     const [action, child] = entry;
-    const score = ucbScore(node, child, cPuct);
+    const score = ucbScore(node, child, cPuct, discount);
     if (score > bestScore) {
       bestScore = score;
       bestEntry = entry;
@@ -70,7 +71,7 @@ export function backpropagate(path, leafValue, discount = 1) {
   }
 }
 
-export function visitStats(node) {
+export function visitStats(node, discount = 1) {
   const stats = [];
   if (!node || !node.children) {
     return stats;
@@ -80,7 +81,7 @@ export function visitStats(node) {
       key,
       visits: child.visitCount,
       prior: child.prior,
-      value: childQValue(child),
+      value: childQValue(child, discount),
       reward: child.reward,
       metadata: child.metadata || null,
     });
