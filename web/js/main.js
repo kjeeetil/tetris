@@ -3,10 +3,25 @@ import { createRenderer } from './rendering.js';
 import { createGame } from './game-loop.js';
 import { initTraining } from './training.js';
 
-async function bootstrap() {
-  try {
-    await ensureTensorFlowLoaded();
+function loadTensorFlow(renderer) {
+  return ensureTensorFlowLoaded()
+    .then(() => {
+      if (renderer && typeof renderer.log === 'function') {
+        renderer.log('TensorFlow.js loaded. Training features ready.');
+      }
+      return { ok: true };
+    })
+    .catch((error) => {
+      console.warn('TensorFlow.js failed to load; training features are disabled.', error);
+      if (renderer && typeof renderer.log === 'function') {
+        renderer.log('TensorFlow.js failed to load. Training features are disabled.');
+      }
+      return { ok: false, error };
+    });
+}
 
+function bootstrap() {
+  try {
     const canvas = document.getElementById('canvas');
     const preview = document.getElementById('preview');
     const diagnostics = document.getElementById('diagnostics');
@@ -19,7 +34,8 @@ async function bootstrap() {
 
     const renderer = createRenderer({ canvas, preview, diagnostics, scoreEl, levelEl });
     const game = createGame({ canvas, toggleBtn, resetBtn, speedSlider, speedDisplay }, renderer);
-    initTraining(game, renderer);
+    const tensorflowReady = loadTensorFlow(renderer);
+    initTraining(game, renderer, { tensorflowReady });
   } catch (error) {
     console.error('Failed to bootstrap application.', error);
   }
