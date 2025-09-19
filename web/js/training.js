@@ -2943,6 +2943,54 @@ export function initTraining(game, renderer) {
     const baselineColumnMaskScratch =
       typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
     const baselineColumnHeightScratch = new Array(WIDTH).fill(0);
+    const baselineRowMaskScratch =
+      typeof Uint16Array !== 'undefined' ? new Uint16Array(HEIGHT) : new Array(HEIGHT).fill(0);
+    const surrogateRowMaskScratch =
+      typeof Uint16Array !== 'undefined' ? new Uint16Array(HEIGHT) : new Array(HEIGHT).fill(0);
+    const surrogateRowMaskCollapsedScratch =
+      typeof Uint16Array !== 'undefined' ? new Uint16Array(HEIGHT) : new Array(HEIGHT).fill(0);
+    const surrogateColumnMaskEstimateScratch =
+      typeof Uint32Array !== 'undefined' ? new Uint32Array(WIDTH) : new Array(WIDTH).fill(0);
+    const surrogateColumnHeightEstimateScratch =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(WIDTH) : new Array(WIDTH).fill(0);
+    const surrogateRowTouchedFlags =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(HEIGHT) : new Array(HEIGHT).fill(0);
+    const surrogateClearedRowFlags =
+      typeof Uint8Array !== 'undefined' ? new Uint8Array(HEIGHT) : new Array(HEIGHT).fill(0);
+    const surrogateMetricsScratch = {
+      holes: 0,
+      bump: 0,
+      maxHeight: 0,
+      wellSum: 0,
+      edgeWell: 0,
+      tetrisWell: 0,
+      contact: 0,
+      rowTransitions: 0,
+      colTransitions: 0,
+      aggregateHeight: 0,
+    };
+    const surrogateClearedRowsScratch = [];
+    const placementSurrogateKeyCache = new Map();
+    const placementSurrogate = {
+      enabled: true,
+      debugCompare: false,
+      stats: {
+        attempts: 0,
+        successes: 0,
+        fallbacks: 0,
+        mismatches: 0,
+        comparisons: 0,
+        timeSurrogate: 0,
+        timeFallback: 0,
+        timeDebugCompare: 0,
+      },
+      nextLogThreshold: 500,
+    };
+    const surrogateTimerNow =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? () => performance.now()
+        : () => Date.now();
+    train.placementSurrogate = placementSurrogate;
     const pieceBottomProfiles = Object.fromEntries(
       Object.entries(SHAPES).map(([shape, rotations]) => {
         const perRotation = rotations.map((state) => {
@@ -2971,6 +3019,7 @@ export function initTraining(game, renderer) {
     const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
     window.__train = train;
+    window.__placementSurrogate = placementSurrogate;
     // After `train` exists, honor train.dtype for future allocations
     dtypePreference = train.dtype || DEFAULT_DTYPE;
     train.meanView = createDisplayView(train.mean, train.meanView);
@@ -3911,6 +3960,448 @@ export function initTraining(game, renderer) {
         return simulateResultScratch;
       });
     }
+    function resetMetricsObject(metrics){
+      metrics.holes = 0;
+      metrics.bump = 0;
+      metrics.maxHeight = 0;
+      metrics.wellSum = 0;
+      metrics.edgeWell = 0;
+      metrics.tetrisWell = 0;
+      metrics.contact = 0;
+      metrics.rowTransitions = 0;
+      metrics.colTransitions = 0;
+      metrics.aggregateHeight = 0;
+      return metrics;
+    }
+    function fillRowMaskFromGrid(grid, target){
+      if(!target){
+        return null;
+      }
+      for(let r = 0; r < HEIGHT; r += 1){
+        const row = grid && grid[r];
+        let mask = 0;
+        if(row && row.length){
+          for(let c = 0; c < WIDTH; c += 1){
+            if(row[c]){
+              mask |= 1 << c;
+            }
+          }
+        }
+        target[r] = mask;
+      }
+      return target;
+    }
+    function placementSurrogateKeyFor(shape, rot, col, baselineMasks, baselineHeights){
+      if(!shape || !SHAPES[shape]){
+        return null;
+      }
+      const rotations = pieceBottomProfiles[shape];
+      if(!rotations || !rotations.length){
+        return null;
+      }
+      const len = rotations.length;
+      let rotIdx = Number.isFinite(rot) ? rot : 0;
+      rotIdx %= len;
+      if(rotIdx < 0){
+        rotIdx += len;
+      }
+      const profile = rotations[rotIdx];
+      if(!profile || !profile.length){
+        return null;
+      }
+      const parts = [`${shape}:${rotIdx}:${col}`];
+      for(let i = 0; i < profile.length; i += 1){
+        const entry = profile[i];
+        if(!entry){
+          parts.push('');
+          continue;
+        }
+        const boardCol = col + entry.col;
+        if(boardCol < 0 || boardCol >= WIDTH){
+          return null;
+        }
+        const mask = baselineMasks && baselineMasks.length > boardCol ? baselineMasks[boardCol] || 0 : 0;
+        const height = baselineHeights && baselineHeights.length > boardCol ? baselineHeights[boardCol] || 0 : 0;
+        parts.push(`${boardCol.toString(36)},${mask.toString(36)},${height.toString(36)}`);
+      }
+      return parts.join(';');
+    }
+    function decodePlacementSurrogateKey(key){
+      if(typeof key !== 'string' || !key){
+        return null;
+      }
+      const cached = placementSurrogateKeyCache.get(key);
+      if(cached){
+        return cached;
+      }
+      const segments = key.split(';');
+      if(!segments.length){
+        return null;
+      }
+      const header = segments[0] || '';
+      const headerParts = header.split(':');
+      if(headerParts.length < 3){
+        return null;
+      }
+      const shape = headerParts[0];
+      const rot = Number.parseInt(headerParts[1], 10);
+      const col = Number.parseInt(headerParts[2], 10);
+      const touched = [];
+      for(let i = 1; i < segments.length; i += 1){
+        const seg = segments[i];
+        if(!seg){
+          continue;
+        }
+        const parts = seg.split(',');
+        if(parts.length < 3){
+          continue;
+        }
+        const boardCol = Number.parseInt(parts[0], 36);
+        const maskRaw = Number.parseInt(parts[1], 36);
+        const heightRaw = Number.parseInt(parts[2], 36);
+        if(!Number.isFinite(boardCol)){
+          continue;
+        }
+        touched.push({
+          col: boardCol,
+          mask: Number.isFinite(maskRaw) ? maskRaw >>> 0 : 0,
+          height: Number.isFinite(heightRaw) ? heightRaw : 0,
+        });
+      }
+      const decoded = {
+        shape,
+        rot: Number.isFinite(rot) ? rot : 0,
+        col: Number.isFinite(col) ? col : 0,
+        touched,
+      };
+      placementSurrogateKeyCache.set(key, decoded);
+      return decoded;
+    }
+    function computeMetricsFromRowMasks(rowMasks, columnMasks, columnHeights, metrics){
+      resetMetricsObject(metrics);
+      if(columnMasks){
+        for(let c = 0; c < WIDTH; c += 1){
+          columnMasks[c] = 0;
+          if(columnHeights && columnHeights.length > c){
+            columnHeights[c] = 0;
+          }
+        }
+      }
+      let prevMask = 0;
+      for(let r = 0; r < HEIGHT; r += 1){
+        const mask = rowMasks && rowMasks.length > r ? rowMasks[r] || 0 : 0;
+        metrics.rowTransitions += rowTransitionTable[mask];
+        const horizontal = rowHorizontalContactTable[mask];
+        if(horizontal){
+          metrics.contact += horizontal;
+        }
+        const shared = mask & prevMask;
+        if(shared){
+          metrics.contact += rowPopcountTable[shared];
+        }
+        const diff = mask ^ prevMask;
+        if(diff){
+          metrics.colTransitions += rowPopcountTable[diff];
+        }
+        if(columnMasks){
+          let bits = mask;
+          while(bits){
+            const lsb = bits & -bits;
+            const idx = bitIndexTable[lsb];
+            if(idx >= 0 && idx < WIDTH){
+              columnMasks[idx] |= 1 << (HEIGHT - 1 - r);
+            }
+            bits ^= lsb;
+          }
+        }
+        prevMask = mask;
+      }
+      if(prevMask){
+        const bottomPop = rowPopcountTable[prevMask];
+        metrics.colTransitions += bottomPop;
+        metrics.contact += bottomPop;
+      }
+      let aggregateHeight = 0;
+      let maxHeight = 0;
+      let holes = 0;
+      if(columnMasks){
+        for(let c = 0; c < WIDTH; c += 1){
+          const mask = columnMasks[c] || 0;
+          if(mask){
+            const topBit = 31 - Math.clz32(mask);
+            const height = topBit + 1;
+            if(columnHeights && columnHeights.length > c){
+              columnHeights[c] = height;
+            }
+            aggregateHeight += height;
+            if(height > maxHeight){
+              maxHeight = height;
+            }
+            if(topBit > 0){
+              const belowMask = mask & ((1 << topBit) - 1);
+              const filledBelow = countBits32(belowMask);
+              holes += topBit - filledBelow;
+            }
+          } else if(columnHeights && columnHeights.length > c){
+            columnHeights[c] = 0;
+          }
+        }
+      }
+      metrics.holes = holes;
+      metrics.aggregateHeight = aggregateHeight;
+      metrics.maxHeight = maxHeight;
+      let bump = 0;
+      if(columnHeights){
+        for(let c = 0; c < WIDTH - 1; c += 1){
+          const a = columnHeights[c] || 0;
+          const b = columnHeights[c + 1] || 0;
+          bump += Math.abs(a - b);
+        }
+      }
+      metrics.bump = bump;
+      if(columnHeights){
+        let { wellSum, edgeWell, tetrisWell } = wellMetrics(columnHeights);
+        if(holes > 0){
+          tetrisWell = 0;
+        }
+        metrics.wellSum = wellSum;
+        metrics.edgeWell = edgeWell;
+        metrics.tetrisWell = tetrisWell;
+      }
+      return metrics;
+    }
+    function computeNewHoleCountFromMasks(columnMasks, baselineMasks, clearedRows){
+      if(!columnMasks || !baselineMasks){
+        return 0;
+      }
+      let count = 0;
+      for(let c = 0; c < WIDTH; c += 1){
+        const finalMask = columnMasks[c] || 0;
+        if(!finalMask){
+          continue;
+        }
+        const baselineMaskRaw = baselineMasks[c] || 0;
+        const baselineMask = clearedRows && clearedRows.length
+          ? applyClearedRowsToMask(baselineMaskRaw, clearedRows)
+          : baselineMaskRaw;
+        const finalHoleMask = holeMaskForColumn(finalMask);
+        if(!finalHoleMask){
+          continue;
+        }
+        const baselineHoleMask = holeMaskForColumn(baselineMask);
+        const diffMask = finalHoleMask & ~baselineHoleMask;
+        if(diffMask){
+          count += countBits32(diffMask);
+        }
+      }
+      return count;
+    }
+    function fillRawFeatureVectorFromRowMasks(target, rowMasks){
+      if(!target){
+        return null;
+      }
+      let idx = 0;
+      for(let r = 0; r < HEIGHT; r += 1){
+        const mask = rowMasks && rowMasks.length > r ? rowMasks[r] || 0 : 0;
+        for(let c = 0; c < WIDTH; c += 1){
+          target[idx] = (mask >> c) & 1 ? 1 : 0;
+          idx += 1;
+        }
+      }
+      return target;
+    }
+    function estimatePlacementWithSurrogate(key, options = {}){
+      const decoded = decodePlacementSurrogateKey(key);
+      if(!decoded){
+        return null;
+      }
+      const { shape, rot, col, touched } = decoded;
+      const baselineRowMasks = options.baselineRowMasks;
+      const baselineColumnMasks = options.baselineColumnMasks;
+      const baselineColumnHeights = options.baselineColumnHeights;
+      if(!baselineRowMasks || !baselineColumnMasks || !baselineColumnHeights){
+        return null;
+      }
+      const rotations = pieceBottomProfiles[shape];
+      const states = SHAPES[shape];
+      if(!rotations || !rotations.length || !states || !states.length){
+        return null;
+      }
+      const len = rotations.length;
+      let rotIdx = Number.isFinite(rot) ? rot : 0;
+      rotIdx %= len;
+      if(rotIdx < 0){
+        rotIdx += len;
+      }
+      const profile = rotations[rotIdx];
+      const state = states[rotIdx];
+      if(!profile || !profile.length || !state){
+        return null;
+      }
+      if(!Array.isArray(touched) || touched.length !== profile.length){
+        return null;
+      }
+      let dropRow = HEIGHT;
+      for(let i = 0; i < profile.length; i += 1){
+        const entry = profile[i];
+        const touch = touched[i];
+        if(!entry || !touch){
+          return null;
+        }
+        const boardCol = touch.col;
+        if(boardCol < 0 || boardCol >= WIDTH){
+          return null;
+        }
+        const baselineMask = baselineColumnMasks[boardCol] || 0;
+        const baselineHeight = baselineColumnHeights[boardCol] || 0;
+        if(baselineMask !== touch.mask || baselineHeight !== touch.height){
+          return null;
+        }
+        const stackTopRow = HEIGHT - baselineHeight - 1;
+        const allowed = stackTopRow - entry.bottom;
+        if(!Number.isFinite(allowed) || allowed < 0){
+          return null;
+        }
+        if(allowed < dropRow){
+          dropRow = allowed;
+        }
+      }
+      if(dropRow === HEIGHT){
+        return null;
+      }
+      const rowMasks = surrogateRowMaskScratch;
+      const collapsed = surrogateRowMaskCollapsedScratch;
+      for(let r = 0; r < HEIGHT; r += 1){
+        rowMasks[r] = baselineRowMasks[r] || 0;
+        collapsed[r] = 0;
+        surrogateRowTouchedFlags[r] = 0;
+      }
+      const touchedRows = [];
+      for(let i = 0; i < state.length; i += 1){
+        const block = state[i];
+        if(!block || block.length < 2){
+          return null;
+        }
+        const finalRow = dropRow + block[0];
+        const finalCol = col + block[1];
+        if(finalRow < 0 || finalRow >= HEIGHT || finalCol < 0 || finalCol >= WIDTH){
+          return null;
+        }
+        const bit = 1 << finalCol;
+        if(rowMasks[finalRow] & bit){
+          return null;
+        }
+        rowMasks[finalRow] |= bit;
+        if(!surrogateRowTouchedFlags[finalRow]){
+          surrogateRowTouchedFlags[finalRow] = 1;
+          touchedRows.push(finalRow);
+        }
+      }
+      const clearedRows = surrogateClearedRowsScratch;
+      clearedRows.length = 0;
+      for(let i = 0; i < touchedRows.length; i += 1){
+        const row = touchedRows[i];
+        if(rowMasks[row] === ROW_MASK_LIMIT){
+          clearedRows.push(row);
+          surrogateClearedRowFlags[row] = 1;
+        }
+        surrogateRowTouchedFlags[row] = 0;
+      }
+      if(clearedRows.length > 1){
+        clearedRows.sort((a, b) => b - a);
+      }
+      let finalRows = rowMasks;
+      if(clearedRows.length){
+        let write = HEIGHT - 1;
+        for(let r = HEIGHT - 1; r >= 0; r -= 1){
+          if(surrogateClearedRowFlags[r]){
+            continue;
+          }
+          collapsed[write] = rowMasks[r];
+          write -= 1;
+        }
+        for(; write >= 0; write -= 1){
+          collapsed[write] = 0;
+        }
+        for(let i = 0; i < clearedRows.length; i += 1){
+          surrogateClearedRowFlags[clearedRows[i]] = 0;
+        }
+        finalRows = collapsed;
+      }
+      const metrics = computeMetricsFromRowMasks(
+        finalRows,
+        surrogateColumnMaskEstimateScratch,
+        surrogateColumnHeightEstimateScratch,
+        surrogateMetricsScratch,
+      );
+      const lines = clearedRows.length;
+      const topOut = (finalRows[0] & ROW_MASK_LIMIT) !== 0;
+      const newHoleCount = computeNewHoleCountFromMasks(
+        surrogateColumnMaskEstimateScratch,
+        baselineColumnMasks,
+        clearedRows,
+      );
+      const featureBuffer = fillFeatureVector(featureScratch, lines, metrics, newHoleCount);
+      const engineeredFeatures = new Float32Array(featureBuffer.length);
+      engineeredFeatures.set(featureBuffer);
+      let rawFeatures = null;
+      if(options.needRawFeatures){
+        const rawBuffer = fillRawFeatureVectorFromRowMasks(rawFeatureScratch, finalRows);
+        rawFeatures = new Float32Array(rawBuffer.length);
+        rawFeatures.set(rawBuffer);
+      }
+      const metricsSnapshot = {
+        holes: metrics.holes,
+        bump: metrics.bump,
+        maxHeight: metrics.maxHeight,
+        wellSum: metrics.wellSum,
+        edgeWell: metrics.edgeWell,
+        tetrisWell: metrics.tetrisWell,
+        contact: metrics.contact,
+        rowTransitions: metrics.rowTransitions,
+        colTransitions: metrics.colTransitions,
+        aggregateHeight: metrics.aggregateHeight,
+      };
+      const clearedCopy = clearedRows.length ? clearedRows.slice() : [];
+      return {
+        success: true,
+        dropRow,
+        lines,
+        topOut,
+        newHoleCount,
+        engineeredFeatures,
+        rawFeatures,
+        clearedRows: clearedCopy,
+        metrics: metricsSnapshot,
+      };
+    }
+    function maybeLogPlacementSurrogateStats(){
+      const stats = placementSurrogate.stats;
+      const total = stats.successes + stats.fallbacks;
+      if(total <= 0 || total < placementSurrogate.nextLogThreshold){
+        return;
+      }
+      const missRate = total ? (stats.fallbacks / total) * 100 : 0;
+      const avgSurrogate = stats.successes ? stats.timeSurrogate / stats.successes : 0;
+      const avgSim = stats.fallbacks ? stats.timeFallback / stats.fallbacks : 0;
+      const avgDebug = stats.comparisons ? stats.timeDebugCompare / stats.comparisons : 0;
+      const ratio = avgSurrogate > 0 && avgSim > 0 ? avgSim / avgSurrogate : 0;
+      if(typeof console !== 'undefined' && console.log){
+        console.log(
+          '[Surrogate] attempts=%d success=%d fallback=%d missRate=%s avgSur=%.3fms avgSim=%.3fms speedup=%s debugAvg=%.3fms mismatches=%d',
+          total,
+          stats.successes,
+          stats.fallbacks,
+          `${missRate.toFixed(2)}%`,
+          avgSurrogate,
+          avgSim,
+          ratio ? `${ratio.toFixed(2)}x` : 'n/a',
+          avgDebug,
+          stats.mismatches,
+        );
+      }
+      placementSurrogate.nextLogThreshold = total + 500;
+    }
     function holeMaskForColumn(mask){
       if(!mask){
         return 0;
@@ -4504,6 +4995,7 @@ export function initTraining(game, renderer) {
           baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
           baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
         }
+        fillRowMaskFromGrid(grid, baselineRowMaskScratch);
         const baselineFeatureScratch = featuresFromGrid(grid, 0, {
           holeBaseline: baselineHoles,
           baselineColumnMasks: baselineColumnMaskScratch,
@@ -4511,34 +5003,139 @@ export function initTraining(game, renderer) {
         });
         const baselineEngineeredFeatures = new Float32Array(baselineFeatureScratch.length);
         baselineEngineeredFeatures.set(baselineFeatureScratch);
+        const needRawFeatures = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw';
         for(const placement of placements){
-          const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
-          if(!sim) continue;
-          const lines = Number.isFinite(sim.lines) ? sim.lines : 0;
-          const dropRow = sim.dropRow;
-          const topOut = sim.grid[0].some((cell) => cell !== 0);
-          const engineeredFeatures = featuresFromGrid(sim.grid, lines, {
-            holeBaseline: baselineHoles,
-            baselineColumnMasks: baselineColumnMaskScratch,
-            clearedRows: sim.clearedRows,
-          });
-          const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
-          const newHoleCount = engineeredFeatures.length > newHoleIndex
-            ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
-            : 0;
-          const reward = computePlacementReward({
-            lines,
-            features: engineeredFeatures,
-            baselineFeatures: baselineEngineeredFeatures,
-            newHoleCount,
-            topOut,
-          });
-          const baseFeats = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw'
-            ? rawFeaturesFromGrid(sim.grid)
-            : engineeredFeatures;
+          const key = placementSurrogateKeyFor(
+            curShape,
+            placement.rot,
+            placement.col,
+            baselineColumnMaskScratch,
+            baselineColumnHeightScratch,
+          );
+          let surrogateResult = null;
+          let attemptedSurrogate = false;
+          if(placementSurrogate.enabled && key){
+            attemptedSurrogate = true;
+            placementSurrogate.stats.attempts += 1;
+            const startEstimate = surrogateTimerNow();
+            const estimate = estimatePlacementWithSurrogate(key, {
+              baselineRowMasks: baselineRowMaskScratch,
+              baselineColumnMasks: baselineColumnMaskScratch,
+              baselineColumnHeights: baselineColumnHeightScratch,
+              needRawFeatures,
+            });
+            placementSurrogate.stats.timeSurrogate += surrogateTimerNow() - startEstimate;
+            if(
+              estimate &&
+              (!needRawFeatures || (estimate.rawFeatures && estimate.rawFeatures.length === RAW_FEAT_DIM))
+            ){
+              surrogateResult = estimate;
+              placementSurrogate.stats.successes += 1;
+            } else {
+              placementSurrogate.stats.fallbacks += 1;
+            }
+          }
+          let lines = 0;
+          let dropRow = null;
+          let topOut = false;
+          let engineeredFeatures = null;
+          let newHoleCount = 0;
+          let baseFeats = null;
+          let reward = 0;
+          if(!surrogateResult){
+            const simStart = attemptedSurrogate ? surrogateTimerNow() : null;
+            const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
+            if(attemptedSurrogate && simStart !== null){
+              placementSurrogate.stats.timeFallback += surrogateTimerNow() - simStart;
+            }
+            if(!sim){
+              continue;
+            }
+            lines = Number.isFinite(sim.lines) ? sim.lines : 0;
+            dropRow = sim.dropRow;
+            topOut = sim.grid[0].some((cell) => cell !== 0);
+            const engineeredScratch = featuresFromGrid(sim.grid, lines, {
+              holeBaseline: baselineHoles,
+              baselineColumnMasks: baselineColumnMaskScratch,
+              clearedRows: sim.clearedRows,
+            });
+            engineeredFeatures = new Float32Array(engineeredScratch.length);
+            engineeredFeatures.set(engineeredScratch);
+            const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+            newHoleCount = engineeredFeatures.length > newHoleIndex
+              ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
+              : 0;
+            reward = computePlacementReward({
+              lines,
+              features: engineeredFeatures,
+              baselineFeatures: baselineEngineeredFeatures,
+              newHoleCount,
+              topOut,
+            });
+            baseFeats = needRawFeatures ? rawFeaturesFromGrid(sim.grid) : engineeredFeatures;
+          } else {
+            lines = Number.isFinite(surrogateResult.lines) ? surrogateResult.lines : 0;
+            dropRow = surrogateResult.dropRow;
+            topOut = !!surrogateResult.topOut;
+            engineeredFeatures = surrogateResult.engineeredFeatures;
+            const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+            newHoleCount = engineeredFeatures.length > newHoleIndex
+              ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
+              : 0;
+            reward = computePlacementReward({
+              lines,
+              features: engineeredFeatures,
+              baselineFeatures: baselineEngineeredFeatures,
+              newHoleCount,
+              topOut,
+            });
+            baseFeats = needRawFeatures ? surrogateResult.rawFeatures : engineeredFeatures;
+            if(placementSurrogate.debugCompare){
+              const debugStart = surrogateTimerNow();
+              const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
+              placementSurrogate.stats.timeDebugCompare += surrogateTimerNow() - debugStart;
+              if(sim){
+                placementSurrogate.stats.comparisons += 1;
+                const simLines = Number.isFinite(sim.lines) ? sim.lines : 0;
+                const simTopOut = sim.grid[0].some((cell) => cell !== 0);
+                const simFeaturesScratch = featuresFromGrid(sim.grid, simLines, {
+                  holeBaseline: baselineHoles,
+                  baselineColumnMasks: baselineColumnMaskScratch,
+                  clearedRows: sim.clearedRows,
+                });
+                const simFeatures = new Float32Array(simFeaturesScratch.length);
+                simFeatures.set(simFeaturesScratch);
+                let mismatch = false;
+                if(simLines !== lines || simTopOut !== topOut){
+                  mismatch = true;
+                } else {
+                  const tol = 1e-4;
+                  const len = Math.min(simFeatures.length, engineeredFeatures.length);
+                  for(let i = 0; i < len; i += 1){
+                    if(Math.abs(simFeatures[i] - engineeredFeatures[i]) > tol){
+                      mismatch = true;
+                      break;
+                    }
+                  }
+                }
+                if(mismatch){
+                  placementSurrogate.stats.mismatches += 1;
+                  if(typeof console !== 'undefined' && console.warn){
+                    console.warn('Surrogate mismatch', {
+                      shape: curShape,
+                      rot: placement.rot,
+                      col: placement.col,
+                      surrogate: { lines, topOut, features: engineeredFeatures },
+                      exact: { lines: simLines, topOut: simTopOut, features: simFeatures },
+                    });
+                  }
+                }
+              }
+            }
+          }
           const value = scoreFeats(weights, baseFeats);
           actions.push({
-            key: `${placement.rot}|${placement.col}`,
+            key: key || `${placement.rot}|${placement.col}`,
             rot: placement.rot,
             col: placement.col,
             dropRow,
@@ -4547,6 +5144,7 @@ export function initTraining(game, renderer) {
             reward: Number.isFinite(reward) ? reward : 0,
           });
         }
+        maybeLogPlacementSurrogateStats();
         return actions;
       });
     }
