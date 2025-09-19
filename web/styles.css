@@ -147,6 +147,54 @@ canvas {
   fill: rgba(249, 245, 255, 0.82);
   pointer-events: none;
 }
+.alpha-conv-viz {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: rgba(249, 245, 255, 0.82);
+}
+.alpha-conv-viz__meta {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(141, 225, 173, 0.85);
+}
+.alpha-conv-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.alpha-conv-layer__title {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(249, 245, 255, 0.68);
+}
+.alpha-conv-layer__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  gap: 8px;
+}
+.alpha-conv-filter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.alpha-conv-filter__canvas {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid rgba(249, 245, 255, 0.15);
+  image-rendering: pixelated;
+  box-shadow: 0 6px 14px rgba(12, 59, 46, 0.3);
+}
+.alpha-conv-filter__label {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(249, 245, 255, 0.54);
+}
 #diagnostics {
   border-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.18);
