@@ -65,11 +65,8 @@ class StylingAssetsTestCase(unittest.TestCase):
                 parser.stylesheets,
             )
 
-        with self.subTest("tailwind CDN script referenced"):
-            self.assertIn("https://cdn.tailwindcss.com", parser.scripts)
-
-        with self.subTest("local tailwind config referenced"):
-            self.assertIn("./tailwind-config.js", parser.scripts)
+        with self.subTest("precompiled tailwind bundle referenced"):
+            self.assertIn("./tailwind.css", parser.stylesheets)
 
     def test_defined_css_classes_are_used(self):
         parser = self.html_parser

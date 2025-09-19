@@ -16,9 +16,11 @@ bundler-free while making the codebase easier to navigate.
 - `web/index.html` – Static markup, analytics panels, and script/style tags that
   load the rest of the client without a build step.
 - `web/styles.css` – Custom gradients, layout polish, and component styling that
-  complement Tailwind utility classes.
-- `web/tailwind-config.js` – Runtime configuration passed to the CDN Tailwind
-  loader so typography and the colour palette stay consistent across modules.
+  complement the Tailwind utility classes.
+- `web/tailwind.css` – Precompiled Tailwind utilities generated from the shared
+  theme configuration so no runtime CDN is required.
+- `tailwind.config.cjs` – Source of the shared theme used when building the
+  utility bundle with the Tailwind CLI.
 - `web/js/constants.js` – Shared board dimensions, drop timings, colour tokens,
   and other configuration flags.
 - `web/js/engine.js` – `Piece` class plus pure helpers for bag randomisation,
@@ -41,7 +43,7 @@ bundler-free while making the codebase easier to navigate.
 
 - Modular ES modules loaded directly in the browser; no bundler or transpiler is
   required for development.
-- Tailwind CSS served via CDN with a minimal runtime config, plus handcrafted
+- Tailwind CSS compiled ahead of time from the shared theme, plus handcrafted
   CSS for the neon glassmorphism aesthetic.
 - Canvas-based renderer backed by a compact `Piece` class and board helpers for
   locking, row clearing, previews, and scoring updates.
@@ -112,6 +114,19 @@ bundler-free while making the codebase easier to navigate.
    Content-Security-Policy issues that can appear when opening files directly.
 3. Visit `http://localhost:8000` in a modern browser, start the game, and use the
    control clusters to play manually or launch the trainer.
+
+### Updating Tailwind utilities
+
+Tailwind classes are precompiled into `web/tailwind.css`. When you introduce new
+utility classes in the markup, rebuild the bundle with:
+
+```bash
+npm install
+npm run build:tailwind
+```
+
+The compiled file is committed so the site continues to work without a build
+step.
 
 ## Further exploration
 
