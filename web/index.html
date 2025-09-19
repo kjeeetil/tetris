@@ -214,6 +214,29 @@
         ></div>
         <div id="network-viz" aria-label="Network weight visualization" class="glass-panel mx-auto h-[260px] w-full overflow-hidden p-6"></div>
         <div
+          id="model-history-controls"
+          class="mx-auto mt-4 mb-6 w-full max-w-5xl space-y-2"
+        >
+          <div class="flex items-center justify-between text-xs uppercase tracking-[0.35em] text-plum/70">
+            <span>Model history</span>
+            <span id="model-history-label" class="text-mint/80" aria-live="polite">Live (current training)</span>
+          </div>
+          <input
+            id="model-history-slider"
+            type="range"
+            min="0"
+            max="0"
+            value="0"
+            step="1"
+            class="w-full"
+            aria-label="Scrub through saved best models by generation"
+            disabled
+          />
+          <div id="model-history-meta" class="text-xs text-plum/70">
+            Best-of-generation snapshots will appear as training progresses.
+          </div>
+        </div>
+        <div
           id="alpha-metrics-panel"
           class="glass-panel mx-auto w-full max-w-5xl rounded-3xl px-6 py-6 text-left"
         >
@@ -259,26 +282,6 @@
             ConvNet loss statistics will appear once AlphaTetris training runs.
           </p>
           <div id="alpha-metric-plots" class="alpha-metric-plots" aria-live="polite"></div>
-        </div>
-        <div class="mx-auto mt-4 w-full max-w-5xl space-y-2">
-          <div class="flex items-center justify-between text-xs uppercase tracking-[0.35em] text-plum/70">
-            <span>Model history</span>
-            <span id="model-history-label" class="text-mint/80" aria-live="polite">Live (current training)</span>
-          </div>
-          <input
-            id="model-history-slider"
-            type="range"
-            min="0"
-            max="0"
-            value="0"
-            step="1"
-            class="w-full"
-            aria-label="Scrub through saved best models by generation"
-            disabled
-          />
-          <div id="model-history-meta" class="text-xs text-plum/70">
-            Best-of-generation snapshots will appear as training progresses.
-          </div>
         </div>
         <div
           id="diagnostics"
