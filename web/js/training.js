@@ -2806,6 +2806,8 @@ export function initTraining(game, renderer) {
       COL_TRANSITION_RATIO: 15,
       AGG_HEIGHT_RATIO: 16,
     };
+    // Keep direct line-clear rewards small so structural heuristics dominate exploration.
+    const IMMEDIATE_REWARD_SCALE = 0.1;
     const REWARD_SHAPING_WEIGHTS = Object.freeze({
       survival: 0.02,
       topOutPenalty: 1,
@@ -2835,7 +2837,8 @@ export function initTraining(game, renderer) {
     }
     function computePlacementReward({ lines = 0, features = null, baselineFeatures = null, newHoleCount = 0, topOut = false }){
       const baseReward = Number.isFinite(lines) ? lines / 4 : 0;
-      let shaped = baseReward;
+      const scaledBaseReward = baseReward * IMMEDIATE_REWARD_SCALE;
+      let shaped = scaledBaseReward;
       if(topOut){
         shaped -= REWARD_SHAPING_WEIGHTS.topOutPenalty;
       } else {
@@ -2919,13 +2922,13 @@ export function initTraining(game, renderer) {
         }
       }
       if(lines === 1){
-        shaped -= REWARD_SHAPING_WEIGHTS.singlePenalty;
+        shaped -= REWARD_SHAPING_WEIGHTS.singlePenalty * IMMEDIATE_REWARD_SCALE;
       } else if(lines === 2){
-        shaped += REWARD_SHAPING_WEIGHTS.doubleBonus;
+        shaped += REWARD_SHAPING_WEIGHTS.doubleBonus * IMMEDIATE_REWARD_SCALE;
       } else if(lines === 3){
-        shaped += REWARD_SHAPING_WEIGHTS.tripleBonus;
+        shaped += REWARD_SHAPING_WEIGHTS.tripleBonus * IMMEDIATE_REWARD_SCALE;
       } else if(lines >= 4){
-        shaped += REWARD_SHAPING_WEIGHTS.tetrisBonus;
+        shaped += REWARD_SHAPING_WEIGHTS.tetrisBonus * IMMEDIATE_REWARD_SCALE;
       }
       return shaped;
     }
