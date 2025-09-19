@@ -2983,7 +2983,13 @@ export function initTraining(game, renderer) {
       }
       const stats = train.ai.lastSearchStats || null;
       const selected = stats && stats.selected ? stats.selected : null;
-      const reward = selected && Number.isFinite(selected.reward) ? selected.reward : null;
+      let reward = selected && Number.isFinite(selected.reward) ? selected.reward : null;
+      if(!Number.isFinite(reward)){
+        const plan = train.ai.plan || null;
+        if(plan && Number.isFinite(plan.objectiveReward)){
+          reward = plan.objectiveReward;
+        }
+      }
       if(!Number.isFinite(reward)){
         return false;
       }
@@ -5812,7 +5818,8 @@ export function initTraining(game, renderer) {
             }
           }
           const selected = bestEntry ? bestEntry.candidate : evaluations[0];
-          return { rot: selected.rot, col: selected.col, dropRow: selected.dropRow, lines: selected.lines };
+          const reward = Number.isFinite(selected.reward) ? selected.reward : null;
+          return { rot: selected.rot, col: selected.col, dropRow: selected.dropRow, lines: selected.lines, reward };
         }
         let best = evaluations[0];
         for(let i = 1; i < evaluations.length; i += 1){
@@ -5821,7 +5828,8 @@ export function initTraining(game, renderer) {
             best = candidate;
           }
         }
-        return { rot: best.rot, col: best.col, dropRow: best.dropRow, lines: best.lines };
+        const reward = Number.isFinite(best.reward) ? best.reward : null;
+        return { rot: best.rot, col: best.col, dropRow: best.dropRow, lines: best.lines, reward };
       });
     }
 
@@ -5841,6 +5849,7 @@ export function initTraining(game, renderer) {
           const cur = state.active.rot % len;
           const needRot = (placement.rot - cur + len) % len;
           const targetRow = Number.isFinite(placement.dropRow) ? placement.dropRow : null;
+          const objectiveReward = Number.isFinite(placement.reward) ? placement.reward : null;
           train.ai.lastSearchStats = null;
           return {
             targetRot: placement.rot,
@@ -5849,6 +5858,7 @@ export function initTraining(game, renderer) {
             rotLeft: needRot,
             stage: 'rotate',
             search: null,
+            objectiveReward,
           };
         }
         const evaluations = evaluatePlacementsForSearch(w, state.grid, state.active.shape);
@@ -5989,6 +5999,13 @@ export function initTraining(game, renderer) {
               topOut: !!rawHeadless.topOut,
             }
           : null;
+        const objectiveReward = Number.isFinite(selectedMeta.reward)
+          ? selectedMeta.reward
+          : (selected && Number.isFinite(selected.reward) ? selected.reward : null);
+        const storedReward = Number.isFinite(objectiveReward)
+          ? objectiveReward
+          : (selected && Number.isFinite(selected.reward) ? selected.reward : null);
+
         train.ai.lastSearchStats = {
           rootValue,
           totalVisits,
@@ -6003,7 +6020,7 @@ export function initTraining(game, renderer) {
             dropRow: selectedMeta.dropRow,
             lines: selectedMeta.lines,
             value: selected.value,
-            reward: selected.reward,
+            reward: storedReward,
             visits: selected.visits,
             prior: selected.prior,
             policy: selected.policy,
@@ -6025,6 +6042,7 @@ export function initTraining(game, renderer) {
             selected: train.ai.lastSearchStats.selected,
           },
           alphaHeadless,
+          objectiveReward: storedReward,
         };
       });
     }
