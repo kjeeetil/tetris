@@ -20,6 +20,7 @@ const PREDICT_FUNCTION_CACHE = new WeakMap();
 export const ALPHA_BOARD_WIDTH = WIDTH;
 export const ALPHA_BOARD_HEIGHT = HEIGHT;
 export const ALPHA_BOARD_CHANNELS = 3;
+const ALPHA_BOARD_SIZE = ALPHA_BOARD_WIDTH * ALPHA_BOARD_HEIGHT * ALPHA_BOARD_CHANNELS;
 export const ALPHA_PREVIEW_SLOTS = 2;
 export const ALPHA_PIECES = Object.freeze(['I', 'O', 'T', 'S', 'Z', 'J', 'L']);
 const PIECE_INDEX = new Map(ALPHA_PIECES.map((shape, index) => [shape, index]));
@@ -332,6 +333,7 @@ function fillBoardTensor(boardBuffer, grid, active) {
       const cell = grid[row] && grid[row][col] ? 1 : 0;
       const baseIndex = (row * ALPHA_BOARD_WIDTH + col) * stride;
       boardBuffer[baseIndex] = cell;
+      boardBuffer[baseIndex + 1] = 0;
       const heightNorm = stats.heights[col] / ALPHA_BOARD_HEIGHT;
       boardBuffer[baseIndex + 2] = heightNorm;
     }
@@ -410,6 +412,9 @@ function encodePieceOneHot(shape, target, offset = 0) {
   if (!target || target.length < offset + ALPHA_PIECES.length) {
     return;
   }
+  for (let i = 0; i < ALPHA_PIECES.length; i += 1) {
+    target[offset + i] = 0;
+  }
   if (typeof shape !== 'string') {
     return;
   }
@@ -470,12 +475,24 @@ function computeActionMask(shape) {
 }
 
 export function prepareAlphaInputs(gameState = {}, options = {}) {
-  const board = new Float32Array(ALPHA_BOARD_HEIGHT * ALPHA_BOARD_WIDTH * ALPHA_BOARD_CHANNELS);
+  const boardOffset = Number.isFinite(options.boardOffset)
+    ? Math.max(0, Math.floor(options.boardOffset))
+    : 0;
+  const boardTarget = options.boardBuffer instanceof Float32Array ? options.boardBuffer : null;
+  const board = boardTarget && boardTarget.length >= boardOffset + ALPHA_BOARD_SIZE
+    ? boardTarget.subarray(boardOffset, boardOffset + ALPHA_BOARD_SIZE)
+    : new Float32Array(ALPHA_BOARD_SIZE);
   const grid = Array.isArray(gameState.grid) ? gameState.grid : [];
   const active = gameState.active || null;
   const stats = fillBoardTensor(board, grid, active);
 
-  const aux = new Float32Array(ALPHA_AUX_FEATURE_COUNT);
+  const auxOffset = Number.isFinite(options.auxOffset)
+    ? Math.max(0, Math.floor(options.auxOffset))
+    : 0;
+  const auxTarget = options.auxBuffer instanceof Float32Array ? options.auxBuffer : null;
+  const aux = auxTarget && auxTarget.length >= auxOffset + ALPHA_AUX_FEATURE_COUNT
+    ? auxTarget.subarray(auxOffset, auxOffset + ALPHA_AUX_FEATURE_COUNT)
+    : new Float32Array(ALPHA_AUX_FEATURE_COUNT);
   let offset = 0;
 
   encodePieceOneHot(active && active.shape, aux, offset);
