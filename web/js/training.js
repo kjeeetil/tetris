@@ -289,6 +289,8 @@ export function initTraining(game, renderer) {
   const alphaMetricSelectEl = document.getElementById('alpha-metrics-select');
   const alphaMetricPlotsEl = document.getElementById('alpha-metric-plots');
   const alphaMetricEmptyEl = document.getElementById('alpha-metric-empty');
+  const alphaMetricToggleEl = document.getElementById('alpha-metrics-toggle');
+  const alphaMetricToggleStatusEl = document.getElementById('alpha-metrics-toggle-status');
   const historySlider = document.getElementById('model-history-slider');
   const historyLabel = document.getElementById('model-history-label');
   const historyMeta = document.getElementById('model-history-meta');
@@ -300,7 +302,7 @@ export function initTraining(game, renderer) {
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
 
   let alphaMetricChoices = null;
-  const DEFAULT_ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
+  const ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
   const ALPHA_METRIC_LABELS = {
     loss: 'Total Loss',
     policy_loss: 'Policy Loss',
@@ -311,7 +313,9 @@ export function initTraining(game, renderer) {
     policy_loss: { stroke: 'rgba(94, 74, 227, 0.9)', fill: 'rgba(94, 74, 227, 0.18)' },
     value_loss: { stroke: 'rgba(79, 178, 114, 0.9)', fill: 'rgba(79, 178, 114, 0.16)' },
   };
-  let alphaMetricSelection = DEFAULT_ALPHA_METRIC_NAMES.slice();
+  const DEFAULT_ALPHA_METRIC_SELECTION = ['value_loss'];
+  let alphaMetricSelection = DEFAULT_ALPHA_METRIC_SELECTION.slice();
+  let alphaMetricsPlottingEnabled = true;
 
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
@@ -360,11 +364,11 @@ export function initTraining(game, renderer) {
       : Array.from(alphaMetricSelectEl.options || []).filter((option) => option && option.selected);
     const initialValues = selectedOptions
       .map((option) => option.value)
-      .filter((value) => DEFAULT_ALPHA_METRIC_NAMES.includes(value));
+      .filter((value) => ALPHA_METRIC_NAMES.includes(value));
     if (initialValues.length) {
       alphaMetricSelection = initialValues;
     } else {
-      alphaMetricSelection = DEFAULT_ALPHA_METRIC_NAMES.slice();
+      alphaMetricSelection = DEFAULT_ALPHA_METRIC_SELECTION.slice();
       const options = Array.from(alphaMetricSelectEl.options || []);
       for (let i = 0; i < options.length; i += 1) {
         const option = options[i];
@@ -392,7 +396,7 @@ export function initTraining(game, renderer) {
         : Array.from(alphaMetricSelectEl.options || []).filter((option) => option && option.selected);
       const values = selected
         .map((option) => option.value)
-        .filter((value) => DEFAULT_ALPHA_METRIC_NAMES.includes(value));
+        .filter((value) => ALPHA_METRIC_NAMES.includes(value));
       alphaMetricSelection = values.length ? values : [];
       const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
       const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
@@ -403,12 +407,28 @@ export function initTraining(game, renderer) {
       } else if (!alphaMetricSelection.length) {
         showAlphaMetricMessage('Select at least one metric to plot.');
       } else {
-        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
       }
     });
   }
 
-  showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+  if (alphaMetricToggleEl) {
+    alphaMetricToggleEl.addEventListener('click', () => {
+      setAlphaMetricPlottingEnabled(!alphaMetricsPlottingEnabled);
+      if (alphaMetricsPlottingEnabled) {
+        const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+        const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
+        const training = alphaState && alphaState.training ? alphaState.training : null;
+        if (training) {
+          renderAlphaMetricHistory(training);
+        }
+      }
+    });
+  }
+
+  setAlphaMetricPlottingEnabled(alphaMetricsPlottingEnabled);
+
+  showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
 
 
     // Features (scaled):
@@ -453,8 +473,8 @@ export function initTraining(game, renderer) {
     const DEFAULT_ALPHA_LEARNING_RATE = 1e-3;
     const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
     const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
-    const ALPHA_METRIC_NAMES = DEFAULT_ALPHA_METRIC_NAMES.slice();
     const ALPHA_METRIC_HISTORY_LIMIT = 400;
+    const ALPHA_METRIC_AGGREGATION_WINDOW = 200;
     const MAX_ALPHA_SNAPSHOTS = 200;
 
     function sanitizePositiveInt(value, fallback) {
@@ -495,7 +515,14 @@ export function initTraining(game, renderer) {
         lastLoss: null,
         lastPolicyLoss: null,
         lastValueLoss: null,
-        metricsHistory: { epoch: [], history: {}, metrics: [], selected: alphaMetricSelection.slice() },
+        metricsHistory: {
+          epoch: [],
+          history: {},
+          metrics: [],
+          selected: alphaMetricSelection.slice(),
+          stepRange: [],
+          pending: null,
+        },
         metricHistoryLimit: ALPHA_METRIC_HISTORY_LIMIT,
         nextSnapshotStep: ALPHA_VIZ_UPDATE_FREQUENCY,
         lastConvSummary: null,
@@ -528,7 +555,7 @@ export function initTraining(game, renderer) {
       }
       alphaState.training = createAlphaTrainingState(alphaState.config || {});
       alphaState.lastPreparedInputs = null;
-      showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+      showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
     }
 
     function prepareAlphaModelForTraining(model, alphaState) {
@@ -1957,6 +1984,30 @@ export function initTraining(game, renderer) {
       syncMlpConfigVisibility();
     }
 
+    function setAlphaMetricPlottingEnabled(enabled){
+      alphaMetricsPlottingEnabled = !!enabled;
+      if(alphaMetricToggleEl){
+        if(alphaMetricsPlottingEnabled){
+          alphaMetricToggleEl.classList.add('is-active');
+        } else {
+          alphaMetricToggleEl.classList.remove('is-active');
+        }
+        alphaMetricToggleEl.setAttribute('aria-pressed', alphaMetricsPlottingEnabled ? 'true' : 'false');
+      }
+      if(alphaMetricToggleStatusEl){
+        alphaMetricToggleStatusEl.textContent = alphaMetricsPlottingEnabled ? 'Live' : 'Paused';
+        alphaMetricToggleStatusEl.dataset.state = alphaMetricsPlottingEnabled ? 'live' : 'paused';
+      }
+      if(!alphaMetricsPlottingEnabled){
+        const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+        const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
+        const training = alphaState && alphaState.training ? alphaState.training : null;
+        if(training && training.metricsHistory){
+          training.metricsHistory.pending = null;
+        }
+      }
+    }
+
     function renderAlphaNetworkPlaceholder(message){
       if(!networkVizEl){
         return;
@@ -2022,7 +2073,7 @@ export function initTraining(game, renderer) {
     }
 
     function appendAlphaMetricHistory(training, step, metrics){
-      if(!training || !metrics || !Number.isFinite(step)){
+      if(!training || !metrics || !Number.isFinite(step) || !alphaMetricsPlottingEnabled){
         return false;
       }
       if(!training.metricsHistory || typeof training.metricsHistory !== 'object'){
@@ -2031,9 +2082,17 @@ export function initTraining(game, renderer) {
           history: {},
           metrics: [],
           selected: alphaMetricSelection.slice(),
+          stepRange: [],
+          pending: null,
         };
       }
       const history = training.metricsHistory;
+      if(!Array.isArray(history.epoch)){
+        history.epoch = [];
+      }
+      if(!Array.isArray(history.stepRange)){
+        history.stepRange = [];
+      }
       const available = {};
       for(let i = 0; i < ALPHA_METRIC_NAMES.length; i += 1){
         const name = ALPHA_METRIC_NAMES[i];
@@ -2047,11 +2106,18 @@ export function initTraining(game, renderer) {
         return false;
       }
       if(!Array.isArray(history.metrics) || history.metrics.length === 0){
-        history.metrics = availableNames.slice();
+        history.metrics = ALPHA_METRIC_NAMES.filter((name) => availableNames.includes(name));
+        if(!history.metrics.length){
+          history.metrics = availableNames.slice();
+        }
       } else {
         const filtered = history.metrics.filter((name) => availableNames.includes(name));
-        const additions = availableNames.filter((name) => !filtered.includes(name));
+        const additions = ALPHA_METRIC_NAMES.filter((name) => availableNames.includes(name) && !filtered.includes(name));
         history.metrics = filtered.concat(additions);
+      }
+      const tracked = history.metrics;
+      if(tracked.length === 0){
+        return false;
       }
       let selectionChanged = false;
       if(!Array.isArray(history.selected) || history.selected.length === 0){
@@ -2071,24 +2137,85 @@ export function initTraining(game, renderer) {
       if(selectionChanged){
         syncAlphaMetricSelect(alphaMetricSelection);
       }
-      if(!Array.isArray(history.epoch)){
-        history.epoch = [];
+      if(!history.pending || typeof history.pending !== 'object'){
+        history.pending = {
+          startStep: step,
+          endStep: step,
+          totalSamples: 0,
+          sums: {},
+          mins: {},
+          maxs: {},
+          counts: {},
+        };
       }
-      history.epoch.push(step);
-      const tracked = history.metrics;
+      const pending = history.pending;
+      if(!Number.isFinite(pending.startStep) || step < pending.startStep){
+        pending.startStep = step;
+      }
+      if(!Number.isFinite(pending.endStep) || step > pending.endStep){
+        pending.endStep = step;
+      }
+      pending.totalSamples = (pending.totalSamples || 0) + 1;
+      for(let i = 0; i < ALPHA_METRIC_NAMES.length; i += 1){
+        const name = ALPHA_METRIC_NAMES[i];
+        const value = metrics[name];
+        if(Number.isFinite(value)){
+          pending.sums[name] = (pending.sums[name] || 0) + value;
+          pending.counts[name] = (pending.counts[name] || 0) + 1;
+          pending.mins[name] = pending.mins[name] === undefined ? value : Math.min(pending.mins[name], value);
+          pending.maxs[name] = pending.maxs[name] === undefined ? value : Math.max(pending.maxs[name], value);
+        }
+      }
+      const windowStart = Number.isFinite(pending.startStep) ? pending.startStep : step;
+      const windowEnd = Number.isFinite(pending.endStep) ? pending.endStep : step;
+      const windowSize = Number.isFinite(windowStart) && Number.isFinite(windowEnd)
+        ? Math.abs(windowEnd - windowStart) + 1
+        : pending.totalSamples;
+      if(!Number.isFinite(windowSize) || windowSize < ALPHA_METRIC_AGGREGATION_WINDOW){
+        return false;
+      }
+
+      const previousLength = history.epoch.length;
+      const aggregatedStep = windowEnd;
+      const aggregatedEntries = {};
       for(let i = 0; i < tracked.length; i += 1){
         const name = tracked[i];
         if(!Array.isArray(history.history[name])){
           history.history[name] = [];
         }
-        const value = available[name];
-        history.history[name].push(value !== undefined ? value : null);
+        const series = history.history[name];
+        const missing = Math.max(0, previousLength - series.length);
+        for(let pad = 0; pad < missing; pad += 1){
+          series.push({ mean: null, min: null, max: null, count: 0 });
+        }
+        const count = pending.counts[name] || 0;
+        const mean = count > 0 ? pending.sums[name] / count : null;
+        const min = count > 0 ? pending.mins[name] : null;
+        const max = count > 0 ? pending.maxs[name] : null;
+        aggregatedEntries[name] = { mean, min, max, count };
       }
+
+      history.epoch.push(aggregatedStep);
+      history.stepRange.push({
+        start: windowStart,
+        end: windowEnd,
+        samples: pending.totalSamples || 0,
+      });
+      for(let i = 0; i < tracked.length; i += 1){
+        const name = tracked[i];
+        const series = history.history[name];
+        const entry = aggregatedEntries[name] || { mean: null, min: null, max: null, count: 0 };
+        series.push(entry);
+      }
+
       const maxPoints = Number.isFinite(training.metricHistoryLimit)
         ? Math.max(10, Math.floor(training.metricHistoryLimit))
         : ALPHA_METRIC_HISTORY_LIMIT;
       while(history.epoch.length > maxPoints){
         history.epoch.shift();
+        if(Array.isArray(history.stepRange) && history.stepRange.length){
+          history.stepRange.shift();
+        }
         for(let i = 0; i < tracked.length; i += 1){
           const name = tracked[i];
           const series = history.history[name];
@@ -2103,6 +2230,7 @@ export function initTraining(game, renderer) {
           delete history.history[name];
         }
       });
+      history.pending = null;
       return true;
     }
 
@@ -2282,14 +2410,15 @@ export function initTraining(game, renderer) {
         return;
       }
       if(!training || !training.metricsHistory){
-        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
         return;
       }
       const history = training.metricsHistory;
       const steps = Array.isArray(history.epoch) ? history.epoch.slice() : [];
+      const ranges = Array.isArray(history.stepRange) ? history.stepRange.slice() : [];
       const tracked = Array.isArray(history.metrics) ? history.metrics.slice() : [];
       if(!steps.length || !tracked.length){
-        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+        showAlphaMetricMessage(`ConvNet loss statistics will appear once ${ALPHA_METRIC_AGGREGATION_WINDOW} training steps have been aggregated.`);
         return;
       }
       let selected = Array.isArray(history.selected) && history.selected.length
@@ -2310,6 +2439,12 @@ export function initTraining(game, renderer) {
         if(!Array.isArray(series) || series.length !== steps.length){
           continue;
         }
+        const meanSeries = series.map((entry) => {
+          if(entry && typeof entry === 'object' && Number.isFinite(entry.mean)){
+            return entry.mean;
+          }
+          return null;
+        });
         const card = document.createElement('div');
         card.className = 'alpha-metric-card';
 
@@ -2333,37 +2468,45 @@ export function initTraining(game, renderer) {
 
         const stats = document.createElement('div');
         stats.className = 'alpha-metric-card__stats';
-        const latest = series[series.length - 1];
+        const latest = series[series.length - 1] || null;
         const valueEl = document.createElement('div');
         valueEl.className = 'alpha-metric-card__value';
-        valueEl.textContent = Number.isFinite(latest) ? latest.toFixed(4) : '—';
+        valueEl.dataset.label = 'Mean';
+        const latestMean = latest && Number.isFinite(latest.mean) ? latest.mean : null;
+        valueEl.textContent = Number.isFinite(latestMean) ? latestMean.toFixed(4) : '—';
         stats.appendChild(valueEl);
         const deltaEl = document.createElement('div');
         deltaEl.className = 'alpha-metric-card__delta';
-        const first = series[0];
-        if(Number.isFinite(first) && Number.isFinite(latest)){
-          const diff = latest - first;
-          const prefix = diff > 0 ? '▲' : diff < 0 ? '▼' : '±';
-          deltaEl.textContent = `${prefix}${Math.abs(diff).toFixed(4)}`;
-          if(diff > 0){
-            deltaEl.dataset.trend = 'up';
-          } else if(diff < 0){
-            deltaEl.dataset.trend = 'down';
-          } else {
-            deltaEl.dataset.trend = 'flat';
-          }
-        } else {
-          deltaEl.textContent = '—';
-          deltaEl.dataset.trend = 'flat';
-        }
+        deltaEl.dataset.label = 'Min / Max';
+        const latestMin = latest && Number.isFinite(latest.min) ? latest.min : null;
+        const latestMax = latest && Number.isFinite(latest.max) ? latest.max : null;
+        const minText = Number.isFinite(latestMin) ? latestMin.toFixed(4) : '—';
+        const maxText = Number.isFinite(latestMax) ? latestMax.toFixed(4) : '—';
+        deltaEl.textContent = `${minText} / ${maxText}`;
         stats.appendChild(deltaEl);
         header.appendChild(stats);
         card.appendChild(header);
 
         const meta = document.createElement('div');
         meta.className = 'alpha-metric-card__meta';
-        const lastStep = steps[steps.length - 1];
-        meta.textContent = Number.isFinite(lastStep) ? `Step ${lastStep}` : '';
+        const latestRange = ranges.length === steps.length ? ranges[ranges.length - 1] : (ranges[ranges.length - 1] || null);
+        let metaText = '';
+        if(latestRange && Number.isFinite(latestRange.start) && Number.isFinite(latestRange.end)){
+          if(latestRange.start === latestRange.end){
+            metaText = `Step ${latestRange.end}`;
+          } else {
+            metaText = `Steps ${latestRange.start}–${latestRange.end}`;
+          }
+          if(Number.isFinite(latestRange.samples) && latestRange.samples){
+            metaText += ` (${latestRange.samples} samples)`;
+          }
+        } else {
+          const lastStep = steps[steps.length - 1];
+          if(Number.isFinite(lastStep)){
+            metaText = `Step ${lastStep}`;
+          }
+        }
+        meta.textContent = metaText;
         card.appendChild(meta);
 
         const canvas = document.createElement('canvas');
@@ -2371,11 +2514,11 @@ export function initTraining(game, renderer) {
         card.appendChild(canvas);
 
         alphaMetricPlotsEl.appendChild(card);
-        drawAlphaMetricSeries(canvas, steps, series, style);
+        drawAlphaMetricSeries(canvas, steps, meanSeries, style);
         rendered += 1;
       }
       if(rendered === 0){
-        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+        showAlphaMetricMessage(`ConvNet loss statistics will appear once ${ALPHA_METRIC_AGGREGATION_WINDOW} training steps have been aggregated.`);
       }
     }
 
