@@ -2766,12 +2766,29 @@ export function initTraining(game, renderer) {
           prefix[i + 1] = prefix[i] + rawSeries[i].value;
         }
         const smoothed = new Array(rawSeries.length);
+        const targetWindow = Math.max(1, Math.floor(windowSize));
+        const halfWindow = Math.floor((targetWindow - 1) / 2);
         for(let i = 0; i < rawSeries.length; i += 1){
-          const end = i + 1;
-          const start = Math.max(0, end - windowSize);
-          const count = end - start;
-          const sum = prefix[end] - prefix[start];
-          const avg = count > 0 ? sum / count : rawSeries[i].value;
+          let start = i - halfWindow;
+          let end = start + targetWindow - 1;
+          if(start < 0){
+            end = Math.min(rawSeries.length - 1, end - start);
+            start = 0;
+          }
+          if(end >= rawSeries.length){
+            const overflow = end - (rawSeries.length - 1);
+            start = Math.max(0, start - overflow);
+            end = rawSeries.length - 1;
+          }
+          if(start > end){
+            start = Math.max(0, Math.min(start, rawSeries.length - 1));
+            end = start;
+          }
+          // Balance the smoothing window when we run out of historical samples on
+          // either side so the moving average remains stable near plot bounds.
+          const sum = prefix[end + 1] - prefix[start];
+          const count = Math.max(1, end - start + 1);
+          const avg = sum / count;
           const point = { step: rawSeries[i].step, value: avg };
           smoothed[i] = point;
           if(avg < minValue) minValue = avg;
