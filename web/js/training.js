@@ -3729,6 +3729,32 @@ export function initTraining(game, renderer) {
     const clearedRowsScratch = [];
     const featureScratch = new Float32Array(FEAT_DIM);
     const rawFeatureScratch = new Float32Array(RAW_FEAT_DIM);
+    const engineeredFeaturePool = (() => {
+      const pool = [];
+      return {
+        acquire(){
+          const buffer = pool.length ? pool.pop() : new Float32Array(FEAT_DIM);
+          if(buffer && buffer.length >= FEAT_DIM){
+            buffer.fill(0);
+            return buffer;
+          }
+          return new Float32Array(FEAT_DIM);
+        },
+        release(buffer){
+          if(!buffer || !(buffer instanceof Float32Array)){
+            return;
+          }
+          if(buffer.length !== FEAT_DIM){
+            return;
+          }
+          pool.push(buffer);
+        },
+        reset(){ pool.length = 0; },
+      };
+    })();
+    // Buffers borrowed from engineeredFeaturePool must be released once their data has been
+    // consumed. Consumers that need feature vectors to persist beyond an evaluation should make
+    // their own copy rather than holding on to pooled instances.
     const pooledPiece = new Piece('I');
     const alphaSpawnPiece = new Piece('I');
     const simulateResultScratch = { lines: 0, grid: gridScratch, dropRow: 0, clearedRows: clearedRowsScratch, clearedRowCount: 0 };
@@ -5482,73 +5508,75 @@ export function initTraining(game, renderer) {
           baselineColumnMasks: baselineColumnMaskScratch,
           clearedRows: null,
         });
-        const rootEngineeredFeatures = new Float32Array(rootFeatureScratch.length);
+        const rootEngineeredFeatures = engineeredFeaturePool.acquire();
         rootEngineeredFeatures.set(rootFeatureScratch);
-        const alphaState = ensureAlphaState();
-        const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
-        if(!tf){
-          if(typeof console !== 'undefined' && console.warn){
-            console.warn('TensorFlow.js unavailable for AlphaTetris evaluation.');
-          }
-          return [];
-        }
-
-        let rootPolicyLogits = null;
-        let rootMask = null;
-        try {
-          const baseInputs = prepareAlphaInputs({
-            grid,
-            active: state.active,
-            next: state.next,
-            preview: state.preview || null,
-            nextQueue: state.nextQueue || null,
-            score: state.score,
-            level: state.level,
-            pieces: state.pieces,
-            gravity: state.gravity,
-            lines: 0,
-            newHoles: 0,
-            engineeredFeatures: rootEngineeredFeatures,
-          }, {
-            columnHeights: baselineColumnHeightScratch,
-            columnMasks: baselineColumnMaskScratch,
-          });
-          rootMask = baseInputs.policyMask;
-          if(alphaState){
-            alphaState.lastPreparedInputs = {
-              board: baseInputs.board,
-              aux: baseInputs.aux,
-              mask: baseInputs.policyMask ? new Float32Array(baseInputs.policyMask) : null,
-            };
-          }
-          const rootResult = runAlphaInference(model, { board: baseInputs.board, aux: baseInputs.aux }, { reuseGraph: true, tf });
-          if(rootResult && Array.isArray(rootResult.policyLogits) && rootResult.policyLogits.length){
-            rootPolicyLogits = rootResult.policyLogits[0];
-            alphaState.lastPolicyLogits = rootPolicyLogits ? rootPolicyLogits.slice() : null;
-          } else {
-            alphaState.lastPolicyLogits = null;
-          }
-          if(rootResult && rootResult.values && rootResult.values.length){
-            const rv = rootResult.values[0];
-            alphaState.lastRootValue = Number.isFinite(rv) ? rv : 0;
-          } else {
-            alphaState.lastRootValue = 0;
-          }
-        } catch (err) {
-          if(typeof console !== 'undefined' && console.error){
-            console.error('AlphaTetris root inference failed', err);
-          }
-          rootPolicyLogits = null;
-          rootMask = null;
-          alphaState.lastPolicyLogits = null;
-          alphaState.lastRootValue = 0;
-          if(alphaState){
-            alphaState.lastPreparedInputs = null;
-          }
-        }
-
         const candidateStates = [];
         const candidates = [];
+        const pooledCandidateFeatures = [];
+        const alphaState = ensureAlphaState();
+        try {
+          const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+          if(!tf){
+            if(typeof console !== 'undefined' && console.warn){
+              console.warn('TensorFlow.js unavailable for AlphaTetris evaluation.');
+            }
+            return [];
+          }
+
+          let rootPolicyLogits = null;
+          let rootMask = null;
+          try {
+            const baseInputs = prepareAlphaInputs({
+              grid,
+              active: state.active,
+              next: state.next,
+              preview: state.preview || null,
+              nextQueue: state.nextQueue || null,
+              score: state.score,
+              level: state.level,
+              pieces: state.pieces,
+              gravity: state.gravity,
+              lines: 0,
+              newHoles: 0,
+              engineeredFeatures: rootEngineeredFeatures,
+            }, {
+              columnHeights: baselineColumnHeightScratch,
+              columnMasks: baselineColumnMaskScratch,
+            });
+            rootMask = baseInputs.policyMask;
+            if(alphaState){
+              alphaState.lastPreparedInputs = {
+                board: baseInputs.board,
+                aux: baseInputs.aux,
+                mask: baseInputs.policyMask ? new Float32Array(baseInputs.policyMask) : null,
+              };
+            }
+            const rootResult = runAlphaInference(model, { board: baseInputs.board, aux: baseInputs.aux }, { reuseGraph: true, tf });
+            if(rootResult && Array.isArray(rootResult.policyLogits) && rootResult.policyLogits.length){
+              rootPolicyLogits = rootResult.policyLogits[0];
+              alphaState.lastPolicyLogits = rootPolicyLogits ? rootPolicyLogits.slice() : null;
+            } else {
+              alphaState.lastPolicyLogits = null;
+            }
+            if(rootResult && rootResult.values && rootResult.values.length){
+              const rv = rootResult.values[0];
+              alphaState.lastRootValue = Number.isFinite(rv) ? rv : 0;
+            } else {
+              alphaState.lastRootValue = 0;
+            }
+          } catch (err) {
+            if(typeof console !== 'undefined' && console.error){
+              console.error('AlphaTetris root inference failed', err);
+            }
+            rootPolicyLogits = null;
+            rootMask = null;
+            alphaState.lastPolicyLogits = null;
+            alphaState.lastRootValue = 0;
+            if(alphaState){
+              alphaState.lastPreparedInputs = null;
+            }
+          }
+
         const basePieces = Number.isFinite(state.pieces) ? state.pieces : 0;
         const baseLevel = Number.isFinite(state.level) ? state.level : 0;
         const baseScore = Number.isFinite(state.score) ? state.score : 0;
@@ -5589,8 +5617,9 @@ export function initTraining(game, renderer) {
             baselineColumnMasks: baselineColumnMaskScratch,
             clearedRows: sim.clearedRows,
           });
-          const engineeredFeatures = new Float32Array(featureScratch.length);
+          const engineeredFeatures = engineeredFeaturePool.acquire();
           engineeredFeatures.set(featureScratch);
+          pooledCandidateFeatures.push(engineeredFeatures);
           const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
           const newHoleCount = engineeredFeatures.length > newHoleIndex
             ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
@@ -5660,62 +5689,81 @@ export function initTraining(game, renderer) {
           });
         }
 
-        const count = candidates.length;
-        if(!count){
-          if(alphaState){
-            alphaState.lastPreparedInputs = null;
+          const count = candidates.length;
+          if(!count){
+            if(alphaState){
+              alphaState.lastPreparedInputs = null;
+            }
+            return [];
           }
-          return [];
-        }
 
-        const boardTensorData = new Float32Array(count * ALPHA_BOARD_SIZE);
-        const auxTensorData = new Float32Array(count * ALPHA_AUX_FEATURE_COUNT);
-        for(let i = 0; i < count; i += 1){
-          const boardOffset = i * ALPHA_BOARD_SIZE;
-          const auxOffset = i * ALPHA_AUX_FEATURE_COUNT;
-          prepareAlphaInputs(candidateStates[i], {
-            boardBuffer: boardTensorData,
-            boardOffset,
-            auxBuffer: auxTensorData,
-            auxOffset,
-            columnHeights: candidateStates[i].columnHeights,
-            columnMasks: candidateStates[i].columnMasks,
-          });
-        }
-
-        let boardTensor = null;
-        let auxTensor = null;
-        let inferenceResult = null;
-        try {
-          boardTensor = tf.tensor(boardTensorData, [count, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS], 'float32');
-          auxTensor = tf.tensor(auxTensorData, [count, ALPHA_AUX_FEATURE_COUNT], 'float32');
-          inferenceResult = runAlphaInference(model, { boardTensor, auxTensor }, { reuseGraph: true, tf });
-        } catch (err) {
-          if(typeof console !== 'undefined' && console.error){
-            console.error('AlphaTetris placement inference failed', err);
+          const boardTensorData = new Float32Array(count * ALPHA_BOARD_SIZE);
+          const auxTensorData = new Float32Array(count * ALPHA_AUX_FEATURE_COUNT);
+          for(let i = 0; i < count; i += 1){
+            const boardOffset = i * ALPHA_BOARD_SIZE;
+            const auxOffset = i * ALPHA_AUX_FEATURE_COUNT;
+            prepareAlphaInputs(candidateStates[i], {
+              boardBuffer: boardTensorData,
+              boardOffset,
+              auxBuffer: auxTensorData,
+              auxOffset,
+              columnHeights: candidateStates[i].columnHeights,
+              columnMasks: candidateStates[i].columnMasks,
+            });
+            const pooled = pooledCandidateFeatures[i];
+            if(pooled){
+              engineeredFeaturePool.release(pooled);
+              pooledCandidateFeatures[i] = null;
+              candidateStates[i].engineeredFeatures = null;
+            }
           }
-          inferenceResult = null;
+
+          let boardTensor = null;
+          let auxTensor = null;
+          let inferenceResult = null;
+          try {
+            boardTensor = tf.tensor(boardTensorData, [count, ALPHA_BOARD_HEIGHT, ALPHA_BOARD_WIDTH, ALPHA_BOARD_CHANNELS], 'float32');
+            auxTensor = tf.tensor(auxTensorData, [count, ALPHA_AUX_FEATURE_COUNT], 'float32');
+            inferenceResult = runAlphaInference(model, { boardTensor, auxTensor }, { reuseGraph: true, tf });
+          } catch (err) {
+            if(typeof console !== 'undefined' && console.error){
+              console.error('AlphaTetris placement inference failed', err);
+            }
+            inferenceResult = null;
+          } finally {
+            if(boardTensor){ boardTensor.dispose(); }
+            if(auxTensor){ auxTensor.dispose(); }
+          }
+
+          const values = inferenceResult && inferenceResult.values ? inferenceResult.values : null;
+          for(let i = 0; i < candidates.length; i += 1){
+            const candidate = candidates[i];
+            const predicted = values && values.length > i ? values[i] : 0;
+            const sanitized = Number.isFinite(predicted) ? predicted : 0;
+            candidate.value = candidate.topOut ? ALPHA_TOP_OUT_VALUE : sanitized;
+            candidate.alpha.value = sanitized;
+            if(rootPolicyLogits && rootPolicyLogits.length > candidate.policyIndex){
+              const logit = rootPolicyLogits[candidate.policyIndex];
+              candidate.policyLogit = Number.isFinite(logit) ? logit : candidate.value;
+            } else {
+              candidate.policyLogit = candidate.value;
+            }
+          }
+
+          return candidates;
         } finally {
-          if(boardTensor){ boardTensor.dispose(); }
-          if(auxTensor){ auxTensor.dispose(); }
-        }
-
-        const values = inferenceResult && inferenceResult.values ? inferenceResult.values : null;
-        for(let i = 0; i < candidates.length; i += 1){
-          const candidate = candidates[i];
-          const predicted = values && values.length > i ? values[i] : 0;
-          const sanitized = Number.isFinite(predicted) ? predicted : 0;
-          candidate.value = candidate.topOut ? ALPHA_TOP_OUT_VALUE : sanitized;
-          candidate.alpha.value = sanitized;
-          if(rootPolicyLogits && rootPolicyLogits.length > candidate.policyIndex){
-            const logit = rootPolicyLogits[candidate.policyIndex];
-            candidate.policyLogit = Number.isFinite(logit) ? logit : candidate.value;
-          } else {
-            candidate.policyLogit = candidate.value;
+          for(let i = 0; i < pooledCandidateFeatures.length; i += 1){
+            const pooled = pooledCandidateFeatures[i];
+            if(pooled){
+              engineeredFeaturePool.release(pooled);
+              pooledCandidateFeatures[i] = null;
+            }
           }
+          for(let i = 0; i < candidateStates.length; i += 1){
+            candidateStates[i].engineeredFeatures = null;
+          }
+          engineeredFeaturePool.release(rootEngineeredFeatures);
         }
-
-        return candidates;
       });
     }
 
@@ -5744,151 +5792,169 @@ export function initTraining(game, renderer) {
           baselineColumnMasks: baselineColumnMaskScratch,
           clearedRows: null,
         });
-        const baselineEngineeredFeatures = new Float32Array(baselineFeatureScratch.length);
+        const baselineEngineeredFeatures = engineeredFeaturePool.acquire();
         baselineEngineeredFeatures.set(baselineFeatureScratch);
-        const needRawFeatures = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw';
-        for(const placement of placements){
-          const key = placementSurrogateKeyFor(
-            curShape,
-            placement.rot,
-            placement.col,
-            baselineColumnMaskScratch,
-            baselineColumnHeightScratch,
-          );
-          let surrogateResult = null;
-          let attemptedSurrogate = false;
-          if(placementSurrogate.enabled && key){
-            attemptedSurrogate = true;
-            placementSurrogate.stats.attempts += 1;
-            const startEstimate = surrogateTimerNow();
-            const estimate = estimatePlacementWithSurrogate(key, {
-              baselineRowMasks: baselineRowMaskScratch,
-              baselineColumnMasks: baselineColumnMaskScratch,
-              baselineColumnHeights: baselineColumnHeightScratch,
-              needRawFeatures,
-            });
-            placementSurrogate.stats.timeSurrogate += surrogateTimerNow() - startEstimate;
-            if(
-              estimate &&
-              (!needRawFeatures || (estimate.rawFeatures && estimate.rawFeatures.length === RAW_FEAT_DIM))
-            ){
-              surrogateResult = estimate;
-              placementSurrogate.stats.successes += 1;
-            } else {
-              placementSurrogate.stats.fallbacks += 1;
+        try {
+          const needRawFeatures = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw';
+          for(const placement of placements){
+            const key = placementSurrogateKeyFor(
+              curShape,
+              placement.rot,
+              placement.col,
+              baselineColumnMaskScratch,
+              baselineColumnHeightScratch,
+            );
+            let surrogateResult = null;
+            let attemptedSurrogate = false;
+            if(placementSurrogate.enabled && key){
+              attemptedSurrogate = true;
+              placementSurrogate.stats.attempts += 1;
+              const startEstimate = surrogateTimerNow();
+              const estimate = estimatePlacementWithSurrogate(key, {
+                baselineRowMasks: baselineRowMaskScratch,
+                baselineColumnMasks: baselineColumnMaskScratch,
+                baselineColumnHeights: baselineColumnHeightScratch,
+                needRawFeatures,
+              });
+              placementSurrogate.stats.timeSurrogate += surrogateTimerNow() - startEstimate;
+              if(
+                estimate &&
+                (!needRawFeatures || (estimate.rawFeatures && estimate.rawFeatures.length === RAW_FEAT_DIM))
+              ){
+                surrogateResult = estimate;
+                placementSurrogate.stats.successes += 1;
+              } else {
+                placementSurrogate.stats.fallbacks += 1;
+              }
             }
-          }
-          let lines = 0;
-          let dropRow = null;
-          let topOut = false;
-          let engineeredFeatures = null;
-          let newHoleCount = 0;
-          let baseFeats = null;
-          let reward = 0;
-          if(!surrogateResult){
-            const simStart = attemptedSurrogate ? surrogateTimerNow() : null;
-            const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
-            if(attemptedSurrogate && simStart !== null){
-              placementSurrogate.stats.timeFallback += surrogateTimerNow() - simStart;
-            }
-            if(!sim){
-              continue;
-            }
-            lines = Number.isFinite(sim.lines) ? sim.lines : 0;
-            dropRow = sim.dropRow;
-            topOut = sim.grid[0].some((cell) => cell !== 0);
-            const engineeredScratch = featuresFromGrid(sim.grid, lines, {
-              holeBaseline: baselineHoles,
-              baselineColumnMasks: baselineColumnMaskScratch,
-              clearedRows: sim.clearedRows,
-            });
-            engineeredFeatures = new Float32Array(engineeredScratch.length);
-            engineeredFeatures.set(engineeredScratch);
-            const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
-            newHoleCount = engineeredFeatures.length > newHoleIndex
-              ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
-              : 0;
-            reward = computePlacementReward({
-              lines,
-              features: engineeredFeatures,
-              baselineFeatures: baselineEngineeredFeatures,
-              newHoleCount,
-              topOut,
-            });
-            baseFeats = needRawFeatures ? rawFeaturesFromGrid(sim.grid) : engineeredFeatures;
-          } else {
-            lines = Number.isFinite(surrogateResult.lines) ? surrogateResult.lines : 0;
-            dropRow = surrogateResult.dropRow;
-            topOut = !!surrogateResult.topOut;
-            engineeredFeatures = surrogateResult.engineeredFeatures;
-            const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
-            newHoleCount = engineeredFeatures.length > newHoleIndex
-              ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
-              : 0;
-            reward = computePlacementReward({
-              lines,
-              features: engineeredFeatures,
-              baselineFeatures: baselineEngineeredFeatures,
-              newHoleCount,
-              topOut,
-            });
-            baseFeats = needRawFeatures ? surrogateResult.rawFeatures : engineeredFeatures;
-            if(placementSurrogate.debugCompare){
-              const debugStart = surrogateTimerNow();
-              const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
-              placementSurrogate.stats.timeDebugCompare += surrogateTimerNow() - debugStart;
-              if(sim){
-                placementSurrogate.stats.comparisons += 1;
-                const simLines = Number.isFinite(sim.lines) ? sim.lines : 0;
-                const simTopOut = sim.grid[0].some((cell) => cell !== 0);
-                const simFeaturesScratch = featuresFromGrid(sim.grid, simLines, {
+            let lines = 0;
+            let dropRow = null;
+            let topOut = false;
+            let newHoleCount = 0;
+            let baseFeats = null;
+            let reward = 0;
+            let engineeredFeatures = null;
+            let engineeredFromPool = false;
+            try {
+              if(!surrogateResult){
+                const simStart = attemptedSurrogate ? surrogateTimerNow() : null;
+                const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
+                if(attemptedSurrogate && simStart !== null){
+                  placementSurrogate.stats.timeFallback += surrogateTimerNow() - simStart;
+                }
+                if(!sim){
+                  continue;
+                }
+                lines = Number.isFinite(sim.lines) ? sim.lines : 0;
+                dropRow = sim.dropRow;
+                topOut = sim.grid[0].some((cell) => cell !== 0);
+                const engineeredScratch = featuresFromGrid(sim.grid, lines, {
                   holeBaseline: baselineHoles,
                   baselineColumnMasks: baselineColumnMaskScratch,
                   clearedRows: sim.clearedRows,
                 });
-                const simFeatures = new Float32Array(simFeaturesScratch.length);
-                simFeatures.set(simFeaturesScratch);
-                let mismatch = false;
-                if(simLines !== lines || simTopOut !== topOut){
-                  mismatch = true;
-                } else {
-                  const tol = 1e-4;
-                  const len = Math.min(simFeatures.length, engineeredFeatures.length);
-                  for(let i = 0; i < len; i += 1){
-                    if(Math.abs(simFeatures[i] - engineeredFeatures[i]) > tol){
+                engineeredFeatures = engineeredFeaturePool.acquire();
+                engineeredFeatures.set(engineeredScratch);
+                engineeredFromPool = true;
+              } else {
+                lines = Number.isFinite(surrogateResult.lines) ? surrogateResult.lines : 0;
+                dropRow = surrogateResult.dropRow;
+                topOut = !!surrogateResult.topOut;
+                engineeredFeatures = surrogateResult.engineeredFeatures;
+              }
+              if(!surrogateResult){
+                const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+                newHoleCount = engineeredFeatures.length > newHoleIndex
+                  ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
+                  : 0;
+                reward = computePlacementReward({
+                  lines,
+                  features: engineeredFeatures,
+                  baselineFeatures: baselineEngineeredFeatures,
+                  newHoleCount,
+                  topOut,
+                });
+                baseFeats = needRawFeatures ? rawFeaturesFromGrid(sim.grid) : engineeredFeatures;
+              } else {
+                const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+                newHoleCount = engineeredFeatures.length > newHoleIndex
+                  ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
+                  : 0;
+                reward = computePlacementReward({
+                  lines,
+                  features: engineeredFeatures,
+                  baselineFeatures: baselineEngineeredFeatures,
+                  newHoleCount,
+                  topOut,
+                });
+                baseFeats = needRawFeatures ? surrogateResult.rawFeatures : engineeredFeatures;
+                if(placementSurrogate.debugCompare){
+                  const debugStart = surrogateTimerNow();
+                  const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
+                  placementSurrogate.stats.timeDebugCompare += surrogateTimerNow() - debugStart;
+                  if(sim){
+                    placementSurrogate.stats.comparisons += 1;
+                    const simLines = Number.isFinite(sim.lines) ? sim.lines : 0;
+                    const simTopOut = sim.grid[0].some((cell) => cell !== 0);
+                    const simFeaturesScratch = featuresFromGrid(sim.grid, simLines, {
+                      holeBaseline: baselineHoles,
+                      baselineColumnMasks: baselineColumnMaskScratch,
+                      clearedRows: sim.clearedRows,
+                    });
+                    const simFeatures = new Float32Array(simFeaturesScratch.length);
+                    simFeatures.set(simFeaturesScratch);
+                    let mismatch = false;
+                    if(simLines !== lines || simTopOut !== topOut){
                       mismatch = true;
-                      break;
+                    } else {
+                      const tol = 1e-4;
+                      const len = Math.min(simFeatures.length, engineeredFeatures.length);
+                      for(let i = 0; i < len; i += 1){
+                        if(Math.abs(simFeatures[i] - engineeredFeatures[i]) > tol){
+                          mismatch = true;
+                          break;
+                        }
+                      }
+                    }
+                    if(mismatch){
+                      placementSurrogate.stats.mismatches += 1;
+                      if(typeof console !== 'undefined' && console.warn){
+                        console.warn('Surrogate mismatch', {
+                          shape: curShape,
+                          rot: placement.rot,
+                          col: placement.col,
+                          surrogate: { lines, topOut, features: engineeredFeatures },
+                          exact: { lines: simLines, topOut: simTopOut, features: simFeatures },
+                        });
+                      }
                     }
                   }
                 }
-                if(mismatch){
-                  placementSurrogate.stats.mismatches += 1;
-                  if(typeof console !== 'undefined' && console.warn){
-                    console.warn('Surrogate mismatch', {
-                      shape: curShape,
-                      rot: placement.rot,
-                      col: placement.col,
-                      surrogate: { lines, topOut, features: engineeredFeatures },
-                      exact: { lines: simLines, topOut: simTopOut, features: simFeatures },
-                    });
-                  }
-                }
+              }
+              if(!baseFeats){
+                baseFeats = engineeredFeatures;
+              }
+              const value = scoreFeats(weights, baseFeats);
+              actions.push({
+                key: key || `${placement.rot}|${placement.col}`,
+                rot: placement.rot,
+                col: placement.col,
+                dropRow,
+                lines,
+                value: Number.isFinite(value) ? value : 0,
+                reward: Number.isFinite(reward) ? reward : 0,
+              });
+            } finally {
+              if(engineeredFromPool && engineeredFeatures){
+                engineeredFeaturePool.release(engineeredFeatures);
               }
             }
           }
-          const value = scoreFeats(weights, baseFeats);
-          actions.push({
-            key: key || `${placement.rot}|${placement.col}`,
-            rot: placement.rot,
-            col: placement.col,
-            dropRow,
-            lines,
-            value: Number.isFinite(value) ? value : 0,
-            reward: Number.isFinite(reward) ? reward : 0,
-          });
+          maybeLogPlacementSurrogateStats();
+          return actions;
+        } finally {
+          engineeredFeaturePool.release(baselineEngineeredFeatures);
         }
-        maybeLogPlacementSurrogateStats();
-        return actions;
       });
     }
 
