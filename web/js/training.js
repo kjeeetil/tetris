@@ -7357,3 +7357,5 @@ export function initTraining(game, renderer, options = {}) {
   game.setGameOverHandler(onGameOver);
   return { train: window.__train, hooks };
 }
+
+}
