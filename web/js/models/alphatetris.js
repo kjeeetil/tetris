@@ -325,17 +325,148 @@ function computeBoardStats(grid) {
   };
 }
 
-function fillBoardTensor(boardBuffer, grid, active) {
+function isArrayLike(value) {
+  if (!value) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return true;
+  }
+  if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView) {
+    return ArrayBuffer.isView(value);
+  }
+  return false;
+}
+
+function hasEngineeredStats(stats) {
+  if (!stats || typeof stats !== 'object') {
+    return false;
+  }
+  const bump = Number.isFinite(stats.bumpiness)
+    ? stats.bumpiness
+    : Number.isFinite(stats.bump)
+      ? stats.bump
+      : null;
+  if (!Number.isFinite(bump)) {
+    return false;
+  }
+  const wells = Number.isFinite(stats.wellSum)
+    ? stats.wellSum
+    : Number.isFinite(stats.wells)
+      ? stats.wells
+      : null;
+  if (!Number.isFinite(wells)) {
+    return false;
+  }
+  const required = [
+    'holes',
+    'maxHeight',
+    'edgeWell',
+    'tetrisWell',
+    'contact',
+    'rowTransitions',
+    'colTransitions',
+    'aggregateHeight',
+  ];
+  for (let i = 0; i < required.length; i += 1) {
+    if (!Number.isFinite(stats[required[i]])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function fillBoardTensor(boardBuffer, grid, active, metrics = null) {
   const stride = ALPHA_BOARD_CHANNELS;
-  const stats = computeBoardStats(grid);
+  let stats = null;
+  let columnHeights = null;
+  let columnMasks = null;
+
+  if (metrics) {
+    if (isArrayLike(metrics)) {
+      columnHeights = metrics;
+    } else if (typeof metrics === 'object') {
+      const sourceStats = metrics.stats && typeof metrics.stats === 'object'
+        ? metrics.stats
+        : null;
+      if (sourceStats) {
+        stats = sourceStats;
+      } else if (
+        Number.isFinite(metrics.aggregateHeight)
+        || Number.isFinite(metrics.holes)
+        || Number.isFinite(metrics.bumpiness)
+        || Number.isFinite(metrics.bump)
+      ) {
+        stats = metrics;
+      }
+
+      if (isArrayLike(metrics.columnHeights)) {
+        columnHeights = metrics.columnHeights;
+      } else if (isArrayLike(metrics.heights)) {
+        columnHeights = metrics.heights;
+      }
+      if (isArrayLike(metrics.columnMasks)) {
+        columnMasks = metrics.columnMasks;
+      }
+      if (stats) {
+        if (!columnHeights) {
+          if (isArrayLike(stats.heights)) {
+            columnHeights = stats.heights;
+          } else if (isArrayLike(stats.columnHeights)) {
+            columnHeights = stats.columnHeights;
+          }
+        }
+        if (!columnMasks && isArrayLike(stats.columnMasks)) {
+          columnMasks = stats.columnMasks;
+        }
+      }
+    }
+  }
+
+  const resolveStats = () => {
+    if (!stats) {
+      stats = computeBoardStats(grid);
+      columnHeights = stats.heights;
+      columnMasks = stats.columnMasks;
+    }
+    return stats;
+  };
+
+  const heightNormalizer = ALPHA_BOARD_HEIGHT > 0 ? 1 / ALPHA_BOARD_HEIGHT : 0;
+
+  const heightForColumn = (col) => {
+    if (columnHeights && col < columnHeights.length) {
+      const value = columnHeights[col];
+      if (Number.isFinite(value) && value > 0) {
+        return value;
+      }
+      if (Number.isFinite(value)) {
+        return 0;
+      }
+    }
+    if (columnMasks && col < columnMasks.length) {
+      const mask = columnMasks[col] || 0;
+      if (!mask) {
+        return 0;
+      }
+      return (31 - Math.clz32(mask)) + 1;
+    }
+    const resolved = resolveStats();
+    if (resolved && resolved.heights && col < resolved.heights.length) {
+      const value = resolved.heights[col];
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+    return 0;
+  };
+
   for (let row = 0; row < ALPHA_BOARD_HEIGHT; row += 1) {
     for (let col = 0; col < ALPHA_BOARD_WIDTH; col += 1) {
       const cell = grid[row] && grid[row][col] ? 1 : 0;
       const baseIndex = (row * ALPHA_BOARD_WIDTH + col) * stride;
       boardBuffer[baseIndex] = cell;
       boardBuffer[baseIndex + 1] = 0;
-      const heightNorm = stats.heights[col] / ALPHA_BOARD_HEIGHT;
-      boardBuffer[baseIndex + 2] = heightNorm;
+      const heightNorm = heightForColumn(col) * heightNormalizer;
+      boardBuffer[baseIndex + 2] = Number.isFinite(heightNorm) ? heightNorm : 0;
     }
   }
 
@@ -474,6 +605,15 @@ function computeActionMask(shape) {
   return mask;
 }
 
+/**
+ * Prepare AlphaTetris model inputs from a game state.
+ *
+ * Options may include precomputed board metrics:
+ * - columnHeights/columnMasks: Arrays (or typed arrays) describing the current board columns.
+ * - boardStats: A stats object compatible with computeBoardStats().
+ * Providing these allows callers to skip redundant metric recomputation when they already
+ * evaluated the board elsewhere.
+ */
 export function prepareAlphaInputs(gameState = {}, options = {}) {
   const boardOffset = Number.isFinite(options.boardOffset)
     ? Math.max(0, Math.floor(options.boardOffset))
@@ -484,7 +624,20 @@ export function prepareAlphaInputs(gameState = {}, options = {}) {
     : new Float32Array(ALPHA_BOARD_SIZE);
   const grid = Array.isArray(gameState.grid) ? gameState.grid : [];
   const active = gameState.active || null;
-  const stats = fillBoardTensor(board, grid, active);
+  const columnHeightsOption = options.columnHeights || options.boardColumnHeights || null;
+  const columnMasksOption = options.columnMasks || options.boardColumnMasks || null;
+  const boardStatsOption = options.boardStats || null;
+  const boardMetrics = boardStatsOption || columnHeightsOption || columnMasksOption
+    ? {
+      stats: boardStatsOption,
+      columnHeights: columnHeightsOption,
+      columnMasks: columnMasksOption,
+    }
+    : null;
+  let stats = fillBoardTensor(board, grid, active, boardMetrics);
+  if (!stats && boardStatsOption) {
+    stats = boardStatsOption;
+  }
 
   const auxOffset = Number.isFinite(options.auxOffset)
     ? Math.max(0, Math.floor(options.auxOffset))
@@ -522,6 +675,9 @@ export function prepareAlphaInputs(gameState = {}, options = {}) {
   if (engineeredSource) {
     copyEngineeredFeatures(aux, offset, engineeredSource);
   } else {
+    if (!hasEngineeredStats(stats)) {
+      stats = computeBoardStats(grid);
+    }
     fillEngineeredFeatureVector(aux, offset, stats, gameState);
   }
   offset += ALPHA_ENGINEERED_FEATURES;
