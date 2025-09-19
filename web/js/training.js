@@ -297,6 +297,7 @@ export function initTraining(game, renderer) {
   const mlpConfigEl = document.getElementById('mlp-config');
   const mlpHiddenCountSel = document.getElementById('mlp-hidden-count');
   const mlpLayerControlsEl = document.getElementById('mlp-layer-controls');
+  const mctsControlsEl = document.getElementById('mcts-controls');
   const mctsSimulationInput = document.getElementById('mcts-simulations');
   const mctsCpuctInput = document.getElementById('mcts-cpuct');
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
@@ -1472,7 +1473,23 @@ export function initTraining(game, renderer) {
       }
     }
 
+    function syncMctsConfigVisibility(){
+      if(!mctsControlsEl){
+        return;
+      }
+      const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+      const activeModelType = (trainState && typeof trainState.modelType === 'string')
+        ? trainState.modelType
+        : currentModelType;
+      if(isAlphaModelType(activeModelType)){
+        mctsControlsEl.classList.remove('hidden');
+      } else {
+        mctsControlsEl.classList.add('hidden');
+      }
+    }
+
     function syncMctsControls(){
+      syncMctsConfigVisibility();
       if(!train || !train.ai || !train.ai.search){
         return;
       }
@@ -2017,6 +2034,7 @@ export function initTraining(game, renderer) {
       } else {
         mlpConfigEl.classList.add('hidden');
       }
+      syncMctsConfigVisibility();
     }
 
     function initMlpConfigUi(){
