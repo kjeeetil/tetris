@@ -3677,7 +3677,7 @@ export function initTraining(game, renderer) {
           const path = [{ node: root, reward: 0 }];
           let node = root;
           while(node.children && node.children.size > 0){
-            const [, child] = selectChild(node, cPuct);
+            const [, child] = selectChild(node, cPuct, discount);
             if(!child){
               break;
             }
@@ -3692,7 +3692,7 @@ export function initTraining(game, renderer) {
           backpropagate(path, leafValue, discount);
         }
 
-        const stats = visitStats(root);
+        const stats = visitStats(root, discount);
         const policyDistribution = computeVisitPolicy(stats, temperature);
         let chosen = null;
         if(temperature === 0){
