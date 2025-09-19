@@ -474,7 +474,6 @@ export function initTraining(game, renderer) {
     const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
     const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
     const ALPHA_METRIC_HISTORY_LIMIT = 400;
-    const ALPHA_METRIC_AGGREGATION_WINDOW = 200;
     const MAX_ALPHA_SNAPSHOTS = 200;
 
     function sanitizePositiveInt(value, fallback) {
@@ -2171,7 +2170,7 @@ export function initTraining(game, renderer) {
       const windowSize = Number.isFinite(windowStart) && Number.isFinite(windowEnd)
         ? Math.abs(windowEnd - windowStart) + 1
         : pending.totalSamples;
-      if(!Number.isFinite(windowSize) || windowSize < ALPHA_METRIC_AGGREGATION_WINDOW){
+      if(!Number.isFinite(windowSize) || windowSize <= 0){
         return false;
       }
 
@@ -2418,7 +2417,7 @@ export function initTraining(game, renderer) {
       const ranges = Array.isArray(history.stepRange) ? history.stepRange.slice() : [];
       const tracked = Array.isArray(history.metrics) ? history.metrics.slice() : [];
       if(!steps.length || !tracked.length){
-        showAlphaMetricMessage(`ConvNet loss statistics will appear once ${ALPHA_METRIC_AGGREGATION_WINDOW} training steps have been aggregated.`);
+        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
         return;
       }
       let selected = Array.isArray(history.selected) && history.selected.length
@@ -2498,7 +2497,9 @@ export function initTraining(game, renderer) {
             metaText = `Steps ${latestRange.start}–${latestRange.end}`;
           }
           if(Number.isFinite(latestRange.samples) && latestRange.samples){
-            metaText += ` (${latestRange.samples} samples)`;
+            const sampleCount = Math.max(1, Math.round(latestRange.samples));
+            const sampleLabel = sampleCount === 1 ? 'sample' : 'samples';
+            metaText += ` (${sampleCount} ${sampleLabel})`;
           }
         } else {
           const lastStep = steps[steps.length - 1];
@@ -2518,7 +2519,7 @@ export function initTraining(game, renderer) {
         rendered += 1;
       }
       if(rendered === 0){
-        showAlphaMetricMessage(`ConvNet loss statistics will appear once ${ALPHA_METRIC_AGGREGATION_WINDOW} training steps have been aggregated.`);
+        showAlphaMetricMessage('ConvNet loss statistics will appear once AlphaTetris training runs.');
       }
     }
 
