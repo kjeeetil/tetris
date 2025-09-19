@@ -228,22 +228,36 @@
                 ConvNet trains.
               </p>
             </div>
-            <div class="alpha-metrics-control">
-              <label for="alpha-metrics-select" class="alpha-metrics-control__label">Show metrics</label>
-              <select
-                id="alpha-metrics-select"
-                class="alpha-metrics-select"
-                multiple
-                aria-label="Select which ConvNet metrics to plot"
-              >
-                <option value="loss" selected>Total Loss</option>
-                <option value="policy_loss" selected>Policy Loss</option>
-                <option value="value_loss" selected>Value Loss</option>
-              </select>
+            <div class="alpha-metrics-actions">
+              <div class="alpha-metrics-toggle" role="group" aria-label="AlphaTetris plotting controls">
+                <span id="alpha-metrics-toggle-status" class="alpha-metrics-toggle__status">Live</span>
+                <button
+                  id="alpha-metrics-toggle"
+                  type="button"
+                  class="alpha-metrics-toggle__button"
+                  aria-pressed="true"
+                  aria-label="Toggle live plotting of ConvNet metrics"
+                >
+                  <span class="alpha-metrics-toggle__thumb" aria-hidden="true"></span>
+                </button>
+              </div>
+              <div class="alpha-metrics-control">
+                <label for="alpha-metrics-select" class="alpha-metrics-control__label">Show metrics</label>
+                <select
+                  id="alpha-metrics-select"
+                  class="alpha-metrics-select"
+                  multiple
+                  aria-label="Select which ConvNet metrics to plot"
+                >
+                  <option value="loss">Total Loss</option>
+                  <option value="policy_loss">Policy Loss</option>
+                  <option value="value_loss" selected>Value Loss</option>
+                </select>
+              </div>
             </div>
           </div>
           <p id="alpha-metric-empty" class="alpha-metric-empty" aria-live="polite">
-            ConvNet losses will appear once AlphaTetris training runs.
+            ConvNet loss statistics will appear once AlphaTetris training runs.
           </p>
           <div id="alpha-metric-plots" class="alpha-metric-plots" aria-live="polite"></div>
         </div>

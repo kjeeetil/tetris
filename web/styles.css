@@ -154,6 +154,62 @@ canvas {
   align-items: flex-start;
   justify-content: space-between;
 }
+.alpha-metrics-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+.alpha-metrics-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.alpha-metrics-toggle__status {
+  font-size: 0.72rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(249, 245, 255, 0.62);
+}
+.alpha-metrics-toggle__status[data-state='paused'] {
+  color: rgba(249, 245, 255, 0.42);
+}
+.alpha-metrics-toggle__button {
+  position: relative;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(249, 245, 255, 0.22);
+  background: rgba(24, 28, 45, 0.72);
+  box-shadow: inset 0 1px 0 rgba(249, 245, 255, 0.08);
+  transition: all 160ms ease;
+  cursor: pointer;
+}
+.alpha-metrics-toggle__button.is-active {
+  background: linear-gradient(135deg, rgba(79, 178, 114, 0.95), rgba(24, 137, 98, 0.95));
+  border-color: rgba(172, 252, 231, 0.6);
+  box-shadow: 0 8px 18px rgba(24, 137, 98, 0.35);
+}
+.alpha-metrics-toggle__button:focus-visible {
+  outline: 2px solid rgba(172, 252, 231, 0.95);
+  outline-offset: 3px;
+}
+.alpha-metrics-toggle__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f9f5ff;
+  box-shadow: 0 8px 16px rgba(10, 10, 26, 0.35);
+  transition: transform 160ms ease;
+}
+.alpha-metrics-toggle__button.is-active .alpha-metrics-toggle__thumb {
+  transform: translateX(20px);
+  background: #0f172a;
+  box-shadow: 0 8px 16px rgba(24, 137, 98, 0.35);
+}
 .alpha-metrics-heading {
   display: flex;
   flex-direction: column;
@@ -331,18 +387,32 @@ canvas {
   font-family: "Instrument Serif", serif;
   font-size: 1.32rem;
   color: #f9f5ff;
+  position: relative;
+}
+.alpha-metric-card__value::before {
+  content: attr(data-label);
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(249, 245, 255, 0.55);
+  margin-bottom: 0.18rem;
 }
 .alpha-metric-card__delta {
   font-size: 0.74rem;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(141, 225, 173, 0.8);
+  color: rgba(141, 225, 173, 0.82);
+  position: relative;
 }
-.alpha-metric-card__delta[data-trend='down'] {
-  color: rgba(249, 115, 22, 0.78);
-}
-.alpha-metric-card__delta[data-trend='flat'] {
-  color: rgba(249, 245, 255, 0.58);
+.alpha-metric-card__delta::before {
+  content: attr(data-label);
+  display: block;
+  font-size: 0.62rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(249, 245, 255, 0.55);
+  margin-bottom: 0.18rem;
 }
 .alpha-metric-card__meta {
   font-size: 0.72rem;
@@ -361,6 +431,9 @@ canvas {
 @media (min-width: 768px) {
   .alpha-metrics-header {
     flex-direction: row;
+    align-items: flex-end;
+  }
+  .alpha-metrics-actions {
     align-items: flex-end;
   }
   .alpha-metrics-control {
