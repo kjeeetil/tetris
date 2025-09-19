@@ -1,6 +1,5 @@
 import { HEIGHT, MAX_AI_STEPS_PER_FRAME, WIDTH } from './constants.js';
 import { Piece, SHAPES, UNIQUE_ROTATIONS, canMove, clearRows, emptyGrid, gravityForLevel, lock } from './engine.js';
-import { ensureTensorFlowVisLoaded } from './loader.js';
 import {
   ALPHA_ACTIONS,
   ALPHA_AUX_FEATURE_COUNT,
@@ -285,6 +284,9 @@ export function initTraining(game, renderer) {
   const trainStatus = document.getElementById('train-status');
   const architectureEl = document.getElementById('model-architecture');
   const networkVizEl = document.getElementById('network-viz');
+  const alphaMetricSelectEl = document.getElementById('alpha-metrics-select');
+  const alphaMetricPlotsEl = document.getElementById('alpha-metric-plots');
+  const alphaMetricEmptyEl = document.getElementById('alpha-metric-empty');
   const historySlider = document.getElementById('model-history-slider');
   const historyLabel = document.getElementById('model-history-label');
   const historyMeta = document.getElementById('model-history-meta');
@@ -294,6 +296,20 @@ export function initTraining(game, renderer) {
   const mctsSimulationInput = document.getElementById('mcts-simulations');
   const mctsCpuctInput = document.getElementById('mcts-cpuct');
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
+
+  let alphaMetricChoices = null;
+  const DEFAULT_ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
+  const ALPHA_METRIC_LABELS = {
+    loss: 'Total Loss',
+    policy_loss: 'Policy Loss',
+    value_loss: 'Value Loss',
+  };
+  const ALPHA_METRIC_STYLES = {
+    loss: { stroke: 'rgba(244, 247, 121, 0.92)', fill: 'rgba(244, 247, 121, 0.18)' },
+    policy_loss: { stroke: 'rgba(94, 74, 227, 0.9)', fill: 'rgba(94, 74, 227, 0.18)' },
+    value_loss: { stroke: 'rgba(79, 178, 114, 0.9)', fill: 'rgba(79, 178, 114, 0.16)' },
+  };
+  let alphaMetricSelection = DEFAULT_ALPHA_METRIC_NAMES.slice();
 
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
@@ -335,6 +351,62 @@ export function initTraining(game, renderer) {
   }
 
   window.logTrainingProfileSummary = logTrainingProfileSummary;
+
+  if (alphaMetricSelectEl) {
+    const selectedOptions = Array.isArray(alphaMetricSelectEl.selectedOptions)
+      ? Array.from(alphaMetricSelectEl.selectedOptions)
+      : Array.from(alphaMetricSelectEl.options || []).filter((option) => option && option.selected);
+    const initialValues = selectedOptions
+      .map((option) => option.value)
+      .filter((value) => DEFAULT_ALPHA_METRIC_NAMES.includes(value));
+    if (initialValues.length) {
+      alphaMetricSelection = initialValues;
+    } else {
+      alphaMetricSelection = DEFAULT_ALPHA_METRIC_NAMES.slice();
+      const options = Array.from(alphaMetricSelectEl.options || []);
+      for (let i = 0; i < options.length; i += 1) {
+        const option = options[i];
+        if (option) {
+          option.selected = alphaMetricSelection.includes(option.value);
+        }
+      }
+    }
+    if (typeof window !== 'undefined' && window.Choices && !alphaMetricChoices) {
+      try {
+        alphaMetricChoices = new window.Choices(alphaMetricSelectEl, {
+          removeItemButton: true,
+          shouldSort: false,
+          allowHTML: false,
+          itemSelectText: '',
+          position: 'bottom',
+        });
+      } catch (err) {
+        alphaMetricChoices = null;
+      }
+    }
+    alphaMetricSelectEl.addEventListener('change', () => {
+      const selected = Array.isArray(alphaMetricSelectEl.selectedOptions)
+        ? Array.from(alphaMetricSelectEl.selectedOptions)
+        : Array.from(alphaMetricSelectEl.options || []).filter((option) => option && option.selected);
+      const values = selected
+        .map((option) => option.value)
+        .filter((value) => DEFAULT_ALPHA_METRIC_NAMES.includes(value));
+      alphaMetricSelection = values.length ? values : [];
+      const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+      const alphaState = trainState && trainState.alpha ? trainState.alpha : null;
+      const training = alphaState && alphaState.training ? alphaState.training : null;
+      if (training && training.metricsHistory) {
+        training.metricsHistory.selected = alphaMetricSelection.slice();
+        renderAlphaMetricHistory(training);
+      } else if (!alphaMetricSelection.length) {
+        showAlphaMetricMessage('Select at least one metric to plot.');
+      } else {
+        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
+      }
+    });
+  }
+
+  showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
 
 
     // Features (scaled):
@@ -379,7 +451,7 @@ export function initTraining(game, renderer) {
     const DEFAULT_ALPHA_LEARNING_RATE = 1e-3;
     const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
     const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
-    const ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
+    const ALPHA_METRIC_NAMES = DEFAULT_ALPHA_METRIC_NAMES.slice();
     const ALPHA_METRIC_HISTORY_LIMIT = 400;
     const MAX_ALPHA_SNAPSHOTS = 200;
 
@@ -421,9 +493,8 @@ export function initTraining(game, renderer) {
         lastLoss: null,
         lastPolicyLoss: null,
         lastValueLoss: null,
-        metricsHistory: { epoch: [], history: {}, metrics: [] },
+        metricsHistory: { epoch: [], history: {}, metrics: [], selected: alphaMetricSelection.slice() },
         metricHistoryLimit: ALPHA_METRIC_HISTORY_LIMIT,
-        tfvisSurface: null,
         nextSnapshotStep: ALPHA_VIZ_UPDATE_FREQUENCY,
         lastConvSummary: null,
         lastConvMetrics: null,
@@ -455,6 +526,7 @@ export function initTraining(game, renderer) {
       }
       alphaState.training = createAlphaTrainingState(alphaState.config || {});
       alphaState.lastPreparedInputs = null;
+      showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
     }
 
     function prepareAlphaModelForTraining(model, alphaState) {
@@ -671,7 +743,7 @@ export function initTraining(game, renderer) {
       if (metrics && Number.isFinite(training.steps) && training.steps > prevSteps) {
         const appended = appendAlphaMetricHistory(training, training.steps, metrics);
         if (appended) {
-          await renderAlphaMetricHistory(training);
+          renderAlphaMetricHistory(training);
         }
         training.lastConvMetrics = metrics;
       }
@@ -1901,12 +1973,63 @@ export function initTraining(game, renderer) {
       networkVizEl.appendChild(container);
     }
 
+    function showAlphaMetricMessage(message){
+      if(alphaMetricPlotsEl){
+        alphaMetricPlotsEl.innerHTML = '';
+      }
+      if(alphaMetricEmptyEl){
+        if(typeof message === 'string' && message.trim()){
+          alphaMetricEmptyEl.textContent = message.trim();
+        }
+        alphaMetricEmptyEl.classList.remove('is-hidden');
+      }
+    }
+
+    function hideAlphaMetricMessage(){
+      if(alphaMetricEmptyEl){
+        alphaMetricEmptyEl.classList.add('is-hidden');
+      }
+    }
+
+    function syncAlphaMetricSelect(selection){
+      if(!alphaMetricSelectEl){
+        return;
+      }
+      const desired = Array.isArray(selection)
+        ? selection.filter((value, index, self) => self.indexOf(value) === index)
+        : [];
+      const options = Array.from(alphaMetricSelectEl.options || []);
+      for(let i = 0; i < options.length; i += 1){
+        const option = options[i];
+        if(option){
+          option.selected = desired.includes(option.value);
+        }
+      }
+      if(alphaMetricChoices
+        && typeof alphaMetricChoices.removeActiveItems === 'function'
+        && typeof alphaMetricChoices.setChoiceByValue === 'function'){
+        try {
+          alphaMetricChoices.removeActiveItems();
+          for(let i = 0; i < desired.length; i += 1){
+            alphaMetricChoices.setChoiceByValue(desired[i]);
+          }
+        } catch (_) {
+          /* ignore sync issues */
+        }
+      }
+    }
+
     function appendAlphaMetricHistory(training, step, metrics){
       if(!training || !metrics || !Number.isFinite(step)){
         return false;
       }
       if(!training.metricsHistory || typeof training.metricsHistory !== 'object'){
-        training.metricsHistory = { epoch: [], history: {}, metrics: [] };
+        training.metricsHistory = {
+          epoch: [],
+          history: {},
+          metrics: [],
+          selected: alphaMetricSelection.slice(),
+        };
       }
       const history = training.metricsHistory;
       const available = {};
@@ -1924,25 +2047,40 @@ export function initTraining(game, renderer) {
       if(!Array.isArray(history.metrics) || history.metrics.length === 0){
         history.metrics = availableNames.slice();
       } else {
-        history.metrics = history.metrics.filter((name) => availableNames.includes(name));
-        if(history.metrics.length === 0){
-          history.metrics = availableNames.slice();
+        const filtered = history.metrics.filter((name) => availableNames.includes(name));
+        const additions = availableNames.filter((name) => !filtered.includes(name));
+        history.metrics = filtered.concat(additions);
+      }
+      let selectionChanged = false;
+      if(!Array.isArray(history.selected) || history.selected.length === 0){
+        const defaultSelected = alphaMetricSelection.length
+          ? alphaMetricSelection.filter((name) => history.metrics.includes(name))
+          : history.metrics.slice();
+        history.selected = defaultSelected.length ? defaultSelected : history.metrics.slice();
+        selectionChanged = true;
+      } else {
+        const filteredSelection = history.selected.filter((name) => history.metrics.includes(name));
+        if(filteredSelection.length !== history.selected.length){
+          history.selected = filteredSelection.length ? filteredSelection : history.metrics.slice();
+          selectionChanged = true;
         }
       }
-      const tracked = history.metrics;
-      if(tracked.length === 0){
-        return false;
+      alphaMetricSelection = history.selected.slice();
+      if(selectionChanged){
+        syncAlphaMetricSelect(alphaMetricSelection);
       }
       if(!Array.isArray(history.epoch)){
         history.epoch = [];
       }
       history.epoch.push(step);
+      const tracked = history.metrics;
       for(let i = 0; i < tracked.length; i += 1){
         const name = tracked[i];
         if(!Array.isArray(history.history[name])){
           history.history[name] = [];
         }
-        history.history[name].push(available[name]);
+        const value = available[name];
+        history.history[name].push(value !== undefined ? value : null);
       }
       const maxPoints = Number.isFinite(training.metricHistoryLimit)
         ? Math.max(10, Math.floor(training.metricHistoryLimit))
@@ -1966,43 +2104,276 @@ export function initTraining(game, renderer) {
       return true;
     }
 
-    async function renderAlphaMetricHistory(training){
+    function drawAlphaMetricSeries(canvas, steps, series, style){
+      if(!canvas || !Array.isArray(series) || series.length === 0){
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if(!ctx){
+        return;
+      }
+      const ratio = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+      const rect = canvas.getBoundingClientRect();
+      const baseWidth = rect && rect.width ? rect.width : canvas.width || 280;
+      const baseHeight = rect && rect.height ? rect.height : canvas.height || 180;
+      const width = Math.max(220, baseWidth);
+      const height = Math.max(150, baseHeight);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(ratio, ratio);
+      ctx.clearRect(0, 0, width, height);
+
+      const background = ctx.createLinearGradient(0, 0, 0, height);
+      background.addColorStop(0, 'rgba(94, 74, 227, 0.08)');
+      background.addColorStop(1, 'rgba(12, 59, 46, 0.32)');
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, width, height);
+
+      const margin = { top: 18, right: 24, bottom: 32, left: 56 };
+      const chartWidth = Math.max(1, width - margin.left - margin.right);
+      const chartHeight = Math.max(1, height - margin.top - margin.bottom);
+      const finiteValues = series.filter((value) => Number.isFinite(value));
+      if(!finiteValues.length){
+        return;
+      }
+      let minY = Math.min(...finiteValues);
+      let maxY = Math.max(...finiteValues);
+      if(minY === maxY){
+        const offset = Math.abs(minY) > 1e-6 ? Math.abs(minY) * 0.2 : 1;
+        minY -= offset;
+        maxY += offset;
+      } else {
+        const pad = (maxY - minY) * 0.12;
+        minY -= pad;
+        maxY += pad;
+      }
+      if(!Number.isFinite(minY) || !Number.isFinite(maxY)){
+        return;
+      }
+      const firstStep = Array.isArray(steps) && steps.length && Number.isFinite(steps[0]) ? steps[0] : 0;
+      const lastStep = Array.isArray(steps) && steps.length && Number.isFinite(steps[steps.length - 1])
+        ? steps[steps.length - 1]
+        : firstStep + series.length - 1;
+      const stepRange = lastStep - firstStep;
+      const fallbackDenom = series.length > 1 ? series.length - 1 : 1;
+
+      const computeX = (index) => {
+        const step = Array.isArray(steps) && steps.length > index && Number.isFinite(steps[index])
+          ? steps[index]
+          : firstStep + index;
+        const norm = stepRange > 0 ? (step - firstStep) / stepRange : (fallbackDenom ? index / fallbackDenom : 0);
+        return margin.left + norm * chartWidth;
+      };
+      const computeY = (value) => {
+        const denom = maxY - minY || 1;
+        const norm = (value - minY) / denom;
+        return margin.top + (1 - norm) * chartHeight;
+      };
+
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(249, 245, 255, 0.12)';
+      ctx.setLineDash([4, 6]);
+      const gridLines = 4;
+      for(let i = 0; i <= gridLines; i += 1){
+        const y = margin.top + (chartHeight * i) / gridLines;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, y);
+        ctx.lineTo(margin.left + chartWidth, y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      if(minY < 0 && maxY > 0){
+        const zeroNorm = (0 - minY) / (maxY - minY || 1);
+        const zeroY = margin.top + chartHeight - zeroNorm * chartHeight;
+        ctx.strokeStyle = 'rgba(249, 245, 255, 0.32)';
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(margin.left, zeroY);
+        ctx.lineTo(margin.left + chartWidth, zeroY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      const stroke = style && style.stroke ? style.stroke : 'rgba(244, 247, 121, 0.92)';
+      const fillColor = style && style.fill ? style.fill : 'rgba(244, 247, 121, 0.18)';
+      ctx.lineWidth = 2.2;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = stroke;
+      const segments = [];
+      let segment = [];
+      let lastPoint = null;
+      for(let i = 0; i < series.length; i += 1){
+        const value = series[i];
+        if(!Number.isFinite(value)){
+          if(segment.length){
+            segments.push(segment);
+            segment = [];
+          }
+          continue;
+        }
+        const x = computeX(i);
+        const y = computeY(value);
+        segment.push({ x, y });
+        lastPoint = { x, y };
+      }
+      if(segment.length){
+        segments.push(segment);
+      }
+      const gradientFill = ctx.createLinearGradient(0, margin.top, 0, margin.top + chartHeight);
+      gradientFill.addColorStop(0, fillColor);
+      gradientFill.addColorStop(1, 'rgba(15, 19, 35, 0)');
+      for(let s = 0; s < segments.length; s += 1){
+        const points = segments[s];
+        if(points.length === 0){
+          continue;
+        }
+        if(points.length === 1){
+          ctx.beginPath();
+          ctx.fillStyle = stroke;
+          ctx.arc(points[0].x, points[0].y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for(let j = 1; j < points.length; j += 1){
+          ctx.lineTo(points[j].x, points[j].y);
+        }
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, margin.top + chartHeight);
+        for(let j = 0; j < points.length; j += 1){
+          ctx.lineTo(points[j].x, points[j].y);
+        }
+        ctx.lineTo(points[points.length - 1].x, margin.top + chartHeight);
+        ctx.closePath();
+        ctx.fillStyle = gradientFill;
+        ctx.fill();
+      }
+      if(lastPoint){
+        ctx.save();
+        ctx.fillStyle = stroke;
+        ctx.beginPath();
+        ctx.arc(lastPoint.x, lastPoint.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = 'rgba(15, 19, 35, 0.82)';
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      ctx.fillStyle = 'rgba(249, 245, 255, 0.6)';
+      ctx.font = '12px "Instrument Serif", serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(maxY.toFixed(3), margin.left - 8, margin.top + 4);
+      ctx.fillText(minY.toFixed(3), margin.left - 8, margin.top + chartHeight);
+      ctx.textAlign = 'center';
+      ctx.fillText(String(firstStep), margin.left, margin.top + chartHeight + 22);
+      ctx.fillText(String(lastStep), margin.left + chartWidth, margin.top + chartHeight + 22);
+    }
+
+    function renderAlphaMetricHistory(training){
+      if(!alphaMetricPlotsEl){
+        return;
+      }
       if(!training || !training.metricsHistory){
+        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
         return;
       }
       const history = training.metricsHistory;
-      const metrics = Array.isArray(history.metrics) ? history.metrics.slice() : [];
-      if(!metrics.length || !Array.isArray(history.epoch) || history.epoch.length === 0){
+      const steps = Array.isArray(history.epoch) ? history.epoch.slice() : [];
+      const tracked = Array.isArray(history.metrics) ? history.metrics.slice() : [];
+      if(!steps.length || !tracked.length){
+        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
         return;
       }
-      try {
-        const tfvis = await ensureTensorFlowVisLoaded();
-        if(!tfvis || !tfvis.show || typeof tfvis.show.history !== 'function'){
-          return;
+      let selected = Array.isArray(history.selected) && history.selected.length
+        ? history.selected.filter((name) => tracked.includes(name))
+        : alphaMetricSelection.filter((name) => tracked.includes(name));
+      if(!selected.length){
+        showAlphaMetricMessage('Select at least one metric to plot.');
+        return;
+      }
+      history.selected = selected.slice();
+      alphaMetricSelection = history.selected.slice();
+      hideAlphaMetricMessage();
+      alphaMetricPlotsEl.innerHTML = '';
+      let rendered = 0;
+      for(let i = 0; i < selected.length; i += 1){
+        const name = selected[i];
+        const series = history.history[name];
+        if(!Array.isArray(series) || series.length !== steps.length){
+          continue;
         }
-        const surface = training.tfvisSurface || { name: 'AlphaTetris Training Losses', tab: 'AlphaTetris' };
-        training.tfvisSurface = surface;
-        const plotHistory = { epoch: history.epoch.slice(), history: {} };
-        for(let i = 0; i < metrics.length; i += 1){
-          const name = metrics[i];
-          const series = history.history[name];
-          if(Array.isArray(series) && series.length === history.epoch.length){
-            plotHistory.history[name] = series.slice();
+        const card = document.createElement('div');
+        card.className = 'alpha-metric-card';
+
+        const header = document.createElement('div');
+        header.className = 'alpha-metric-card__header';
+
+        const title = document.createElement('div');
+        title.className = 'alpha-metric-card__title';
+        const swatch = document.createElement('span');
+        swatch.className = 'alpha-metric-card__swatch';
+        const style = ALPHA_METRIC_STYLES[name] || null;
+        if(style && style.stroke){
+          swatch.style.setProperty('--alpha-metric-color', style.stroke);
+        }
+        title.appendChild(swatch);
+        const nameEl = document.createElement('span');
+        nameEl.className = 'alpha-metric-card__name';
+        nameEl.textContent = ALPHA_METRIC_LABELS[name] || name;
+        title.appendChild(nameEl);
+        header.appendChild(title);
+
+        const stats = document.createElement('div');
+        stats.className = 'alpha-metric-card__stats';
+        const latest = series[series.length - 1];
+        const valueEl = document.createElement('div');
+        valueEl.className = 'alpha-metric-card__value';
+        valueEl.textContent = Number.isFinite(latest) ? latest.toFixed(4) : '—';
+        stats.appendChild(valueEl);
+        const deltaEl = document.createElement('div');
+        deltaEl.className = 'alpha-metric-card__delta';
+        const first = series[0];
+        if(Number.isFinite(first) && Number.isFinite(latest)){
+          const diff = latest - first;
+          const prefix = diff > 0 ? '▲' : diff < 0 ? '▼' : '±';
+          deltaEl.textContent = `${prefix}${Math.abs(diff).toFixed(4)}`;
+          if(diff > 0){
+            deltaEl.dataset.trend = 'up';
+          } else if(diff < 0){
+            deltaEl.dataset.trend = 'down';
+          } else {
+            deltaEl.dataset.trend = 'flat';
           }
+        } else {
+          deltaEl.textContent = '—';
+          deltaEl.dataset.trend = 'flat';
         }
-        const metricNames = Object.keys(plotHistory.history);
-        if(!metricNames.length){
-          return;
-        }
-        await tfvis.show.history(surface, plotHistory, metricNames, {
-          xLabel: 'Training Step',
-          yLabel: 'Loss',
-          height: 300,
-        });
-      } catch (err) {
-        if(typeof console !== 'undefined' && typeof console.warn === 'function'){
-          console.warn('Failed to render TensorFlow.js Vis history', err);
-        }
+        stats.appendChild(deltaEl);
+        header.appendChild(stats);
+        card.appendChild(header);
+
+        const meta = document.createElement('div');
+        meta.className = 'alpha-metric-card__meta';
+        const lastStep = steps[steps.length - 1];
+        meta.textContent = Number.isFinite(lastStep) ? `Step ${lastStep}` : '';
+        card.appendChild(meta);
+
+        const canvas = document.createElement('canvas');
+        canvas.className = 'alpha-metric-chart';
+        card.appendChild(canvas);
+
+        alphaMetricPlotsEl.appendChild(card);
+        drawAlphaMetricSeries(canvas, steps, series, style);
+        rendered += 1;
+      }
+      if(rendered === 0){
+        showAlphaMetricMessage('ConvNet losses will appear once AlphaTetris training runs.');
       }
     }
 
