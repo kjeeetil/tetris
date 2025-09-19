@@ -1,5 +1,6 @@
 import { HEIGHT, MAX_AI_STEPS_PER_FRAME, WIDTH } from './constants.js';
 import { Piece, SHAPES, UNIQUE_ROTATIONS, canMove, clearRows, emptyGrid, gravityForLevel, lock } from './engine.js';
+import { ensureTensorFlowVisLoaded } from './loader.js';
 import {
   ALPHA_ACTIONS,
   ALPHA_AUX_FEATURE_COUNT,
@@ -89,6 +90,57 @@ let randnSpare = null;
       total += size;
     }
     return total;
+  }
+
+  function cloneAlphaConvSummary(summary) {
+    if (!summary || typeof summary !== 'object') {
+      return null;
+    }
+    const cloned = {
+      step: Number.isFinite(summary.step) ? summary.step : null,
+      layers: [],
+    };
+    if (!Array.isArray(summary.layers) || !summary.layers.length) {
+      return cloned;
+    }
+    for (let i = 0; i < summary.layers.length; i += 1) {
+      const layer = summary.layers[i];
+      if (!layer || typeof layer !== 'object') {
+        continue;
+      }
+      const filters = [];
+      if (Array.isArray(layer.filters)) {
+        for (let j = 0; j < layer.filters.length; j += 1) {
+          const filter = layer.filters[j];
+          if (!filter || typeof filter !== 'object') {
+            continue;
+          }
+          const values = filter.values instanceof Float32Array
+            ? new Float32Array(filter.values)
+            : Array.isArray(filter.values)
+              ? Float32Array.from(filter.values)
+              : null;
+          filters.push({
+            index: Number.isFinite(filter.index) ? filter.index : j,
+            min: Number.isFinite(filter.min) ? filter.min : null,
+            max: Number.isFinite(filter.max) ? filter.max : null,
+            maxAbs: Number.isFinite(filter.maxAbs) ? filter.maxAbs : null,
+            values,
+          });
+        }
+      }
+      cloned.layers.push({
+        name: typeof layer.name === 'string' ? layer.name : `Conv ${i + 1}`,
+        kernelSize: Array.isArray(layer.kernelSize) ? layer.kernelSize.slice() : null,
+        inChannels: Number.isFinite(layer.inChannels) ? layer.inChannels : null,
+        outChannels: Number.isFinite(layer.outChannels) ? layer.outChannels : filters.length,
+        min: Number.isFinite(layer.min) ? layer.min : null,
+        max: Number.isFinite(layer.max) ? layer.max : null,
+        maxAbs: Number.isFinite(layer.maxAbs) ? layer.maxAbs : null,
+        filters,
+      });
+    }
+    return cloned;
   }
 
 function createTrainingProfiler() {
@@ -326,6 +378,10 @@ export function initTraining(game, renderer) {
     const DEFAULT_ALPHA_REPLAY_SIZE = 2048;
     const DEFAULT_ALPHA_LEARNING_RATE = 1e-3;
     const DEFAULT_ALPHA_VALUE_LOSS_WEIGHT = 0.5;
+    const ALPHA_VIZ_UPDATE_FREQUENCY = 50;
+    const ALPHA_METRIC_NAMES = ['loss', 'policy_loss', 'value_loss'];
+    const ALPHA_METRIC_HISTORY_LIMIT = 400;
+    const MAX_ALPHA_SNAPSHOTS = 200;
 
     function sanitizePositiveInt(value, fallback) {
       if (!Number.isFinite(value) || value <= 0) {
@@ -365,6 +421,13 @@ export function initTraining(game, renderer) {
         lastLoss: null,
         lastPolicyLoss: null,
         lastValueLoss: null,
+        metricsHistory: { epoch: [], history: {}, metrics: [] },
+        metricHistoryLimit: ALPHA_METRIC_HISTORY_LIMIT,
+        tfvisSurface: null,
+        nextSnapshotStep: ALPHA_VIZ_UPDATE_FREQUENCY,
+        lastConvSummary: null,
+        lastConvMetrics: null,
+        lastConvSummaryStep: null,
       };
     }
 
@@ -554,9 +617,12 @@ export function initTraining(game, renderer) {
       const auxTensor = tf.tensor(auxBatch, [batchSize, ALPHA_AUX_FEATURE_COUNT], 'float32');
       const policyTensor = tf.tensor(policyBatch, [batchSize, ALPHA_POLICY_SIZE], 'float32');
       const valueTensor = tf.tensor(valueBatch, [batchSize, 1], 'float32');
+      const prevSteps = training.steps;
+      let epochsRan = 0;
       try {
         const fitBatchSize = Math.max(1, Math.min(training.fitBatchSize || batchSize, batchSize));
         const epochs = Math.max(1, Math.floor(training.epochs || 1));
+        epochsRan = epochs;
         const history = await model.fit(
           { board: boardTensor, aux: auxTensor },
           { policy: policyTensor, value: valueTensor },
@@ -589,6 +655,38 @@ export function initTraining(game, renderer) {
         auxTensor.dispose();
         policyTensor.dispose();
         valueTensor.dispose();
+      }
+
+      const hasMetrics = Number.isFinite(training.lastLoss)
+        || Number.isFinite(training.lastPolicyLoss)
+        || Number.isFinite(training.lastValueLoss);
+      const metrics = hasMetrics
+        ? {
+            loss: Number.isFinite(training.lastLoss) ? training.lastLoss : null,
+            policy_loss: Number.isFinite(training.lastPolicyLoss) ? training.lastPolicyLoss : null,
+            value_loss: Number.isFinite(training.lastValueLoss) ? training.lastValueLoss : null,
+          }
+        : null;
+
+      if (metrics && Number.isFinite(training.steps) && training.steps > prevSteps) {
+        const appended = appendAlphaMetricHistory(training, training.steps, metrics);
+        if (appended) {
+          await renderAlphaMetricHistory(training);
+        }
+        training.lastConvMetrics = metrics;
+      }
+
+      if (epochsRan > 0 && Number.isFinite(training.steps)) {
+        const prevMilestones = Math.floor(prevSteps / ALPHA_VIZ_UPDATE_FREQUENCY);
+        const currMilestones = Math.floor(training.steps / ALPHA_VIZ_UPDATE_FREQUENCY);
+        if (currMilestones > prevMilestones) {
+          const milestoneStep = currMilestones * ALPHA_VIZ_UPDATE_FREQUENCY;
+          const recorded = recordAlphaMilestoneSnapshot(alphaState, training, model, milestoneStep, metrics);
+          training.nextSnapshotStep = (currMilestones + 1) * ALPHA_VIZ_UPDATE_FREQUENCY;
+          if (recorded) {
+            updateTrainStatus();
+          }
+        }
       }
     }
 
@@ -1065,7 +1163,15 @@ export function initTraining(game, renderer) {
       if(!entry){
         return describeModelArchitecture();
       }
-      const genLabel = Number.isFinite(entry.gen) ? `Gen ${entry.gen}` : 'Saved model';
+      const genLabel = (() => {
+        if(isAlphaModelType(entry.modelType) && Number.isFinite(entry.step)){
+          return `Step ${entry.step}`;
+        }
+        if(Number.isFinite(entry.gen)){
+          return `Gen ${entry.gen}`;
+        }
+        return 'Saved model';
+      })();
       const layerSizes = Array.isArray(entry.layerSizes) ? entry.layerSizes : null;
       if(isMlpModelType(entry.modelType) && layerSizes && layerSizes.length >= 2){
         const parts = layerSizes.map((size, idx) => {
@@ -1098,6 +1204,27 @@ export function initTraining(game, renderer) {
         return 'n/a';
       }
       return Math.round(value).toLocaleString();
+    }
+
+    function formatAlphaSnapshotMetrics(entry){
+      if(!entry || entry.modelType !== 'alphatetris'){
+        return [];
+      }
+      const metrics = entry.metrics || {};
+      const parts = [];
+      const loss = metrics.loss;
+      const policyLoss = metrics.policy_loss;
+      const valueLoss = metrics.value_loss;
+      if(Number.isFinite(loss)){
+        parts.push(`Loss ${loss.toFixed(4)}`);
+      }
+      if(Number.isFinite(policyLoss)){
+        parts.push(`Policy ${policyLoss.toFixed(4)}`);
+      }
+      if(Number.isFinite(valueLoss)){
+        parts.push(`Value ${valueLoss.toFixed(4)}`);
+      }
+      return parts;
     }
 
     function getHistorySelection(){
@@ -1144,7 +1271,13 @@ export function initTraining(game, renderer) {
           historyLabel.textContent = 'Live (current training)';
         } else {
           const entry = train.bestByGeneration[activeIndex];
-          historyLabel.textContent = `Gen ${entry.gen}`;
+          if(entry && isAlphaModelType(entry.modelType) && Number.isFinite(entry.step)){
+            historyLabel.textContent = `Step ${entry.step}`;
+          } else if(entry && Number.isFinite(entry.gen)){
+            historyLabel.textContent = `Gen ${entry.gen}`;
+          } else {
+            historyLabel.textContent = 'Stored snapshot';
+          }
         }
       }
 
@@ -1154,15 +1287,36 @@ export function initTraining(game, renderer) {
         } else if(activeIndex === null){
           const latest = train.bestByGeneration[total - 1];
           const info = [];
-          if(Number.isFinite(latest.gen)) info.push(`Latest stored: Gen ${latest.gen}`);
-          if(Number.isFinite(latest.fitness)) info.push(`Score ${formatScore(latest.fitness)}`);
-          if(latest.modelType) info.push(modelDisplayName(latest.modelType));
+          if(latest && latest.modelType === 'alphatetris'){
+            if(Number.isFinite(latest.step)) info.push(`Latest stored: Step ${latest.step}`);
+            const metricsParts = formatAlphaSnapshotMetrics(latest);
+            if(metricsParts.length){
+              info.push(...metricsParts);
+            }
+            if(!metricsParts.length && latest.modelType){
+              info.push(modelDisplayName(latest.modelType));
+            }
+          } else {
+            if(Number.isFinite(latest?.gen)) info.push(`Latest stored: Gen ${latest.gen}`);
+            if(Number.isFinite(latest?.fitness)) info.push(`Score ${formatScore(latest.fitness)}`);
+            if(latest?.modelType) info.push(modelDisplayName(latest.modelType));
+          }
           historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
         } else {
           const entry = train.bestByGeneration[activeIndex];
           const info = [];
-          if(entry.modelType) info.push(modelDisplayName(entry.modelType));
-          if(Number.isFinite(entry.fitness)) info.push(`Score ${formatScore(entry.fitness)}`);
+          if(entry && entry.modelType === 'alphatetris'){
+            if(Number.isFinite(entry.step)) info.push(`Step ${entry.step}`);
+            const metricsParts = formatAlphaSnapshotMetrics(entry);
+            if(metricsParts.length){
+              info.push(...metricsParts);
+            } else if(entry.modelType){
+              info.push(modelDisplayName(entry.modelType));
+            }
+          } else {
+            if(entry?.modelType) info.push(modelDisplayName(entry.modelType));
+            if(Number.isFinite(entry?.fitness)) info.push(`Score ${formatScore(entry.fitness)}`);
+          }
           historyMeta.textContent = info.length ? info.join(' • ') : 'Snapshot details unavailable.';
         }
       }
@@ -1210,6 +1364,7 @@ export function initTraining(game, renderer) {
       const prevLength = train.bestByGeneration.length;
       train.bestByGeneration.push({
         gen: snapshot.gen,
+        step: Number.isFinite(snapshot.step) ? snapshot.step : (Number.isFinite(snapshot.gen) ? snapshot.gen : null),
         fitness: snapshot.fitness,
         modelType: snapshot.modelType,
         dtype: snapshot.dtype || train.dtype || DEFAULT_DTYPE,
@@ -1217,6 +1372,12 @@ export function initTraining(game, renderer) {
         weights: snapshot.weights,
         scoreIndex: Number.isFinite(snapshot.scoreIndex) ? snapshot.scoreIndex : null,
         recordedAt: snapshot.recordedAt || Date.now(),
+        metrics: snapshot.metrics ? { ...snapshot.metrics } : null,
+        convSummary: snapshot.convSummary ? cloneAlphaConvSummary(snapshot.convSummary) : null,
+        architectureDescription: snapshot.architectureDescription
+          || snapshot.alphaDescription
+          || snapshot.architecture
+          || null,
       });
       if(train.historySelection !== null){
         const lastIdxBefore = Math.max(0, prevLength - 1);
@@ -1726,6 +1887,9 @@ export function initTraining(game, renderer) {
       if(!networkVizEl){
         return;
       }
+      networkVizEl.style.overflow = 'hidden';
+      networkVizEl.style.overflowY = 'hidden';
+      networkVizEl.style.overflowX = 'hidden';
       if(typeof document === 'undefined'){
         networkVizEl.textContent = message || `${ALPHATETRIS_MODEL_LABEL} visualization managed by TensorFlow.js.`;
         return;
@@ -1735,6 +1899,372 @@ export function initTraining(game, renderer) {
       container.className = 'alpha-network-placeholder';
       container.textContent = message || `${ALPHATETRIS_MODEL_LABEL} visualization managed by TensorFlow.js.`;
       networkVizEl.appendChild(container);
+    }
+
+    function appendAlphaMetricHistory(training, step, metrics){
+      if(!training || !metrics || !Number.isFinite(step)){
+        return false;
+      }
+      if(!training.metricsHistory || typeof training.metricsHistory !== 'object'){
+        training.metricsHistory = { epoch: [], history: {}, metrics: [] };
+      }
+      const history = training.metricsHistory;
+      const available = {};
+      for(let i = 0; i < ALPHA_METRIC_NAMES.length; i += 1){
+        const name = ALPHA_METRIC_NAMES[i];
+        const value = metrics[name];
+        if(Number.isFinite(value)){
+          available[name] = value;
+        }
+      }
+      const availableNames = Object.keys(available);
+      if(availableNames.length === 0){
+        return false;
+      }
+      if(!Array.isArray(history.metrics) || history.metrics.length === 0){
+        history.metrics = availableNames.slice();
+      } else {
+        history.metrics = history.metrics.filter((name) => availableNames.includes(name));
+        if(history.metrics.length === 0){
+          history.metrics = availableNames.slice();
+        }
+      }
+      const tracked = history.metrics;
+      if(tracked.length === 0){
+        return false;
+      }
+      if(!Array.isArray(history.epoch)){
+        history.epoch = [];
+      }
+      history.epoch.push(step);
+      for(let i = 0; i < tracked.length; i += 1){
+        const name = tracked[i];
+        if(!Array.isArray(history.history[name])){
+          history.history[name] = [];
+        }
+        history.history[name].push(available[name]);
+      }
+      const maxPoints = Number.isFinite(training.metricHistoryLimit)
+        ? Math.max(10, Math.floor(training.metricHistoryLimit))
+        : ALPHA_METRIC_HISTORY_LIMIT;
+      while(history.epoch.length > maxPoints){
+        history.epoch.shift();
+        for(let i = 0; i < tracked.length; i += 1){
+          const name = tracked[i];
+          const series = history.history[name];
+          if(Array.isArray(series) && series.length){
+            series.shift();
+          }
+        }
+      }
+      const trackedSet = new Set(tracked);
+      Object.keys(history.history).forEach((name) => {
+        if(!trackedSet.has(name)){
+          delete history.history[name];
+        }
+      });
+      return true;
+    }
+
+    async function renderAlphaMetricHistory(training){
+      if(!training || !training.metricsHistory){
+        return;
+      }
+      const history = training.metricsHistory;
+      const metrics = Array.isArray(history.metrics) ? history.metrics.slice() : [];
+      if(!metrics.length || !Array.isArray(history.epoch) || history.epoch.length === 0){
+        return;
+      }
+      try {
+        const tfvis = await ensureTensorFlowVisLoaded();
+        if(!tfvis || !tfvis.show || typeof tfvis.show.history !== 'function'){
+          return;
+        }
+        const surface = training.tfvisSurface || { name: 'AlphaTetris Training Losses', tab: 'AlphaTetris' };
+        training.tfvisSurface = surface;
+        const plotHistory = { epoch: history.epoch.slice(), history: {} };
+        for(let i = 0; i < metrics.length; i += 1){
+          const name = metrics[i];
+          const series = history.history[name];
+          if(Array.isArray(series) && series.length === history.epoch.length){
+            plotHistory.history[name] = series.slice();
+          }
+        }
+        const metricNames = Object.keys(plotHistory.history);
+        if(!metricNames.length){
+          return;
+        }
+        await tfvis.show.history(surface, plotHistory, metricNames, {
+          xLabel: 'Training Step',
+          yLabel: 'Loss',
+          height: 300,
+        });
+      } catch (err) {
+        if(typeof console !== 'undefined' && typeof console.warn === 'function'){
+          console.warn('Failed to render TensorFlow.js Vis history', err);
+        }
+      }
+    }
+
+    function captureAlphaConvSummary(model){
+      const tf = (typeof window !== 'undefined' && window.tf) ? window.tf : null;
+      if(!model || !tf || !Array.isArray(model.layers)){
+        return null;
+      }
+      const layers = [];
+      for(let i = 0; i < model.layers.length; i += 1){
+        const layer = model.layers[i];
+        if(!layer || typeof layer.getClassName !== 'function'){
+          continue;
+        }
+        if(layer.getClassName() !== 'Conv2D'){
+          continue;
+        }
+        let weights;
+        try {
+          weights = layer.getWeights();
+        } catch (_) {
+          weights = null;
+        }
+        if(!weights || !weights.length){
+          continue;
+        }
+        const kernel = weights[0];
+        const shape = kernel && Array.isArray(kernel.shape) ? kernel.shape : [];
+        if(shape.length !== 4){
+          weights.forEach((tensor) => { if(tensor && typeof tensor.dispose === 'function'){ tensor.dispose(); } });
+          continue;
+        }
+        const [kernelHeight, kernelWidth, inChannels, outChannels] = shape.map((dim) => Math.max(1, Math.floor(dim)));
+        let data;
+        try {
+          data = Float32Array.from(kernel.dataSync());
+        } catch (err) {
+          if(typeof console !== 'undefined' && typeof console.warn === 'function'){
+            console.warn('Failed to read convolution weights', err);
+          }
+          weights.forEach((tensor) => { if(tensor && typeof tensor.dispose === 'function'){ tensor.dispose(); } });
+          continue;
+        }
+        weights.forEach((tensor) => { if(tensor && typeof tensor.dispose === 'function'){ tensor.dispose(); } });
+        const filterCount = Math.max(1, outChannels);
+        const filters = [];
+        let globalMin = Infinity;
+        let globalMax = -Infinity;
+        for(let filter = 0; filter < filterCount; filter += 1){
+          const values = new Float32Array(kernelHeight * kernelWidth);
+          let min = Infinity;
+          let max = -Infinity;
+          for(let y = 0; y < kernelHeight; y += 1){
+            for(let x = 0; x < kernelWidth; x += 1){
+              let sum = 0;
+              for(let c = 0; c < inChannels; c += 1){
+                const idx = (((y * kernelWidth) + x) * inChannels + c) * filterCount + filter;
+                sum += data[idx] || 0;
+              }
+              const avg = sum / Math.max(1, inChannels);
+              const offset = y * kernelWidth + x;
+              values[offset] = avg;
+              if(avg < min) min = avg;
+              if(avg > max) max = avg;
+            }
+          }
+          globalMin = Math.min(globalMin, min);
+          globalMax = Math.max(globalMax, max);
+          filters.push({
+            index: filter,
+            min,
+            max,
+            maxAbs: Math.max(Math.abs(min), Math.abs(max)),
+            values,
+          });
+        }
+        layers.push({
+          name: typeof layer.name === 'string' ? layer.name : `Conv2D ${layers.length + 1}`,
+          kernelSize: [kernelHeight, kernelWidth],
+          inChannels,
+          outChannels: filterCount,
+          min: Number.isFinite(globalMin) ? globalMin : null,
+          max: Number.isFinite(globalMax) ? globalMax : null,
+          maxAbs: Math.max(Math.abs(globalMin), Math.abs(globalMax)),
+          filters,
+        });
+      }
+      if(!layers.length){
+        return null;
+      }
+      return { step: null, layers };
+    }
+
+    function lerpColor(from, to, t){
+      const clamped = Math.max(0, Math.min(1, t));
+      return [
+        Math.round(from[0] + (to[0] - from[0]) * clamped),
+        Math.round(from[1] + (to[1] - from[1]) * clamped),
+        Math.round(from[2] + (to[2] - from[2]) * clamped),
+      ];
+    }
+
+    function mapAlphaConvColor(norm){
+      if(!Number.isFinite(norm)){
+        return [229, 231, 235];
+      }
+      const neutral = [229, 231, 235];
+      const positive = [249, 115, 22];
+      const negative = [59, 130, 246];
+      const clamped = Math.max(-1, Math.min(1, norm));
+      if(clamped >= 0){
+        return lerpColor(neutral, positive, clamped);
+      }
+      return lerpColor(neutral, negative, -clamped);
+    }
+
+    function drawAlphaConvFilter(canvas, values, kernelWidth, kernelHeight, scale){
+      if(!canvas || !values){
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if(!ctx){
+        return;
+      }
+      const width = Math.max(1, kernelWidth);
+      const height = Math.max(1, kernelHeight);
+      const imageData = ctx.createImageData(width, height);
+      const denom = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      for(let y = 0; y < height; y += 1){
+        for(let x = 0; x < width; x += 1){
+          const value = values[y * width + x] || 0;
+          const norm = Math.max(-1, Math.min(1, value / denom));
+          const [r, g, b] = mapAlphaConvColor(norm);
+          const idx = (y * width + x) * 4;
+          imageData.data[idx] = r;
+          imageData.data[idx + 1] = g;
+          imageData.data[idx + 2] = b;
+          imageData.data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    function renderAlphaConvFilters(summary, options = {}){
+      if(!networkVizEl){
+        return;
+      }
+      if(!summary || !Array.isArray(summary.layers) || !summary.layers.length){
+        renderAlphaNetworkPlaceholder('ConvNet filters will appear after a few training updates.');
+        return;
+      }
+      networkVizEl.innerHTML = '';
+      networkVizEl.style.overflowY = 'auto';
+      networkVizEl.style.overflowX = 'hidden';
+
+      const container = document.createElement('div');
+      container.className = 'alpha-conv-viz';
+
+      const stepSource = Number.isFinite(options.step) ? options.step : (Number.isFinite(summary.step) ? summary.step : null);
+      const header = document.createElement('div');
+      header.className = 'alpha-conv-viz__meta';
+      const stepLabel = stepSource ? `Step ${stepSource}` : 'Latest weights';
+      const metrics = options.metrics || {};
+      const metricParts = [];
+      if(Number.isFinite(metrics.loss)) metricParts.push(`Loss ${metrics.loss.toFixed(4)}`);
+      if(Number.isFinite(metrics.policy_loss)) metricParts.push(`Policy ${metrics.policy_loss.toFixed(4)}`);
+      if(Number.isFinite(metrics.value_loss)) metricParts.push(`Value ${metrics.value_loss.toFixed(4)}`);
+      header.textContent = metricParts.length ? `${stepLabel} • ${metricParts.join(' • ')}` : stepLabel;
+      container.appendChild(header);
+
+      for(let i = 0; i < summary.layers.length; i += 1){
+        const layer = summary.layers[i];
+        const layerBox = document.createElement('div');
+        layerBox.className = 'alpha-conv-layer';
+
+        const title = document.createElement('div');
+        title.className = 'alpha-conv-layer__title';
+        const [kh, kw] = Array.isArray(layer.kernelSize) ? layer.kernelSize : [null, null];
+        const kernelLabel = Number.isFinite(kh) && Number.isFinite(kw) ? `${kh}×${kw}` : 'kernel';
+        title.textContent = `${layer.name || `Conv ${i + 1}`} — ${kernelLabel} • ${layer.outChannels || (layer.filters ? layer.filters.length : '?')} filters`;
+        layerBox.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.className = 'alpha-conv-layer__grid';
+        layerBox.appendChild(grid);
+
+        const filters = Array.isArray(layer.filters) ? layer.filters : [];
+        const maxAbs = Number.isFinite(layer.maxAbs) && layer.maxAbs > 0
+          ? layer.maxAbs
+          : filters.reduce((acc, filter) => {
+              const candidate = Number.isFinite(filter.maxAbs) ? filter.maxAbs : 0;
+              return candidate > acc ? candidate : acc;
+            }, 0) || 1;
+
+        for(let j = 0; j < filters.length; j += 1){
+          const filter = filters[j];
+          const filterBox = document.createElement('div');
+          filterBox.className = 'alpha-conv-filter';
+          const canvas = document.createElement('canvas');
+          canvas.className = 'alpha-conv-filter__canvas';
+          const kernelHeight = Array.isArray(layer.kernelSize) ? layer.kernelSize[0] : null;
+          const kernelWidth = Array.isArray(layer.kernelSize) ? layer.kernelSize[1] : null;
+          const width = Number.isFinite(kernelWidth) ? kernelWidth : Math.max(1, Math.round(Math.sqrt(filter.values ? filter.values.length : 1)));
+          const height = Number.isFinite(kernelHeight) ? kernelHeight : width;
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+          drawAlphaConvFilter(canvas, filter.values, canvas.width, canvas.height, filter.maxAbs || maxAbs || 1);
+          filterBox.appendChild(canvas);
+          const label = document.createElement('div');
+          label.className = 'alpha-conv-filter__label';
+          label.textContent = `#${(Number.isFinite(filter.index) ? filter.index : j) + 1}`;
+          filterBox.appendChild(label);
+          grid.appendChild(filterBox);
+        }
+
+        container.appendChild(layerBox);
+      }
+
+      networkVizEl.appendChild(container);
+    }
+
+    function recordAlphaMilestoneSnapshot(alphaState, training, model, milestoneStep, metrics){
+      if(!train || !isAlphaModelType(train.modelType)){
+        return false;
+      }
+      const summary = captureAlphaConvSummary(model);
+      if(!summary){
+        return false;
+      }
+      if(Number.isFinite(milestoneStep)){
+        summary.step = milestoneStep;
+      }
+      training.lastConvSummary = summary;
+      training.lastConvSummaryStep = summary.step;
+      training.lastConvMetrics = metrics || null;
+      const alphaConfig = alphaState && alphaState.config ? alphaState.config : {};
+      const rawDescription = typeof alphaConfig.architectureDescription === 'string'
+        ? alphaConfig.architectureDescription
+        : ALPHATETRIS_DEFAULT_ARCHITECTURE;
+      const architectureDescription = normalizeAlphaArchitectureDescription(rawDescription)
+        || ALPHATETRIS_DEFAULT_ARCHITECTURE;
+      const snapshot = {
+        modelType: 'alphatetris',
+        dtype: 'f32',
+        step: summary.step,
+        gen: summary.step,
+        metrics: metrics || null,
+        convSummary: summary,
+        architectureDescription,
+      };
+      recordGenerationSnapshot(snapshot);
+      if(Array.isArray(train.bestByGeneration) && train.bestByGeneration.length > MAX_ALPHA_SNAPSHOTS){
+        const excess = train.bestByGeneration.length - MAX_ALPHA_SNAPSHOTS;
+        if(excess > 0){
+          train.bestByGeneration.splice(0, excess);
+          if(train.historySelection !== null){
+            train.historySelection = Math.max(0, train.historySelection - excess);
+          }
+          syncHistoryControls();
+        }
+      }
+      return true;
     }
 
     function sliceSegment(arr, start, end){
@@ -1824,6 +2354,9 @@ export function initTraining(game, renderer) {
       if(!networkVizEl || typeof d3 === 'undefined'){
         return;
       }
+      networkVizEl.style.overflow = 'hidden';
+      networkVizEl.style.overflowY = 'hidden';
+      networkVizEl.style.overflowX = 'hidden';
       const width = networkVizEl.clientWidth || 320;
       const height = networkVizEl.clientHeight || 220;
       const marginX = 52;
@@ -2175,23 +2708,44 @@ export function initTraining(game, renderer) {
           architectureEl.textContent = describeModelArchitecture();
         }
       }
+      const isAlphaDisplay = isAlphaModelType(displayModelType);
       let displayWeights = currentWeights;
-      if(snapshot && currentWeights){
+      if(isAlphaDisplay){
+        displayWeights = null;
+      } else if(snapshot && currentWeights){
         displayWeights = getDisplayWeightsForUi(currentWeights, { dtype: snapshot.dtype || dtypePreference });
       } else if(currentWeights){
         displayWeights = getDisplayWeightsForUi(currentWeights);
       }
-      const vizFeatureNames = featureNamesForModel(displayModelType);
-      const vizInputDim = inputDimForModel(displayModelType);
+      const vizFeatureNames = isAlphaDisplay ? null : featureNamesForModel(displayModelType);
+      const vizInputDim = isAlphaDisplay ? null : inputDimForModel(displayModelType);
       const headlessSkip = train.enabled && train.visualizeBoard === false && !snapshot;
-      const skipNetworkViz = headlessSkip || !displayUsesPopulation;
+      const skipNetworkViz = isAlphaDisplay ? false : (headlessSkip || !displayUsesPopulation);
       if(!skipNetworkViz){
-        try {
-          renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
-        } catch (_) {
-          /* ignore render failures */
+        if(isAlphaDisplay){
+          const alphaState = ensureAlphaState();
+          const alphaTraining = alphaState && alphaState.training ? alphaState.training : null;
+          const liveSummary = alphaTraining && alphaTraining.lastConvSummary ? alphaTraining.lastConvSummary : null;
+          const liveMetrics = alphaTraining && alphaTraining.lastConvMetrics ? alphaTraining.lastConvMetrics : null;
+          const liveStep = alphaTraining && Number.isFinite(alphaTraining.lastConvSummaryStep)
+            ? alphaTraining.lastConvSummaryStep
+            : null;
+          const summary = snapshot && snapshot.convSummary ? snapshot.convSummary : liveSummary;
+          const metrics = snapshot && snapshot.metrics ? snapshot.metrics : liveMetrics;
+          const step = snapshot && Number.isFinite(snapshot.step) ? snapshot.step : liveStep;
+          if(summary){
+            renderAlphaConvFilters(summary, { step, metrics });
+          } else {
+            renderAlphaNetworkPlaceholder('ConvNet filters will appear after a few training updates.');
+          }
+        } else {
+          try {
+            renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
+          } catch (_) {
+            /* ignore render failures */
+          }
         }
-      } else if(isAlphaModelType(displayModelType) && !headlessSkip){
+      } else if(isAlphaDisplay){
         renderAlphaNetworkPlaceholder();
       } else if(!displayUsesPopulation && networkVizEl){
         networkVizEl.innerHTML = '';
