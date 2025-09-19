@@ -2638,9 +2638,9 @@ export function initTraining(game, renderer) {
       }
       metrics.totalPlacements += 1;
       const entry = metrics.shapes[key];
-      entry.sum = (entry.sum || 0) + reward;
-      entry.count = (entry.count || 0) + 1;
-      entry.average = entry.count > 0 ? entry.sum / entry.count : null;
+      if(!Array.isArray(entry.history)){
+        entry.history = [];
+      }
       entry.history.push({ step: metrics.totalPlacements, value: reward });
       const cutoff = Math.max(1, metrics.totalPlacements - metrics.historyLimit + 1);
       metrics.windowStart = cutoff;
@@ -2649,13 +2649,27 @@ export function initTraining(game, renderer) {
         : Object.keys(metrics.shapes);
       for(let i = 0; i < order.length; i += 1){
         const shapeKey = order[i];
-        const series = metrics.shapes[shapeKey] && metrics.shapes[shapeKey].history;
-        if(!Array.isArray(series)){
+        const shapeEntry = metrics.shapes[shapeKey];
+        if(!shapeEntry){
           continue;
         }
+        const series = Array.isArray(shapeEntry.history) ? shapeEntry.history : [];
         while(series.length && series[0].step < cutoff){
           series.shift();
         }
+        let sum = 0;
+        let count = 0;
+        for(let j = 0; j < series.length; j += 1){
+          const sample = series[j];
+          if(!sample || !Number.isFinite(sample.value)){
+            continue;
+          }
+          sum += sample.value;
+          count += 1;
+        }
+        shapeEntry.sum = sum;
+        shapeEntry.count = count;
+        shapeEntry.average = count > 0 ? sum / count : null;
       }
       metrics.favourite = computeBlockMetricsFavourite(metrics);
       return true;
@@ -2695,11 +2709,9 @@ export function initTraining(game, renderer) {
       const order = Array.isArray(metrics.order) && metrics.order.length
         ? metrics.order
         : Object.keys(metrics.shapes || {});
-      const seriesByShape = new Map();
+      const rawSeriesByShape = new Map();
       let minStep = Infinity;
       let maxStep = -Infinity;
-      let minValue = Infinity;
-      let maxValue = -Infinity;
       for(let i = 0; i < order.length; i += 1){
         const shape = order[i];
         const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
@@ -2718,13 +2730,54 @@ export function initTraining(game, renderer) {
           filtered.push({ step, value });
           if(step < minStep) minStep = step;
           if(step > maxStep) maxStep = step;
-          if(value < minValue) minValue = value;
-          if(value > maxValue) maxValue = value;
         }
-        seriesByShape.set(shape, filtered);
+        rawSeriesByShape.set(shape, filtered);
       }
       if(!Number.isFinite(minStep) || !Number.isFinite(maxStep) || minStep === Infinity || maxStep === -Infinity){
         return;
+      }
+
+      const seriesByShape = new Map();
+      let minValue = Infinity;
+      let maxValue = -Infinity;
+      for(const shape of order){
+        const rawSeries = rawSeriesByShape.get(shape) || [];
+        if(rawSeries.length === 0){
+          seriesByShape.set(shape, rawSeries);
+          continue;
+        }
+        const entry = metrics.shapes && metrics.shapes[shape] ? metrics.shapes[shape] : null;
+        let windowSize = entry && Number.isFinite(entry.count) && entry.count > 0
+          ? Math.floor(entry.count)
+          : rawSeries.length;
+        windowSize = Math.max(1, Math.min(windowSize, rawSeries.length));
+        if(windowSize <= 1){
+          for(let i = 0; i < rawSeries.length; i += 1){
+            const value = rawSeries[i].value;
+            if(value < minValue) minValue = value;
+            if(value > maxValue) maxValue = value;
+          }
+          seriesByShape.set(shape, rawSeries);
+          continue;
+        }
+        const prefix = new Array(rawSeries.length + 1);
+        prefix[0] = 0;
+        for(let i = 0; i < rawSeries.length; i += 1){
+          prefix[i + 1] = prefix[i] + rawSeries[i].value;
+        }
+        const smoothed = new Array(rawSeries.length);
+        for(let i = 0; i < rawSeries.length; i += 1){
+          const end = i + 1;
+          const start = Math.max(0, end - windowSize);
+          const count = end - start;
+          const sum = prefix[end] - prefix[start];
+          const avg = count > 0 ? sum / count : rawSeries[i].value;
+          const point = { step: rawSeries[i].step, value: avg };
+          smoothed[i] = point;
+          if(avg < minValue) minValue = avg;
+          if(avg > maxValue) maxValue = avg;
+        }
+        seriesByShape.set(shape, smoothed);
       }
       if(!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue === Infinity || maxValue === -Infinity){
         return;
@@ -2907,18 +2960,17 @@ export function initTraining(game, renderer) {
             const avg = Number.isFinite(entry.average)
               ? entry.average
               : (entry.count > 0 ? entry.sum / entry.count : null);
-            const lastSample = entry.history && entry.history.length
-              ? entry.history[entry.history.length - 1].value
-              : null;
             const avgText = Number.isFinite(avg) ? avg.toFixed(3) : '—';
-            const lastText = Number.isFinite(lastSample) ? lastSample.toFixed(3) : '—';
-            value.textContent = `Avg ${avgText} · Last ${lastText}`;
+            value.textContent = `Avg ${avgText}`;
           } else {
             value.textContent = 'No samples yet';
           }
+          const text = document.createElement('div');
+          text.className = 'block-metrics-legend__text';
+          text.appendChild(label);
+          text.appendChild(value);
           item.appendChild(swatch);
-          item.appendChild(label);
-          item.appendChild(value);
+          item.appendChild(text);
           fragment.appendChild(item);
         }
         blockMetricsLegendEl.innerHTML = '';
