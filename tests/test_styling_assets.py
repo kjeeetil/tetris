@@ -39,13 +39,13 @@ class StylingAssetsTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.index_path = WEB_ROOT / "index.html"
-        cls.stylesheet_path = WEB_ROOT / "styles.css"
+        cls.tailwind_source_path = WEB_ROOT / "tailwind.input.css"
 
         parser = AssetHTMLParser()
         parser.feed(cls.index_path.read_text(encoding="utf-8"))
         cls.html_parser = parser
 
-        css_text = cls.stylesheet_path.read_text(encoding="utf-8")
+        css_text = cls.tailwind_source_path.read_text(encoding="utf-8")
         class_pattern = re.compile(r"(?<![0-9])\\.([a-zA-Z_-][a-zA-Z0-9_-]*)")
         cls.defined_css_classes = set(class_pattern.findall(css_text))
 
@@ -56,9 +56,6 @@ class StylingAssetsTestCase(unittest.TestCase):
 
     def test_index_includes_core_stylesheets(self):
         parser = self.html_parser
-        with self.subTest("local styles.css referenced"):
-            self.assertIn("./styles.css", parser.stylesheets)
-
         with self.subTest("choices CDN stylesheet referenced"):
             self.assertIn(
                 "https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css",
