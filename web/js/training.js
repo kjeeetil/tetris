@@ -2755,6 +2755,118 @@ export function initTraining(game, renderer) {
     const BOARD_AREA = WIDTH * HEIGHT;
     const BUMP_NORMALIZER = ((WIDTH - 1) * HEIGHT) || 1;
     const CONTACT_NORMALIZER = (BOARD_AREA * 2) || 1;
+    const ENGINEERED_FEATURE_INDEX = {
+      HOLE_RATIO: 6,
+      NEW_HOLE_RATIO: 7,
+      BUMP_RATIO: 8,
+      MAX_HEIGHT_RATIO: 9,
+      WELL_SUM_RATIO: 10,
+      EDGE_WELL_RATIO: 11,
+      TETRIS_WELL_RATIO: 12,
+      CONTACT_RATIO: 13,
+      ROW_TRANSITION_RATIO: 14,
+      COL_TRANSITION_RATIO: 15,
+      AGG_HEIGHT_RATIO: 16,
+    };
+    const REWARD_SHAPING_WEIGHTS = Object.freeze({
+      survival: 0.02,
+      topOutPenalty: 1,
+      newHolePenalty: 0.25,
+      holeReduction: 0.25,
+      bumpReduction: 0.02,
+      aggregateHeightReduction: 0.02,
+      maxHeightReduction: 0.05,
+      contactIncrease: 0.001,
+      rowTransitionReduction: 0.02,
+      colTransitionReduction: 0.02,
+      tetrisWellBonus: 0.05,
+      edgeWellPenalty: 0.05,
+      singlePenalty: 0.02,
+      doubleBonus: 0.05,
+      tripleBonus: 0.1,
+      tetrisBonus: 0.2,
+    });
+    function engineeredFeatureValue(features, index, scale = 1){
+      if(!features || features.length <= index){
+        return 0;
+      }
+      const raw = features[index];
+      return Number.isFinite(raw) ? raw * scale : 0;
+    }
+    function computePlacementReward({ lines = 0, features = null, baselineFeatures = null, newHoleCount = 0, topOut = false }){
+      const baseReward = Number.isFinite(lines) ? lines / 4 : 0;
+      let shaped = baseReward;
+      if(topOut){
+        shaped -= REWARD_SHAPING_WEIGHTS.topOutPenalty;
+      } else {
+        shaped += REWARD_SHAPING_WEIGHTS.survival;
+      }
+      if(Number.isFinite(newHoleCount) && newHoleCount > 0){
+        shaped -= newHoleCount * REWARD_SHAPING_WEIGHTS.newHolePenalty;
+      }
+      if(
+        features &&
+        baselineFeatures &&
+        features.length > ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO &&
+        baselineFeatures.length > ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO
+      ){
+        const holeReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.HOLE_RATIO, BOARD_AREA)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.HOLE_RATIO, BOARD_AREA);
+        if(holeReduction > 0){
+          shaped += holeReduction * REWARD_SHAPING_WEIGHTS.holeReduction;
+        }
+        const bumpReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.BUMP_RATIO, BUMP_NORMALIZER)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.BUMP_RATIO, BUMP_NORMALIZER);
+        if(bumpReduction > 0){
+          shaped += bumpReduction * REWARD_SHAPING_WEIGHTS.bumpReduction;
+        }
+        const aggregateHeightReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO, BOARD_AREA)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.AGG_HEIGHT_RATIO, BOARD_AREA);
+        if(aggregateHeightReduction > 0){
+          shaped += aggregateHeightReduction * REWARD_SHAPING_WEIGHTS.aggregateHeightReduction;
+        }
+        const maxHeightReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO, HEIGHT)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.MAX_HEIGHT_RATIO, HEIGHT);
+        if(maxHeightReduction > 0){
+          shaped += maxHeightReduction * REWARD_SHAPING_WEIGHTS.maxHeightReduction;
+        }
+        const contactIncrease = engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.CONTACT_RATIO, CONTACT_NORMALIZER)
+          - engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.CONTACT_RATIO, CONTACT_NORMALIZER);
+        if(contactIncrease > 0){
+          shaped += contactIncrease * REWARD_SHAPING_WEIGHTS.contactIncrease;
+        }
+        const rowTransitionReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.ROW_TRANSITION_RATIO, BOARD_AREA)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.ROW_TRANSITION_RATIO, BOARD_AREA);
+        if(rowTransitionReduction > 0){
+          shaped += rowTransitionReduction * REWARD_SHAPING_WEIGHTS.rowTransitionReduction;
+        }
+        const colTransitionReduction = engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.COL_TRANSITION_RATIO, BOARD_AREA)
+          - engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.COL_TRANSITION_RATIO, BOARD_AREA);
+        if(colTransitionReduction > 0){
+          shaped += colTransitionReduction * REWARD_SHAPING_WEIGHTS.colTransitionReduction;
+        }
+        const tetrisWellGain = engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.TETRIS_WELL_RATIO, HEIGHT)
+          - engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.TETRIS_WELL_RATIO, HEIGHT);
+        if(tetrisWellGain > 0){
+          shaped += tetrisWellGain * REWARD_SHAPING_WEIGHTS.tetrisWellBonus;
+        }
+        const edgeWellIncrease = engineeredFeatureValue(features, ENGINEERED_FEATURE_INDEX.EDGE_WELL_RATIO, HEIGHT)
+          - engineeredFeatureValue(baselineFeatures, ENGINEERED_FEATURE_INDEX.EDGE_WELL_RATIO, HEIGHT);
+        if(edgeWellIncrease > 0){
+          shaped -= edgeWellIncrease * REWARD_SHAPING_WEIGHTS.edgeWellPenalty;
+        }
+      }
+      if(lines === 1){
+        shaped -= REWARD_SHAPING_WEIGHTS.singlePenalty;
+      } else if(lines === 2){
+        shaped += REWARD_SHAPING_WEIGHTS.doubleBonus;
+      } else if(lines === 3){
+        shaped += REWARD_SHAPING_WEIGHTS.tripleBonus;
+      } else if(lines >= 4){
+        shaped += REWARD_SHAPING_WEIGHTS.tetrisBonus;
+      }
+      return shaped;
+    }
     function wellMetrics(heights){
       let wellSum=0;
       let edgeWell=0;
@@ -3251,7 +3363,6 @@ export function initTraining(game, renderer) {
           }
           const lines = Number.isFinite(sim.lines) ? sim.lines : 0;
           const dropRow = Number.isFinite(sim.dropRow) ? sim.dropRow : null;
-          const reward = Number.isFinite(lines) ? lines / 4 : 0;
           const newPieces = basePieces + 1;
           const newLevel = baseLevel + ((newPieces % 20 === 0) ? 1 : 0);
           const newGravity = gravityForLevel(newLevel);
@@ -3275,9 +3386,17 @@ export function initTraining(game, renderer) {
           });
           const engineeredFeatures = new Float32Array(featureScratch.length);
           engineeredFeatures.set(featureScratch);
-          const newHoleCount = engineeredFeatures.length > 7
-            ? Math.max(0, engineeredFeatures[7] * BOARD_AREA)
+          const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+          const newHoleCount = engineeredFeatures.length > newHoleIndex
+            ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
             : 0;
+          const reward = computePlacementReward({
+            lines,
+            features: engineeredFeatures,
+            baselineFeatures: rootEngineeredFeatures,
+            newHoleCount,
+            topOut,
+          });
 
           const candidateState = {
             grid: sim.grid,
@@ -3383,20 +3502,39 @@ export function initTraining(game, renderer) {
           baselineColumnMaskScratch[c] = columnMaskScratch[c] || 0;
           baselineColumnHeightScratch[c] = columnHeightScratch[c] || 0;
         }
+        const baselineFeatureScratch = featuresFromGrid(grid, 0, {
+          holeBaseline: baselineHoles,
+          baselineColumnMasks: baselineColumnMaskScratch,
+          clearedRows: null,
+        });
+        const baselineEngineeredFeatures = new Float32Array(baselineFeatureScratch.length);
+        baselineEngineeredFeatures.set(baselineFeatureScratch);
         for(const placement of placements){
           const sim = simulateAfterPlacement(grid, curShape, placement.rot, placement.col);
           if(!sim) continue;
           const lines = Number.isFinite(sim.lines) ? sim.lines : 0;
           const dropRow = sim.dropRow;
+          const topOut = sim.grid[0].some((cell) => cell !== 0);
+          const engineeredFeatures = featuresFromGrid(sim.grid, lines, {
+            holeBaseline: baselineHoles,
+            baselineColumnMasks: baselineColumnMaskScratch,
+            clearedRows: sim.clearedRows,
+          });
+          const newHoleIndex = ENGINEERED_FEATURE_INDEX.NEW_HOLE_RATIO;
+          const newHoleCount = engineeredFeatures.length > newHoleIndex
+            ? Math.max(0, engineeredFeatures[newHoleIndex] * BOARD_AREA)
+            : 0;
+          const reward = computePlacementReward({
+            lines,
+            features: engineeredFeatures,
+            baselineFeatures: baselineEngineeredFeatures,
+            newHoleCount,
+            topOut,
+          });
           const baseFeats = isMlpModelType(train.modelType) && train.modelType === 'mlp_raw'
             ? rawFeaturesFromGrid(sim.grid)
-            : featuresFromGrid(sim.grid, lines, {
-                holeBaseline: baselineHoles,
-                baselineColumnMasks: baselineColumnMaskScratch,
-                clearedRows: sim.clearedRows,
-              });
+            : engineeredFeatures;
           const value = scoreFeats(weights, baseFeats);
-          const reward = lines / 4;
           actions.push({
             key: `${placement.rot}|${placement.col}`,
             rot: placement.rot,
