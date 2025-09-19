@@ -292,6 +292,7 @@ export function initTraining(game, renderer) {
   const alphaMetricToggleEl = document.getElementById('alpha-metrics-toggle');
   const alphaMetricToggleStatusEl = document.getElementById('alpha-metrics-toggle-status');
   const historySlider = document.getElementById('model-history-slider');
+  const historyContainer = document.getElementById('model-history-controls');
   const historyLabel = document.getElementById('model-history-label');
   const historyMeta = document.getElementById('model-history-meta');
   const mlpConfigEl = document.getElementById('mlp-config');
@@ -1393,6 +1394,20 @@ export function initTraining(game, renderer) {
     }
 
     function syncHistoryControls(){
+      const trainState = (typeof window !== 'undefined' && window.__train) ? window.__train : null;
+      const activeModelType = (trainState && typeof trainState.modelType === 'string')
+        ? trainState.modelType
+        : currentModelType;
+      const hideHistory = isAlphaModelType(activeModelType);
+      if(historyContainer){
+        if(hideHistory){
+          historyContainer.classList.add('hidden');
+          historyContainer.setAttribute('aria-hidden', 'true');
+        } else {
+          historyContainer.classList.remove('hidden');
+          historyContainer.removeAttribute('aria-hidden');
+        }
+      }
       if(!historySlider) return;
       const total = train && Array.isArray(train.bestByGeneration) ? train.bestByGeneration.length : 0;
       const hasHistory = total > 0;
@@ -2072,6 +2087,19 @@ export function initTraining(game, renderer) {
         if(training && training.metricsHistory){
           training.metricsHistory.pending = null;
         }
+      }
+    }
+
+    function setNetworkVizVisibility(visible){
+      if(!networkVizEl){
+        return;
+      }
+      if(visible){
+        networkVizEl.classList.remove('hidden');
+        networkVizEl.removeAttribute('aria-hidden');
+      } else {
+        networkVizEl.classList.add('hidden');
+        networkVizEl.setAttribute('aria-hidden', 'true');
       }
     }
 
@@ -4052,39 +4080,25 @@ export function initTraining(game, renderer) {
       const vizFeatureNames = isAlphaDisplay ? null : featureNamesForModel(displayModelType);
       const vizInputDim = isAlphaDisplay ? null : inputDimForModel(displayModelType);
       const headlessSkip = train.enabled && train.visualizeBoard === false && !snapshot;
-      const skipNetworkViz = isAlphaDisplay ? false : (headlessSkip || !displayUsesPopulation);
-      if(!skipNetworkViz){
-        if(isAlphaDisplay){
-          if(ALPHA_CONV_VIZ_ENABLED){
-            const alphaState = ensureAlphaState();
-            const alphaTraining = alphaState && alphaState.training ? alphaState.training : null;
-            const liveSummary = alphaTraining && alphaTraining.lastConvSummary ? alphaTraining.lastConvSummary : null;
-            const liveMetrics = alphaTraining && alphaTraining.lastConvMetrics ? alphaTraining.lastConvMetrics : null;
-            const liveStep = alphaTraining && Number.isFinite(alphaTraining.lastConvSummaryStep)
-              ? alphaTraining.lastConvSummaryStep
-              : null;
-            const summary = snapshot && snapshot.convSummary ? snapshot.convSummary : liveSummary;
-            const metrics = snapshot && snapshot.metrics ? snapshot.metrics : liveMetrics;
-            const step = snapshot && Number.isFinite(snapshot.step) ? snapshot.step : liveStep;
-            if(summary){
-              renderAlphaConvFilters(summary, { step, metrics });
-            } else {
-              renderAlphaNetworkPlaceholder('ConvNet filters will appear after a few training updates.');
-            }
-          } else {
-            renderAlphaNetworkPlaceholder('AlphaTetris ConvNet visualization disabled to improve training stability.');
-          }
-        } else {
+      if(isAlphaDisplay){
+        if(networkVizEl){
+          networkVizEl.innerHTML = '';
+          setNetworkVizVisibility(false);
+        }
+      } else {
+        const skipNetworkViz = headlessSkip || !displayUsesPopulation;
+        if(networkVizEl){
+          setNetworkVizVisibility(true);
+        }
+        if(!skipNetworkViz){
           try {
             renderNetworkD3(displayWeights, overrideLayers, { featureNames: vizFeatureNames, inputDim: vizInputDim });
           } catch (_) {
             /* ignore render failures */
           }
+        } else if(!displayUsesPopulation && networkVizEl){
+          networkVizEl.innerHTML = '';
         }
-      } else if(isAlphaDisplay){
-        renderAlphaNetworkPlaceholder();
-      } else if(!displayUsesPopulation && networkVizEl){
-        networkVizEl.innerHTML = '';
       }
     }
 
