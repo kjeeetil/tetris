@@ -17,6 +17,86 @@ const CONTACT_NORMALIZER = Math.max(1, BOARD_AREA * 2);
 const MODEL_CACHE = new Map();
 const PREDICT_FUNCTION_CACHE = new WeakMap();
 
+function arrayBufferToBase64(buffer) {
+  if (!buffer) {
+    return '';
+  }
+  const view = buffer instanceof Uint8Array
+    ? buffer
+    : buffer instanceof ArrayBuffer
+      ? new Uint8Array(buffer)
+      : null;
+  if (!view) {
+    return '';
+  }
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < view.length; i += chunkSize) {
+    const chunk = view.subarray(i, Math.min(view.length, i + chunkSize));
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  if (typeof btoa === 'function') {
+    return btoa(binary);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(binary, 'binary').toString('base64');
+  }
+  throw new Error('Base64 encoding is not supported in this environment.');
+}
+
+function base64ToArrayBuffer(base64) {
+  if (!base64 || typeof base64 !== 'string') {
+    return new ArrayBuffer(0);
+  }
+  let binary;
+  if (typeof atob === 'function') {
+    binary = atob(base64);
+  } else if (typeof Buffer !== 'undefined') {
+    binary = Buffer.from(base64, 'base64').toString('binary');
+  } else {
+    throw new Error('Base64 decoding is not supported in this environment.');
+  }
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function cloneWeightSpecs(specs) {
+  if (!Array.isArray(specs)) {
+    return [];
+  }
+  const clones = [];
+  for (let i = 0; i < specs.length; i += 1) {
+    const spec = specs[i];
+    if (!spec || typeof spec !== 'object') {
+      continue;
+    }
+    const clone = { ...spec };
+    if (Array.isArray(spec.shape)) {
+      clone.shape = spec.shape.slice();
+    }
+    clones.push(clone);
+  }
+  return clones;
+}
+
+function cloneArrayBuffer(buffer) {
+  if (!buffer) {
+    return new ArrayBuffer(0);
+  }
+  if (buffer instanceof ArrayBuffer) {
+    return buffer.slice(0);
+  }
+  if (ArrayBuffer.isView && ArrayBuffer.isView(buffer)) {
+    const view = buffer;
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+  }
+  return new ArrayBuffer(0);
+}
+
 export const ALPHA_BOARD_WIDTH = WIDTH;
 export const ALPHA_BOARD_HEIGHT = HEIGHT;
 export const ALPHA_BOARD_CHANNELS = 3;
@@ -176,6 +256,109 @@ function getPredictFunction(model) {
   const fn = model.predict.bind(model);
   PREDICT_FUNCTION_CACHE.set(model, fn);
   return fn;
+}
+
+export function countAlphaModelParameters(weightSpecs) {
+  if (!Array.isArray(weightSpecs) || !weightSpecs.length) {
+    return 0;
+  }
+  let total = 0;
+  for (let i = 0; i < weightSpecs.length; i += 1) {
+    const spec = weightSpecs[i];
+    if (!spec || !spec.shape) {
+      total += 1;
+      continue;
+    }
+    const shape = Array.isArray(spec.shape) ? spec.shape : [];
+    if (!shape.length) {
+      total += 1;
+      continue;
+    }
+    let size = 1;
+    for (let j = 0; j < shape.length; j += 1) {
+      const dimRaw = shape[j];
+      const dim = Number.isFinite(dimRaw) ? Math.max(1, Math.floor(dimRaw)) : 1;
+      size *= dim;
+    }
+    total += size;
+  }
+  return total;
+}
+
+export function normalizeAlphaModelArtifacts(source = {}) {
+  const topology = source.modelTopology || null;
+  if (!topology) {
+    throw new Error('AlphaTetris artifacts missing model topology.');
+  }
+  const weightSpecs = cloneWeightSpecs(source.weightSpecs);
+  if (!weightSpecs.length) {
+    throw new Error('AlphaTetris artifacts missing weight specifications.');
+  }
+  let weightData = null;
+  if (source.weightData instanceof ArrayBuffer || (ArrayBuffer.isView && ArrayBuffer.isView(source.weightData))) {
+    weightData = cloneArrayBuffer(source.weightData);
+  }
+  if ((!weightData || !weightData.byteLength) && typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
+    weightData = base64ToArrayBuffer(source.weightDataBase64);
+  }
+  if (!weightData || !weightData.byteLength) {
+    throw new Error('AlphaTetris artifacts missing weight data.');
+  }
+  const weightDataBase64 = typeof source.weightDataBase64 === 'string' && source.weightDataBase64
+    ? source.weightDataBase64
+    : arrayBufferToBase64(weightData);
+
+  return {
+    modelTopology: topology,
+    weightSpecs,
+    weightData,
+    weightDataBase64,
+    paramCount: countAlphaModelParameters(weightSpecs),
+  };
+}
+
+export async function serializeAlphaTetrisModel(model, options = {}) {
+  if (!model || typeof model.save !== 'function') {
+    throw new Error('AlphaTetris serialization requires a TensorFlow.js LayersModel instance.');
+  }
+  const tf = resolveTensorFlow(options.tf);
+  let artifacts = null;
+  await model.save(tf.io.withSaveHandler(async (modelArtifacts) => {
+    const normalized = normalizeAlphaModelArtifacts({
+      modelTopology: modelArtifacts.modelTopology,
+      weightSpecs: modelArtifacts.weightSpecs,
+      weightData: modelArtifacts.weightData,
+      weightDataBase64: modelArtifacts.weightData
+        ? arrayBufferToBase64(modelArtifacts.weightData)
+        : null,
+    });
+    artifacts = normalized;
+    return {
+      modelArtifactsInfo: {
+        dateSaved: new Date(),
+        modelTopologyType: 'JSON',
+        modelTopologyBytes: modelArtifacts.modelTopology
+          ? JSON.stringify(modelArtifacts.modelTopology).length
+          : 0,
+        weightSpecsBytes: modelArtifacts.weightSpecs
+          ? JSON.stringify(modelArtifacts.weightSpecs).length
+          : 0,
+        weightDataBytes: normalized.weightData ? normalized.weightData.byteLength : 0,
+      },
+    };
+  }));
+  if (!artifacts) {
+    throw new Error('Failed to capture AlphaTetris model artifacts.');
+  }
+  return artifacts;
+}
+
+export async function loadAlphaTetrisModelFromArtifacts(source, options = {}) {
+  const tf = resolveTensorFlow(options.tf);
+  const normalized = normalizeAlphaModelArtifacts(source);
+  const handler = tf.io.fromMemory(normalized.modelTopology, normalized.weightSpecs, normalized.weightData);
+  const model = await tf.loadLayersModel(handler);
+  return { model, artifacts: normalized };
 }
 
 function countBits32(value) {

@@ -10,6 +10,10 @@ import {
   buildAlphaTetrisModel,
   prepareAlphaInputs,
   runAlphaInference,
+  serializeAlphaTetrisModel,
+  normalizeAlphaModelArtifacts,
+  loadAlphaTetrisModelFromArtifacts,
+  countAlphaModelParameters,
 } from './models/alphatetris.js';
 import {
   backpropagate,
@@ -25,73 +29,6 @@ import {
 let randnSpare = null;
 
 const ALPHA_CONV_VIZ_ENABLED = false; // Disable convnet visualization to avoid browser freezes.
-
-  function arrayBufferToBase64(buffer) {
-    if (!buffer) {
-      return '';
-    }
-  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, Math.min(bytes.length, i + chunkSize));
-    binary += String.fromCharCode.apply(null, chunk);
-  }
-  if (typeof btoa === 'function') {
-    return btoa(binary);
-  }
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(binary, 'binary').toString('base64');
-  }
-  throw new Error('Base64 encoding is not supported in this environment.');
-}
-
-  function base64ToArrayBuffer(base64) {
-    if (!base64 || typeof base64 !== 'string') {
-      return new ArrayBuffer(0);
-  }
-  let binary;
-  if (typeof atob === 'function') {
-    binary = atob(base64);
-  } else if (typeof Buffer !== 'undefined') {
-    binary = Buffer.from(base64, 'base64').toString('binary');
-  } else {
-    throw new Error('Base64 decoding is not supported in this environment.');
-  }
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes.buffer;
-  }
-
-  function countWeightsFromSpecs(weightSpecs) {
-    if (!Array.isArray(weightSpecs) || !weightSpecs.length) {
-      return 0;
-    }
-    let total = 0;
-    for (let i = 0; i < weightSpecs.length; i += 1) {
-      const spec = weightSpecs[i];
-      if (!spec || !spec.shape) {
-        total += 1;
-        continue;
-      }
-      const shape = Array.isArray(spec.shape) ? spec.shape : [];
-      if (!shape.length) {
-        total += 1;
-        continue;
-      }
-      let size = 1;
-      for (let j = 0; j < shape.length; j += 1) {
-        const dimRaw = shape[j];
-        const dim = Number.isFinite(dimRaw) ? Math.max(1, Math.floor(dimRaw)) : 1;
-        size *= dim;
-      }
-      total += size;
-    }
-    return total;
-  }
 
   function cloneAlphaConvSummary(summary) {
     if (!summary || typeof summary !== 'object') {
@@ -1611,30 +1548,7 @@ export function initTraining(game, renderer, options = {}) {
             log('TensorFlow.js is unavailable. Cannot export AlphaTetris model.');
             return null;
           }
-          let artifacts = null;
-          await model.save(tf.io.withSaveHandler(async (modelArtifacts) => {
-            artifacts = {
-              modelTopology: modelArtifacts.modelTopology,
-              weightSpecs: modelArtifacts.weightSpecs,
-              weightDataBase64: arrayBufferToBase64(modelArtifacts.weightData),
-            };
-            return {
-              modelArtifactsInfo: {
-                dateSaved: new Date(),
-                modelTopologyType: 'JSON',
-                modelTopologyBytes: modelArtifacts.modelTopology
-                  ? JSON.stringify(modelArtifacts.modelTopology).length
-                  : 0,
-                weightSpecsBytes: modelArtifacts.weightSpecs
-                  ? JSON.stringify(modelArtifacts.weightSpecs).length
-                  : 0,
-                weightDataBytes: modelArtifacts.weightData ? modelArtifacts.weightData.byteLength : 0,
-              },
-            };
-          }));
-          if(!artifacts){
-            throw new Error('Failed to capture AlphaTetris model artifacts.');
-          }
+          const artifacts = await serializeAlphaTetrisModel(model, { tf });
           const architectureDescription = alphaState && alphaState.config && alphaState.config.architectureDescription
             ? alphaState.config.architectureDescription
             : ALPHATETRIS_DEFAULT_ARCHITECTURE;
@@ -1712,7 +1626,16 @@ export function initTraining(game, renderer, options = {}) {
         }, 0);
         const isAlpha = isAlphaModelType(snapshot.modelType);
         const paramCount = isAlpha
-          ? countWeightsFromSpecs(snapshot.alphaModel && snapshot.alphaModel.weightSpecs)
+          ? (() => {
+              const alphaArtifacts = snapshot.alphaModel || null;
+              if (!alphaArtifacts) {
+                return NaN;
+              }
+              if (Number.isFinite(alphaArtifacts.paramCount)) {
+                return alphaArtifacts.paramCount;
+              }
+              return countAlphaModelParameters(alphaArtifacts.weightSpecs);
+            })()
           : (Array.isArray(snapshot.weights) ? snapshot.weights.length : 0);
         const formattedCount = Number.isFinite(paramCount) ? paramCount.toLocaleString() : 'unknown';
         const noun = isAlpha ? 'model' : 'weights';
@@ -1749,33 +1672,13 @@ export function initTraining(game, renderer, options = {}) {
         if(!alpha || typeof alpha !== 'object'){
           throw new Error('AlphaTetris snapshot missing model artifacts');
         }
-        const topology = alpha.modelTopology;
-        const weightSpecs = Array.isArray(alpha.weightSpecs) ? alpha.weightSpecs : null;
-        const base64 = typeof alpha.weightDataBase64 === 'string' && alpha.weightDataBase64
-          ? alpha.weightDataBase64
-          : null;
-        const fallbackBuffer = alpha.weightData instanceof ArrayBuffer ? alpha.weightData : null;
-        const weightData = base64 ? base64ToArrayBuffer(base64) : fallbackBuffer;
-        if(!topology){
-          throw new Error('AlphaTetris snapshot missing model topology');
-        }
-        if(!weightSpecs || !weightSpecs.length){
-          throw new Error('AlphaTetris snapshot missing weight specs');
-        }
-        if(!weightData || !weightData.byteLength){
-          throw new Error('AlphaTetris snapshot missing weight data');
-        }
+        const normalizedArtifacts = normalizeAlphaModelArtifacts(alpha);
         const descriptionSource = typeof data.architectureDescription === 'string'
           ? data.architectureDescription
           : (typeof data.alphaDescription === 'string' ? data.alphaDescription : '');
         const normalizedDescription = normalizeAlphaArchitectureDescription(descriptionSource)
           || ALPHATETRIS_DEFAULT_ARCHITECTURE;
-        data.alphaModel = {
-          modelTopology: topology,
-          weightSpecs,
-          weightData,
-          weightDataBase64: base64 || arrayBufferToBase64(weightData),
-        };
+        data.alphaModel = normalizedArtifacts;
         data.architectureDescription = normalizedDescription;
         data.dtype = 'f32';
         data.version = 1;
@@ -1823,16 +1726,7 @@ export function initTraining(game, renderer, options = {}) {
           throw new Error('TensorFlow.js is unavailable. Cannot load AlphaTetris model.');
         }
         const alphaArtifacts = snapshot.alphaModel || {};
-        const modelTopology = alphaArtifacts.modelTopology;
-        const weightSpecs = Array.isArray(alphaArtifacts.weightSpecs) ? alphaArtifacts.weightSpecs : null;
-        const weightData = alphaArtifacts.weightData instanceof ArrayBuffer
-          ? alphaArtifacts.weightData
-          : (typeof alphaArtifacts.weightDataBase64 === 'string'
-            ? base64ToArrayBuffer(alphaArtifacts.weightDataBase64)
-            : null);
-        if(!modelTopology || !weightSpecs || !weightSpecs.length || !weightData || !weightData.byteLength){
-          throw new Error('AlphaTetris snapshot was missing model parameters.');
-        }
+        const { model: loadedModel, artifacts: normalizedArtifacts } = await loadAlphaTetrisModelFromArtifacts(alphaArtifacts, { tf });
         const normalizedDescription = normalizeAlphaArchitectureDescription(snapshot.architectureDescription)
           || ALPHATETRIS_DEFAULT_ARCHITECTURE;
         if(train.alpha){
@@ -1849,8 +1743,6 @@ export function initTraining(game, renderer, options = {}) {
         alphaState.config = alphaState.config || {};
         alphaState.config.architectureDescription = normalizedDescription;
         alphaState.config.description = normalizedDescription;
-        const handler = tf.io.fromMemory(modelTopology, weightSpecs, weightData);
-        const loadedModel = await tf.loadLayersModel(handler);
         alphaState.latestModel = loadedModel;
         alphaState.modelPromise = Promise.resolve(loadedModel);
         alphaState.lastPolicyLogits = null;
@@ -1864,7 +1756,9 @@ export function initTraining(game, renderer, options = {}) {
         }
         updateTrainStatus();
         const origin = context && context.fileName ? ` from ${context.fileName}` : '';
-        const paramCount = countWeightsFromSpecs(weightSpecs);
+        const paramCount = Number.isFinite(normalizedArtifacts.paramCount)
+          ? normalizedArtifacts.paramCount
+          : countAlphaModelParameters(normalizedArtifacts.weightSpecs);
         const formattedCount = Number.isFinite(paramCount) ? paramCount.toLocaleString() : 'unknown';
         log(`Loaded ${modelDisplayName(modelType)} model (${formattedCount} params)${origin}.`);
         if(wasRunning){
