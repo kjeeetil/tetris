@@ -3043,6 +3043,8 @@ export function initTraining(game, renderer, options = {}) {
       const seriesByShape = new Map();
       let minValue = Infinity;
       let maxValue = -Infinity;
+      let displayMinStep = Infinity;
+      let displayMaxStep = -Infinity;
       for(const shape of order){
         const rawSeries = rawSeriesByShape.get(shape) || [];
         if(rawSeries.length === 0){
@@ -3058,6 +3060,11 @@ export function initTraining(game, renderer, options = {}) {
             const value = rawSeries[i].value;
             if(value < minValue) minValue = value;
             if(value > maxValue) maxValue = value;
+            const step = rawSeries[i].step;
+            if(Number.isFinite(step)){
+              if(step < displayMinStep) displayMinStep = step;
+              if(step > displayMaxStep) displayMaxStep = step;
+            }
           }
           seriesByShape.set(shape, rawSeries);
           continue;
@@ -3096,14 +3103,32 @@ export function initTraining(game, renderer, options = {}) {
           const avg = count > 0 ? sum / count : rawSeries[i].value;
           const point = { step: rawSeries[i].step, value: avg };
           smoothed[i] = point;
-          if(avg < minValue) minValue = avg;
-          if(avg > maxValue) maxValue = avg;
         }
-        seriesByShape.set(shape, smoothed);
+        const trimCount = Math.max(0, Math.ceil(targetWindow / 2));
+        const outputSeries = trimCount > 0 && smoothed.length > trimCount
+          ? smoothed.slice(0, smoothed.length - trimCount)
+          : smoothed;
+        for(let i = 0; i < outputSeries.length; i += 1){
+          const point = outputSeries[i];
+          const value = point.value;
+          if(value < minValue) minValue = value;
+          if(value > maxValue) maxValue = value;
+          const step = point.step;
+          if(Number.isFinite(step)){
+            if(step < displayMinStep) displayMinStep = step;
+            if(step > displayMaxStep) displayMaxStep = step;
+          }
+        }
+        seriesByShape.set(shape, outputSeries);
       }
       if(!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue === Infinity || maxValue === -Infinity){
         return;
       }
+      if(!Number.isFinite(displayMinStep) || !Number.isFinite(displayMaxStep) || displayMinStep === Infinity || displayMaxStep === -Infinity){
+        return;
+      }
+      minStep = displayMinStep;
+      maxStep = displayMaxStep;
       if(minValue === maxValue){
         const offset = Math.abs(minValue) > 1e-6 ? Math.abs(minValue) * 0.2 : 1;
         minValue -= offset;
