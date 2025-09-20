@@ -3072,36 +3072,28 @@ export function initTraining(game, renderer, options = {}) {
         }
         const smoothed = new Array(rawSeries.length);
         const tailLength = combined.length - rawSeries.length;
-        for(let i = 0; i < rawSeries.length; i += 1){
-          const idx = tailLength + i;
-          const start = Math.max(0, idx - windowSize + 1);
-          const sum = prefix[idx + 1] - prefix[start];
-          const count = Math.max(1, idx - start + 1);
-          const avg = count > 0 ? sum / count : rawSeries[i].value;
-
         const targetWindow = Math.max(1, Math.floor(windowSize));
         const halfWindow = Math.floor((targetWindow - 1) / 2);
         for(let i = 0; i < rawSeries.length; i += 1){
-          let start = i - halfWindow;
+          const idx = tailLength + i;
+          let start = idx - halfWindow;
           let end = start + targetWindow - 1;
           if(start < 0){
-            end = Math.min(rawSeries.length - 1, end - start);
+            end = Math.min(combined.length - 1, end - start);
             start = 0;
           }
-          if(end >= rawSeries.length){
-            const overflow = end - (rawSeries.length - 1);
+          if(end >= combined.length){
+            const overflow = end - (combined.length - 1);
             start = Math.max(0, start - overflow);
-            end = rawSeries.length - 1;
+            end = combined.length - 1;
           }
           if(start > end){
-            start = Math.max(0, Math.min(start, rawSeries.length - 1));
+            start = Math.max(0, Math.min(start, combined.length - 1));
             end = start;
           }
-          // Balance the smoothing window when we run out of historical samples on
-          // either side so the moving average remains stable near plot bounds.
           const sum = prefix[end + 1] - prefix[start];
           const count = Math.max(1, end - start + 1);
-          const avg = sum / count;
+          const avg = count > 0 ? sum / count : rawSeries[i].value;
           const point = { step: rawSeries[i].step, value: avg };
           smoothed[i] = point;
           if(avg < minValue) minValue = avg;
@@ -7356,6 +7348,4 @@ export function initTraining(game, renderer, options = {}) {
   game.registerTrainingInterface(hooks);
   game.setGameOverHandler(onGameOver);
   return { train: window.__train, hooks };
-}
-
 }
