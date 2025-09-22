@@ -1056,7 +1056,7 @@ export function initTraining(game, renderer, options = {}) {
     const HAS_F16 = (typeof Float16Array !== 'undefined');
     const DEFAULT_DTYPE = HAS_F16 ? 'f16' : 'f32';
     const SCORE_PLOT_DEFAULT_UPDATE_FREQ = 5;
-    const SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ = 20;
+    const SCORE_PLOT_ALPHATETRIS_UPDATE_FREQ = 1;
     let dtypePreference = DEFAULT_DTYPE;
     function allocFloat32(n){ return new Float32Array(n); }
     function copyValues(source, target){
