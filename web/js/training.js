@@ -2070,12 +2070,16 @@ export function initTraining(game, renderer, options = {}) {
       if(!training || !metrics || !Number.isFinite(step) || !alphaMetricsPlottingEnabled){
         return false;
       }
+      const previousSelection = Array.isArray(alphaMetricSelection)
+        ? alphaMetricSelection.slice()
+        : [];
+      const blockMetricWasSelected = previousSelection.includes(BLOCK_REWARD_METRIC_NAME);
       if(!training.metricsHistory || typeof training.metricsHistory !== 'object'){
         training.metricsHistory = {
           epoch: [],
           history: {},
           metrics: [],
-          selected: alphaMetricSelection.slice(),
+          selected: previousSelection.slice(),
           stepRange: [],
           pending: null,
         };
@@ -2114,18 +2118,32 @@ export function initTraining(game, renderer, options = {}) {
         return false;
       }
       let selectionChanged = false;
+      const shouldKeepMetric = (name) => {
+        if(name === BLOCK_REWARD_METRIC_NAME){
+          return blockMetricWasSelected;
+        }
+        return history.metrics.includes(name);
+      };
       if(!Array.isArray(history.selected) || history.selected.length === 0){
-        const defaultSelected = alphaMetricSelection.length
-          ? alphaMetricSelection.filter((name) => history.metrics.includes(name))
+        const defaultSelected = previousSelection.length
+          ? previousSelection.filter(shouldKeepMetric)
           : history.metrics.slice();
         history.selected = defaultSelected.length ? defaultSelected : history.metrics.slice();
         selectionChanged = true;
       } else {
-        const filteredSelection = history.selected.filter((name) => history.metrics.includes(name));
+        const filteredSelection = history.selected.filter(shouldKeepMetric);
         if(filteredSelection.length !== history.selected.length){
           history.selected = filteredSelection.length ? filteredSelection : history.metrics.slice();
           selectionChanged = true;
         }
+      }
+      if(blockMetricWasSelected && !history.selected.includes(BLOCK_REWARD_METRIC_NAME)){
+        const desiredIndex = previousSelection.indexOf(BLOCK_REWARD_METRIC_NAME);
+        const insertIndex = desiredIndex >= 0
+          ? Math.min(Math.max(desiredIndex, 0), history.selected.length)
+          : history.selected.length;
+        history.selected.splice(insertIndex, 0, BLOCK_REWARD_METRIC_NAME);
+        selectionChanged = true;
       }
       alphaMetricSelection = history.selected.slice();
       if(selectionChanged){
