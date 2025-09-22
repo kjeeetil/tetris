@@ -107,6 +107,18 @@
             />
             <span class="control-toggle__text">Show training (slow)</span>
           </label>
+          <div class="flex items-center gap-2">
+            <label for="level-cap" class="text-xs uppercase tracking-[0.35em] text-plum/70">End Level</label>
+            <input
+              id="level-cap"
+              type="number"
+              min="1"
+              max="29"
+              step="1"
+              value="10"
+              class="w-20 bg-transparent text-base font-display text-left"
+            />
+          </div>
         </div>
         <div
           id="mcts-controls"
