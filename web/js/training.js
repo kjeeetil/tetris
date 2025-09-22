@@ -1683,11 +1683,17 @@ export function initTraining(game, renderer, options = {}) {
             compression: null,
           };
           normalizedArtifacts = await normalizeAlphaModelArtifacts(sanitized);
-          if(decoded.compression){
-            normalizedArtifacts.originalCompression = decoded.compression;
+          const originalCompression = decoded.compression || decoded.originalCompression || null;
+          if(originalCompression){
+            normalizedArtifacts.originalCompression = originalCompression;
           }
-          if(typeof alpha.weightDataBase64 === 'string' && alpha.weightDataBase64){
-            normalizedArtifacts.encodedWeightDataBase64 = alpha.weightDataBase64;
+          const preferredBase64 = typeof alpha.compressedWeightDataBase64 === 'string' && alpha.compressedWeightDataBase64
+            ? alpha.compressedWeightDataBase64
+            : (typeof decoded.sourceBase64 === 'string' && decoded.sourceBase64
+              ? decoded.sourceBase64
+              : (typeof alpha.weightDataBase64 === 'string' && alpha.weightDataBase64 ? alpha.weightDataBase64 : null));
+          if(preferredBase64){
+            normalizedArtifacts.encodedWeightDataBase64 = preferredBase64;
           }
         } else {
           normalizedArtifacts = await normalizeAlphaModelArtifacts(alpha);
