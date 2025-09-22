@@ -97,6 +97,149 @@ function cloneArrayBuffer(buffer) {
   return new ArrayBuffer(0);
 }
 
+function toUint8Array(data) {
+  if (!data) {
+    return new Uint8Array(0);
+  }
+  if (data instanceof Uint8Array) {
+    return data;
+  }
+  if (data instanceof ArrayBuffer) {
+    return new Uint8Array(data);
+  }
+  if (ArrayBuffer.isView && ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return new Uint8Array(0);
+}
+
+function normalizeCompressionMethod(method) {
+  if (!method || (typeof method !== 'string' && typeof method !== 'number')) {
+    return null;
+  }
+  const normalized = String(method).trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized === 'gzip' || normalized === 'x-gzip' || normalized === 'gz') {
+    return 'gzip';
+  }
+  return null;
+}
+
+let cachedNodeZlib;
+async function getNodeZlib() {
+  if (cachedNodeZlib !== undefined) {
+    return cachedNodeZlib;
+  }
+  if (typeof process === 'undefined' || !process.versions || !process.versions.node) {
+    cachedNodeZlib = null;
+    return cachedNodeZlib;
+  }
+  try {
+    const mod = await import('node:zlib');
+    cachedNodeZlib = mod || null;
+  } catch (err) {
+    cachedNodeZlib = null;
+  }
+  return cachedNodeZlib;
+}
+
+async function transformArrayBuffer(buffer, format, StreamCtor) {
+  const stream = new StreamCtor(format);
+  const writer = stream.writable.getWriter();
+  await writer.write(toUint8Array(buffer));
+  await writer.close();
+  const response = new Response(stream.readable);
+  return response.arrayBuffer();
+}
+
+async function compressArrayBuffer(buffer, method) {
+  const normalized = normalizeCompressionMethod(method);
+  if (!normalized) {
+    return { buffer: cloneArrayBuffer(buffer), method: null };
+  }
+  const StreamCtor = typeof CompressionStream !== 'undefined'
+    ? CompressionStream
+    : (typeof globalThis !== 'undefined' && typeof globalThis.CompressionStream === 'function'
+      ? globalThis.CompressionStream
+      : null);
+  if (StreamCtor) {
+    const compressed = await transformArrayBuffer(buffer, normalized, StreamCtor);
+    return { buffer: compressed, method: normalized };
+  }
+  const zlib = await getNodeZlib();
+  if (zlib && typeof zlib.gzipSync === 'function') {
+    const result = zlib.gzipSync(toUint8Array(buffer));
+    const view = toUint8Array(result);
+    const out = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+    return { buffer: out, method: normalized };
+  }
+  throw new Error(`Compression method "${normalized}" is not supported in this environment.`);
+}
+
+async function decompressArrayBuffer(buffer, method) {
+  const normalized = normalizeCompressionMethod(method);
+  if (!normalized) {
+    return cloneArrayBuffer(buffer);
+  }
+  const StreamCtor = typeof DecompressionStream !== 'undefined'
+    ? DecompressionStream
+    : (typeof globalThis !== 'undefined' && typeof globalThis.DecompressionStream === 'function'
+      ? globalThis.DecompressionStream
+      : null);
+  if (StreamCtor) {
+    const decompressed = await transformArrayBuffer(buffer, normalized, StreamCtor);
+    return decompressed;
+  }
+  const zlib = await getNodeZlib();
+  if (zlib && typeof zlib.gunzipSync === 'function') {
+    const result = zlib.gunzipSync(toUint8Array(buffer));
+    const view = toUint8Array(result);
+    const out = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+    return out;
+  }
+  throw new Error(`Compression method "${normalized}" is not supported in this environment.`);
+}
+
+export async function decodeAlphaWeightData(source = {}) {
+  let weightData = null;
+  let derivedFromBase64 = false;
+  let originalBase64 = null;
+
+  if (source.weightData instanceof ArrayBuffer || (ArrayBuffer.isView && ArrayBuffer.isView(source.weightData))) {
+    weightData = cloneArrayBuffer(source.weightData);
+  }
+
+  if ((!weightData || !weightData.byteLength) && typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
+    weightData = base64ToArrayBuffer(source.weightDataBase64);
+    derivedFromBase64 = true;
+    originalBase64 = source.weightDataBase64;
+  } else if (typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
+    originalBase64 = source.weightDataBase64;
+  }
+
+  if (!weightData || !weightData.byteLength) {
+    throw new Error('AlphaTetris artifacts missing weight data.');
+  }
+
+  const compression = normalizeCompressionMethod(source.compression);
+  if (compression && (derivedFromBase64 || !source.weightData || !source.weightData.byteLength)) {
+    const inflated = await decompressArrayBuffer(weightData, compression);
+    return {
+      weightData: inflated,
+      compression,
+      sourceBase64: originalBase64,
+    };
+  }
+
+  return {
+    weightData,
+    compression: compression || null,
+    sourceBase64: originalBase64,
+  };
+}
+
 export const ALPHA_BOARD_WIDTH = WIDTH;
 export const ALPHA_BOARD_HEIGHT = HEIGHT;
 export const ALPHA_BOARD_CHANNELS = 3;
@@ -285,7 +428,7 @@ export function countAlphaModelParameters(weightSpecs) {
   return total;
 }
 
-export function normalizeAlphaModelArtifacts(source = {}) {
+export async function normalizeAlphaModelArtifacts(source = {}) {
   const topology = source.modelTopology || null;
   if (!topology) {
     throw new Error('AlphaTetris artifacts missing model topology.');
@@ -294,27 +437,27 @@ export function normalizeAlphaModelArtifacts(source = {}) {
   if (!weightSpecs.length) {
     throw new Error('AlphaTetris artifacts missing weight specifications.');
   }
-  let weightData = null;
-  if (source.weightData instanceof ArrayBuffer || (ArrayBuffer.isView && ArrayBuffer.isView(source.weightData))) {
-    weightData = cloneArrayBuffer(source.weightData);
-  }
-  if ((!weightData || !weightData.byteLength) && typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
-    weightData = base64ToArrayBuffer(source.weightDataBase64);
-  }
+  const decoded = await decodeAlphaWeightData(source);
+  const weightData = decoded.weightData;
   if (!weightData || !weightData.byteLength) {
     throw new Error('AlphaTetris artifacts missing weight data.');
   }
-  const weightDataBase64 = typeof source.weightDataBase64 === 'string' && source.weightDataBase64
-    ? source.weightDataBase64
-    : arrayBufferToBase64(weightData);
+  const weightDataBase64 = arrayBufferToBase64(weightData);
 
-  return {
+  const normalized = {
     modelTopology: topology,
     weightSpecs,
     weightData,
     weightDataBase64,
     paramCount: countAlphaModelParameters(weightSpecs),
   };
+  if (decoded.compression) {
+    normalized.originalCompression = decoded.compression;
+    if (typeof decoded.sourceBase64 === 'string' && decoded.sourceBase64) {
+      normalized.encodedWeightDataBase64 = decoded.sourceBase64;
+    }
+  }
+  return normalized;
 }
 
 export async function serializeAlphaTetrisModel(model, options = {}) {
@@ -324,7 +467,7 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
   const tf = resolveTensorFlow(options.tf);
   let artifacts = null;
   await model.save(tf.io.withSaveHandler(async (modelArtifacts) => {
-    const normalized = normalizeAlphaModelArtifacts({
+    const normalized = await normalizeAlphaModelArtifacts({
       modelTopology: modelArtifacts.modelTopology,
       weightSpecs: modelArtifacts.weightSpecs,
       weightData: modelArtifacts.weightData,
@@ -332,7 +475,27 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
         ? arrayBufferToBase64(modelArtifacts.weightData)
         : null,
     });
-    artifacts = normalized;
+    const desiredCompression = normalizeCompressionMethod(options.compression);
+    let finalArtifacts = normalized;
+    if (desiredCompression) {
+      try {
+        const { buffer: compressedBuffer } = await compressArrayBuffer(normalized.weightData, desiredCompression);
+        const compressedBase64 = arrayBufferToBase64(compressedBuffer);
+        finalArtifacts = {
+          ...normalized,
+          compression: desiredCompression,
+          weightDataBase64: compressedBase64,
+          weightDataByteLength: normalized.weightData ? normalized.weightData.byteLength : 0,
+          compressedWeightDataByteLength: compressedBuffer.byteLength,
+        };
+      } catch (err) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('AlphaTetris weight compression failed', err);
+        }
+        finalArtifacts = normalized;
+      }
+    }
+    artifacts = finalArtifacts;
     return {
       modelArtifactsInfo: {
         dateSaved: new Date(),
@@ -355,7 +518,7 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
 
 export async function loadAlphaTetrisModelFromArtifacts(source, options = {}) {
   const tf = resolveTensorFlow(options.tf);
-  const normalized = normalizeAlphaModelArtifacts(source);
+  const normalized = await normalizeAlphaModelArtifacts(source);
   const handler = tf.io.fromMemory(normalized.modelTopology, normalized.weightSpecs, normalized.weightData);
   const model = await tf.loadLayersModel(handler);
   return { model, artifacts: normalized };
