@@ -16,6 +16,7 @@ const CONTACT_NORMALIZER = Math.max(1, BOARD_AREA * 2);
 
 const MODEL_CACHE = new Map();
 const PREDICT_FUNCTION_CACHE = new WeakMap();
+const DEFAULT_COMPRESSION_TIMEOUT_MS = 2000;
 
 function arrayBufferToBase64(buffer) {
   if (!buffer) {
@@ -152,6 +153,42 @@ async function transformArrayBuffer(buffer, format, StreamCtor) {
   await writer.close();
   const response = new Response(stream.readable);
   return response.arrayBuffer();
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  if (!promise || typeof promise.then !== 'function') {
+    return Promise.resolve(promise);
+  }
+  const ms = Number.isFinite(timeoutMs) ? Math.max(0, Math.floor(timeoutMs)) : 0;
+  if (ms <= 0) {
+    return promise;
+  }
+  let timer = null;
+  const errorMessage = label
+    ? `${label} timed out after ${ms}ms`
+    : `Operation timed out after ${ms}ms`;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, ms);
+  });
+  return Promise.race([
+    promise.then(
+      (value) => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+        return value;
+      },
+      (err) => {
+        if (timer !== null) {
+          clearTimeout(timer);
+        }
+        throw err;
+      },
+    ),
+    timeoutPromise,
+  ]);
 }
 
 async function compressArrayBuffer(buffer, method) {
@@ -500,6 +537,9 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
     throw new Error('AlphaTetris serialization requires a TensorFlow.js LayersModel instance.');
   }
   const tf = resolveTensorFlow(options.tf);
+  const compressionTimeout = Number.isFinite(options.compressionTimeoutMs)
+    ? Math.max(0, Math.floor(options.compressionTimeoutMs))
+    : DEFAULT_COMPRESSION_TIMEOUT_MS;
   let artifacts = null;
   await model.save(tf.io.withSaveHandler(async (modelArtifacts) => {
     const normalized = await normalizeAlphaModelArtifacts({
@@ -512,9 +552,14 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
     });
     const desiredCompression = normalizeCompressionMethod(options.compression);
     let finalArtifacts = normalized;
-    if (desiredCompression) {
+    if (desiredCompression && normalized.weightData && normalized.weightData.byteLength) {
       try {
-        const { buffer: compressedBuffer, method: usedCompression } = await compressArrayBuffer(normalized.weightData, desiredCompression);
+        const compressionPromise = compressArrayBuffer(normalized.weightData, desiredCompression);
+        const { buffer: compressedBuffer, method: usedCompression } = await withTimeout(
+          compressionPromise,
+          compressionTimeout,
+          `AlphaTetris ${desiredCompression} compression`,
+        );
         const compressedBase64 = arrayBufferToBase64(compressedBuffer);
         finalArtifacts = {
           ...normalized,
