@@ -11,6 +11,7 @@ import {
   prepareAlphaInputs,
   runAlphaInference,
   serializeAlphaTetrisModel,
+  decodeAlphaWeightData,
   normalizeAlphaModelArtifacts,
   loadAlphaTetrisModelFromArtifacts,
   countAlphaModelParameters,
@@ -1548,7 +1549,7 @@ export function initTraining(game, renderer, options = {}) {
             log('TensorFlow.js is unavailable. Cannot export AlphaTetris model.');
             return null;
           }
-          const artifacts = await serializeAlphaTetrisModel(model, { tf });
+          const artifacts = await serializeAlphaTetrisModel(model, { tf, compression: 'gzip' });
           const architectureDescription = alphaState && alphaState.config && alphaState.config.architectureDescription
             ? alphaState.config.architectureDescription
             : ALPHATETRIS_DEFAULT_ARCHITECTURE;
@@ -1647,7 +1648,7 @@ export function initTraining(game, renderer, options = {}) {
       }
     }
 
-    function parseWeightSnapshot(text){
+    async function parseWeightSnapshot(text){
       if(!text || !text.trim()){
         throw new Error('File was empty');
       }
@@ -1672,7 +1673,25 @@ export function initTraining(game, renderer, options = {}) {
         if(!alpha || typeof alpha !== 'object'){
           throw new Error('AlphaTetris snapshot missing model artifacts');
         }
-        const normalizedArtifacts = normalizeAlphaModelArtifacts(alpha);
+        const hasCompressionFlag = typeof alpha.compression === 'string' && alpha.compression;
+        let normalizedArtifacts;
+        if(hasCompressionFlag){
+          const decoded = await decodeAlphaWeightData(alpha);
+          const sanitized = {
+            ...alpha,
+            weightData: decoded.weightData,
+            compression: null,
+          };
+          normalizedArtifacts = await normalizeAlphaModelArtifacts(sanitized);
+          if(decoded.compression){
+            normalizedArtifacts.originalCompression = decoded.compression;
+          }
+          if(typeof alpha.weightDataBase64 === 'string' && alpha.weightDataBase64){
+            normalizedArtifacts.encodedWeightDataBase64 = alpha.weightDataBase64;
+          }
+        } else {
+          normalizedArtifacts = await normalizeAlphaModelArtifacts(alpha);
+        }
         const descriptionSource = typeof data.architectureDescription === 'string'
           ? data.architectureDescription
           : (typeof data.alphaDescription === 'string' ? data.alphaDescription : '');
@@ -7111,7 +7130,7 @@ export function initTraining(game, renderer, options = {}) {
         reader.onload = async (event) => {
           try {
             const text = typeof event.target.result === 'string' ? event.target.result : '';
-            const snapshot = parseWeightSnapshot(text);
+            const snapshot = await parseWeightSnapshot(text);
             await applyWeightSnapshot(snapshot, { fileName: file.name });
           } catch (err) {
             console.error(err);
