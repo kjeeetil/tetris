@@ -211,26 +211,54 @@ export async function decodeAlphaWeightData(source = {}) {
     weightData = cloneArrayBuffer(source.weightData);
   }
 
-  if ((!weightData || !weightData.byteLength) && typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
-    weightData = base64ToArrayBuffer(source.weightDataBase64);
+  const compression = normalizeCompressionMethod(source.compression);
+  const hasCompressedBase64 = typeof source.compressedWeightDataBase64 === 'string'
+    && source.compressedWeightDataBase64;
+  const fallbackBase64 = typeof source.weightDataBase64 === 'string' && source.weightDataBase64
+    ? source.weightDataBase64
+    : null;
+
+  if ((!weightData || !weightData.byteLength) && compression && hasCompressedBase64) {
+    weightData = base64ToArrayBuffer(source.compressedWeightDataBase64);
     derivedFromBase64 = true;
-    originalBase64 = source.weightDataBase64;
-  } else if (typeof source.weightDataBase64 === 'string' && source.weightDataBase64) {
-    originalBase64 = source.weightDataBase64;
+    originalBase64 = source.compressedWeightDataBase64;
+  } else if ((!weightData || !weightData.byteLength) && fallbackBase64) {
+    weightData = base64ToArrayBuffer(fallbackBase64);
+    derivedFromBase64 = true;
+    originalBase64 = fallbackBase64;
+  } else if (hasCompressedBase64) {
+    originalBase64 = source.compressedWeightDataBase64;
+  } else if (fallbackBase64) {
+    originalBase64 = fallbackBase64;
   }
 
   if (!weightData || !weightData.byteLength) {
     throw new Error('AlphaTetris artifacts missing weight data.');
   }
 
-  const compression = normalizeCompressionMethod(source.compression);
   if (compression && (derivedFromBase64 || !source.weightData || !source.weightData.byteLength)) {
-    const inflated = await decompressArrayBuffer(weightData, compression);
-    return {
-      weightData: inflated,
-      compression,
-      sourceBase64: originalBase64,
-    };
+    try {
+      const inflated = await decompressArrayBuffer(weightData, compression);
+      return {
+        weightData: inflated,
+        compression,
+        sourceBase64: originalBase64,
+      };
+    } catch (err) {
+      if (hasCompressedBase64 && fallbackBase64 && fallbackBase64 !== source.compressedWeightDataBase64) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn(`AlphaTetris ${compression} decompression failed, using uncompressed fallback.`, err);
+        }
+        const fallbackBuffer = base64ToArrayBuffer(fallbackBase64);
+        return {
+          weightData: fallbackBuffer,
+          compression: null,
+          sourceBase64: fallbackBase64,
+          originalCompression: compression,
+        };
+      }
+      throw err;
+    }
   }
 
   return {
@@ -456,6 +484,13 @@ export async function normalizeAlphaModelArtifacts(source = {}) {
     if (typeof decoded.sourceBase64 === 'string' && decoded.sourceBase64) {
       normalized.encodedWeightDataBase64 = decoded.sourceBase64;
     }
+  } else if (decoded.originalCompression) {
+    normalized.originalCompression = decoded.originalCompression;
+    if (typeof source.compressedWeightDataBase64 === 'string' && source.compressedWeightDataBase64) {
+      normalized.encodedWeightDataBase64 = source.compressedWeightDataBase64;
+    } else if (typeof decoded.sourceBase64 === 'string' && decoded.sourceBase64) {
+      normalized.encodedWeightDataBase64 = decoded.sourceBase64;
+    }
   }
   return normalized;
 }
@@ -479,12 +514,12 @@ export async function serializeAlphaTetrisModel(model, options = {}) {
     let finalArtifacts = normalized;
     if (desiredCompression) {
       try {
-        const { buffer: compressedBuffer } = await compressArrayBuffer(normalized.weightData, desiredCompression);
+        const { buffer: compressedBuffer, method: usedCompression } = await compressArrayBuffer(normalized.weightData, desiredCompression);
         const compressedBase64 = arrayBufferToBase64(compressedBuffer);
         finalArtifacts = {
           ...normalized,
-          compression: desiredCompression,
-          weightDataBase64: compressedBase64,
+          compression: usedCompression || desiredCompression,
+          compressedWeightDataBase64: compressedBase64,
           weightDataByteLength: normalized.weightData ? normalized.weightData.byteLength : 0,
           compressedWeightDataByteLength: compressedBuffer.byteLength,
         };
