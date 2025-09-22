@@ -240,6 +240,7 @@ export function initTraining(game, renderer, options = {}) {
   const mctsSimulationInput = document.getElementById('mcts-simulations');
   const mctsCpuctInput = document.getElementById('mcts-cpuct');
   const mctsTemperatureInput = document.getElementById('mcts-temperature');
+  const levelCapInput = document.getElementById('level-cap');
 
   const tensorflowReadyPromise =
     options && options.tensorflowReady && typeof options.tensorflowReady.then === 'function'
@@ -268,7 +269,27 @@ export function initTraining(game, renderer, options = {}) {
   const trainingProfiler = createTrainingProfiler();
   window.__trainingProfiler = trainingProfiler;
 
-  const LEVEL_CAP = 10;
+  const DEFAULT_LEVEL_CAP = 10;
+  const MAX_LEVEL_CAP = 29;
+
+  function sanitizeLevelCap(value, fallback = DEFAULT_LEVEL_CAP) {
+    if (value === null || value === undefined) {
+      return fallback;
+    }
+    if (typeof value === 'string' && value.trim() === '') {
+      return fallback;
+    }
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) {
+      return fallback;
+    }
+    const trimmed = Math.floor(raw);
+    if (!Number.isFinite(trimmed)) {
+      return fallback;
+    }
+    const clamped = Math.min(MAX_LEVEL_CAP, Math.max(1, trimmed));
+    return clamped;
+  }
 
   function logTrainingProfileSummary(limit = 6) {
     const summary = trainingProfiler.summary({ sortBy: 'total', descending: true, limit });
@@ -3862,6 +3883,7 @@ export function initTraining(game, renderer, options = {}) {
       candIndex: -1,
       // Visualization + speed controls for training
       visualizeBoard: false,     // if false: skip board/preview rendering
+      levelCap: DEFAULT_LEVEL_CAP,
       plotBestOnly: true,
       currentWeightsOverride: null,
       ai: {
@@ -3899,6 +3921,29 @@ export function initTraining(game, renderer, options = {}) {
         error: null,
       },
     };
+
+    function effectiveLevelCap() {
+      const sanitized = sanitizeLevelCap(train.levelCap, DEFAULT_LEVEL_CAP);
+      if (train.levelCap !== sanitized) {
+        train.levelCap = sanitized;
+        syncLevelCapControl();
+      }
+      return sanitized;
+    }
+
+    function syncLevelCapControl() {
+      if (!levelCapInput) {
+        return;
+      }
+      const sanitized = sanitizeLevelCap(train.levelCap, DEFAULT_LEVEL_CAP);
+      if (train.levelCap !== sanitized) {
+        train.levelCap = sanitized;
+      }
+      const displayValue = String(sanitized);
+      if (levelCapInput.value !== displayValue) {
+        levelCapInput.value = displayValue;
+      }
+    }
     function shouldLogTrainingEvent(){
       return !(train && train.enabled && train.visualizeBoard === false);
     }
@@ -4479,6 +4524,7 @@ export function initTraining(game, renderer, options = {}) {
       updateScorePlot();
       syncHistoryControls();
       syncMctsControls();
+      syncLevelCapControl();
       updateTrainStatus();
       log(populationModel ? 'Training parameters reset' : 'AlphaTetris training state reset');
     }
@@ -4495,12 +4541,13 @@ export function initTraining(game, renderer, options = {}) {
     }
 
     function maybeEndForLevelCap(logPrefix = 'AI'){
-      if(state.level < LEVEL_CAP){
+      const cap = effectiveLevelCap();
+      if(state.level < cap){
         return false;
       }
       resetAiPlanState();
       const prefix = logPrefix ? `${logPrefix}: ` : '';
-      log(`${prefix}level cap reached -> game over`);
+      log(`${prefix}level cap (${cap}) reached -> game over`);
       onGameOver();
       return true;
     }
@@ -7292,6 +7339,20 @@ export function initTraining(game, renderer, options = {}) {
     if(startTrainingBtn){ startTrainingBtn.addEventListener('click', () => { if(train.enabled) stopTraining(); else startTraining(); }); }
     const resetModelBtn = document.getElementById('reset-model');
     if(resetModelBtn){ resetModelBtn.addEventListener('click', resetTraining); }
+    if(levelCapInput){
+      const handleLevelCapCommit = () => {
+        const next = sanitizeLevelCap(levelCapInput.value, train.levelCap ?? DEFAULT_LEVEL_CAP);
+        if(train.levelCap !== next){
+          train.levelCap = next;
+        }
+        syncLevelCapControl();
+      };
+      syncLevelCapControl();
+      levelCapInput.addEventListener('change', handleLevelCapCommit);
+      levelCapInput.addEventListener('blur', handleLevelCapCommit);
+    } else {
+      train.levelCap = sanitizeLevelCap(train.levelCap, DEFAULT_LEVEL_CAP);
+    }
     const renderToggleInput = document.getElementById('render-toggle');
     const renderToggleLabel = document.getElementById('render-toggle-label');
     function syncRenderToggle(){
