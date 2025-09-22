@@ -1535,6 +1535,43 @@ export function initTraining(game, renderer, options = {}) {
       return null;
     }
 
+    function captureScoreHistory(){
+      if(!train){
+        return null;
+      }
+      const rawScores = Array.isArray(train.gameScores) ? train.gameScores : [];
+      const scores = rawScores.map((value) => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : 0;
+      });
+      const offset = Number.isFinite(train.gameScoresOffset)
+        ? Math.max(0, Math.floor(train.gameScoresOffset))
+        : 0;
+      const fallbackType = (typeof train.modelType === 'string' && train.modelType)
+        ? train.modelType
+        : 'linear';
+      const history = { scores };
+      if(offset > 0){
+        history.offset = offset;
+      }
+      if(scores.length){
+        const rawTypes = Array.isArray(train.gameModelTypes) ? train.gameModelTypes : [];
+        const modelTypes = scores.map((_, idx) => {
+          const type = rawTypes[idx];
+          return (typeof type === 'string' && type) ? type : fallbackType;
+        });
+        history.modelTypes = modelTypes;
+      }
+      const derivedTotal = offset + scores.length;
+      const totalGames = Number.isFinite(train.totalGamesPlayed)
+        ? Math.max(Math.floor(train.totalGamesPlayed), derivedTotal)
+        : derivedTotal;
+      if(totalGames > 0){
+        history.totalGames = totalGames;
+      }
+      return history;
+    }
+
     async function createWeightSnapshot(){
       if(train && isAlphaModelType(train.modelType)){
         try {
@@ -1553,7 +1590,7 @@ export function initTraining(game, renderer, options = {}) {
           const architectureDescription = alphaState && alphaState.config && alphaState.config.architectureDescription
             ? alphaState.config.architectureDescription
             : ALPHATETRIS_DEFAULT_ARCHITECTURE;
-          return {
+          const snapshot = {
             version: 1,
             createdAt: new Date().toISOString(),
             modelType: 'alphatetris',
@@ -1561,6 +1598,11 @@ export function initTraining(game, renderer, options = {}) {
             architectureDescription,
             alphaModel: artifacts,
           };
+          const history = captureScoreHistory();
+          if(history){
+            snapshot.scoreHistory = history;
+          }
+          return snapshot;
         } catch (err) {
           console.error(err);
           log('Failed to export AlphaTetris model.');
@@ -1596,6 +1638,10 @@ export function initTraining(game, renderer, options = {}) {
       }
       if(train && Number.isFinite(train.bestEverFitness)){
         snapshot.bestEverFitness = train.bestEverFitness;
+      }
+      const history = captureScoreHistory();
+      if(history){
+        snapshot.scoreHistory = history;
       }
       return snapshot;
     }
@@ -1723,6 +1769,53 @@ export function initTraining(game, renderer, options = {}) {
       return data;
     }
 
+    function readScoreHistoryFromSnapshot(snapshot, fallbackModelType){
+      const fallbackType = (typeof fallbackModelType === 'string' && fallbackModelType)
+        ? fallbackModelType
+        : 'linear';
+      const safeSnapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+      const fallbackTotal = Number.isFinite(safeSnapshot.totalGamesPlayed)
+        ? Math.max(0, Math.floor(safeSnapshot.totalGamesPlayed))
+        : 0;
+      const history = {
+        scores: [],
+        modelTypes: [],
+        offset: 0,
+        totalGames: 0,
+      };
+      const toScore = (value) => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : 0;
+      };
+      const source = safeSnapshot.scoreHistory;
+      if(Array.isArray(source)){
+        history.scores = source.map(toScore);
+      } else if(source && typeof source === 'object'){
+        if(Array.isArray(source.scores)){
+          history.scores = source.scores.map(toScore);
+        }
+        if(Number.isFinite(source.offset)){
+          history.offset = Math.max(0, Math.floor(source.offset));
+        }
+        if(Array.isArray(source.modelTypes)){
+          history.modelTypes = source.modelTypes.map((value) => (typeof value === 'string' && value) ? value : fallbackType);
+        }
+        if(Number.isFinite(source.totalGames)){
+          history.totalGames = Math.max(0, Math.floor(source.totalGames));
+        }
+      }
+      if(history.modelTypes.length !== history.scores.length){
+        const filled = new Array(history.scores.length);
+        for(let i = 0; i < history.scores.length; i += 1){
+          filled[i] = history.modelTypes[i] || fallbackType;
+        }
+        history.modelTypes = filled;
+      }
+      const derivedTotal = history.offset + history.scores.length;
+      history.totalGames = Math.max(history.totalGames, fallbackTotal, derivedTotal);
+      return history;
+    }
+
     async function applyWeightSnapshot(snapshot, context){
       if(!snapshot){
         throw new Error('Snapshot missing');
@@ -1779,6 +1872,13 @@ export function initTraining(game, renderer, options = {}) {
         if(Number.isFinite(snapGen) && snapGen >= 0){
           train.gen = snapGen;
         }
+        const history = readScoreHistoryFromSnapshot(snapshot, modelType);
+        train.gameScores = history.scores;
+        train.gameModelTypes = history.modelTypes;
+        train.gameScoresOffset = history.offset;
+        train.totalGamesPlayed = history.totalGames;
+        train.scorePlotPending = 0;
+        updateScorePlot();
         updateTrainStatus();
         const origin = context && context.fileName ? ` from ${context.fileName}` : '';
         const paramCount = Number.isFinite(normalizedArtifacts.paramCount)
@@ -1847,6 +1947,13 @@ export function initTraining(game, renderer, options = {}) {
       if(Number.isFinite(snapGen) && snapGen >= 0){
         train.gen = snapGen;
       }
+      const history = readScoreHistoryFromSnapshot(snapshot, modelType);
+      train.gameScores = history.scores;
+      train.gameModelTypes = history.modelTypes;
+      train.gameScoresOffset = history.offset;
+      train.totalGamesPlayed = history.totalGames;
+      train.scorePlotPending = 0;
+      updateScorePlot();
 
       updateTrainStatus();
 
