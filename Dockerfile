@@ -1,14 +1,22 @@
-# Use the official lightweight Python image.
-FROM python:3.11-slim
-
-# Set the working directory inside the container.
+# Build the static assets with TailwindCSS.
+FROM node:22-alpine AS build
 WORKDIR /app
 
-# Copy the application files.
-COPY . /app
+# Install dependencies (including Tailwind CLI) needed to build the CSS bundle.
+COPY package*.json ./
+RUN npm ci
 
-# Expose the port that the app runs on.
+# Copy only the files required for the Tailwind build to keep the context small.
+COPY tailwind.config.cjs ./
+COPY web ./web
+RUN npm run build:tailwind
+
+# Use BusyBox for an ultra-lean runtime that only serves static assets.
+FROM busybox:1.36
+WORKDIR /www
+
+# Copy the pre-built site into the runtime image.
+COPY --from=build /app/web ./
+
 EXPOSE 8080
-
-# Run a simple HTTP server to host the static site from the web directory.
-CMD ["python", "-m", "http.server", "8080", "--directory", "web"]
+CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]
