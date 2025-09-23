@@ -37,7 +37,10 @@ bundler-free while making the codebase easier to navigate.
 
 - `Dockerfile` – Builds the static site into an Nginx image for easy hosting.
 - `cloudbuild.yaml` – Sample Cloud Build recipe that uses the Dockerfile to
-  publish the site.
+  publish the site. The Cloud Build trigger should define the `_KEEP_IMAGES`
+  substitution (default `5`) so operators can control how many of the most
+  recent image digests are retained before the cleanup step prunes older
+  versions.
 
 ## Front-end stack
 
