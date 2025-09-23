@@ -5,5 +5,30 @@ steps:
       - -t
       - "gcr.io/$PROJECT_ID/tetris"
       - .
+  - name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        KEEP="${_KEEP_IMAGES:-5}"
+        if ! [[ "${KEEP}" =~ ^[0-9]+$ ]]; then
+          echo "Invalid _KEEP_IMAGES value: ${KEEP}" >&2
+          exit 1
+        fi
+
+        mapfile -t DIGESTS < <(gcloud container images list-tags "gcr.io/$PROJECT_ID/tetris" --format='get(digest)' --sort-by=~timestamp)
+        if [ "${#DIGESTS[@]}" -le "${KEEP}" ]; then
+          echo "No images to prune; ${#DIGESTS[@]} found (<= ${KEEP} to keep)."
+          exit 0
+        fi
+
+        for digest in "${DIGESTS[@]:${KEEP}}"; do
+          if [ -n "${digest}" ]; then
+            echo "Deleting gcr.io/$PROJECT_ID/tetris@${digest}"
+            gcloud container images delete "gcr.io/$PROJECT_ID/tetris@${digest}" --quiet
+          fi
+        done
 images:
   - "gcr.io/$PROJECT_ID/tetris"
