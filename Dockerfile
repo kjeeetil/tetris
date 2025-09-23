@@ -18,5 +18,9 @@ WORKDIR /www
 # Copy the pre-built site into the runtime image.
 COPY --from=build /app/web ./
 
+# Remove build-only artifacts that aren't required to serve the site.
+RUN rm -f tailwind.input.css \
+    && rm -rf js/models/__tests__
+
 EXPOSE 8080
 CMD ["httpd", "-f", "-p", "8080", "-h", "/www"]
