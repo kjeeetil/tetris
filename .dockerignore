@@ -1,0 +1,22 @@
+# Exclude files and directories that are not needed in the runtime image
+.git
+.gitignore
+
+# Node-related artifacts and caches
+node_modules/
+npm-debug.log*
+
+# Test assets and local tooling
+.tests/
+tests/
+coverage/
+
+# CI/CD configuration that shouldn't bloat the image context
+cloudbuild.yaml
+.github/
+
+# Editor and OS-specific junk
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
