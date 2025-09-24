@@ -318,6 +318,49 @@
       <section class="w-full max-w-5xl">
         <div class="glass-panel mx-auto mt-8 w-full space-y-6 rounded-3xl px-6 py-8 text-left">
           <div>
+            <span class="text-xs uppercase tracking-[0.45em] text-plum/70">Model Lineup</span>
+            <h2 class="mt-2 text-2xl font-display text-citron">Choose Your Reinforcement Learner</h2>
+            <p class="mt-3 text-sm leading-relaxed text-plum/80">
+              Four distinct agents are available in the selector above, spanning from lightweight baselines to the
+              experimental AlphaTetris ConvNet. Use this guide to pick the policy that matches the kind of training run or
+              demonstration you want to explore.
+            </p>
+          </div>
+          <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="font-semibold text-shell">Linear (ES)</dt>
+              <dd class="text-sm text-plum/80">
+                Evolution strategies tune a simple weighted sum over the handcrafted features—fast to reset and perfect for
+                showing how classic feature engineering performs.
+              </dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">MLP (engineered features)</dt>
+              <dd class="text-sm text-plum/80">
+                A configurable multi-layer perceptron that ingests the feature vector above. Adjust the hidden layer controls
+                to see how representational capacity changes the policy.
+              </dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">MLP (board occupancy)</dt>
+              <dd class="text-sm text-plum/80">
+                Trains directly on the raw board grid, learning its own spatial abstractions without handcrafted summaries—a
+                richer but more data-hungry alternative to the engineered-feature MLP.
+              </dd>
+            </div>
+            <div>
+              <dt class="font-semibold text-shell">AlphaTetris (ConvNet)</dt>
+              <dd class="text-sm text-plum/80">
+                A TensorFlow.js convolutional policy/value network with replay buffers and richer diagnostics. Enable it to
+                experiment with the full AlphaTetris training workflow when the browser has the compute to spare.
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+      <section class="w-full max-w-5xl">
+        <div class="glass-panel mx-auto mt-8 w-full space-y-6 rounded-3xl px-6 py-8 text-left">
+          <div>
             <span class="text-xs uppercase tracking-[0.45em] text-plum/70">Feature Engineering</span>
             <h2 class="mt-2 text-2xl font-display text-citron">Model Inputs Explained</h2>
             <p class="mt-3 text-sm leading-relaxed text-plum/80">
