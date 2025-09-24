@@ -18,16 +18,46 @@ steps:
           exit 1
         fi
 
-        mapfile -t DIGESTS < <(gcloud container images list-tags "gcr.io/$PROJECT_ID/tetris" --format='get(digest)' --sort-by=~timestamp)
+        IMAGE_REPOSITORY="${_IMAGE_REPOSITORY:-gcr.io/$PROJECT_ID/tetris}"
+
+        if [[ "${IMAGE_REPOSITORY}" == *.pkg.dev/* ]]; then
+          REGISTRY_DOMAIN="${IMAGE_REPOSITORY%%/*}"
+          REMAINDER="${IMAGE_REPOSITORY#${REGISTRY_DOMAIN}/}"
+          REPO_PROJECT="${REMAINDER%%/*}"
+          REMAINDER="${REMAINDER#${REPO_PROJECT}/}"
+          ARTIFACT_REPOSITORY="${REMAINDER%%/*}"
+          LOCATION="${REGISTRY_DOMAIN%-docker.pkg.dev}"
+
+          if ! gcloud artifacts repositories describe "${ARTIFACT_REPOSITORY}" --location="${LOCATION}" >/dev/null 2>&1; then
+            echo "Artifact Registry repository ${LOCATION}/${ARTIFACT_REPOSITORY} not found; skipping image pruning."
+            exit 0
+          fi
+
+          DIGEST_OUTPUT=""
+          if ! DIGEST_OUTPUT="$(gcloud artifacts docker tags list "${IMAGE_REPOSITORY}" --format='value(digest)' --sort-by='~updateTime')"; then
+            if ! DIGEST_OUTPUT="$(gcloud artifacts docker tags list "${IMAGE_REPOSITORY}" --format='value(digest)' --sort-by='~createTime')"; then
+              echo "Failed to list Artifact Registry tags for ${IMAGE_REPOSITORY}" >&2
+              exit 1
+            fi
+          fi
+          mapfile -t DIGESTS <<<"${DIGEST_OUTPUT}"
+        else
+          mapfile -t DIGESTS < <(gcloud container images list-tags "${IMAGE_REPOSITORY}" --format='get(digest)' --sort-by=~timestamp)
+        fi
+
         if [ "${#DIGESTS[@]}" -le "${KEEP}" ]; then
-          echo "No images to prune; ${#DIGESTS[@]} found (<= ${KEEP} to keep)."
+          echo "No images to prune in ${IMAGE_REPOSITORY}; ${#DIGESTS[@]} found (<= ${KEEP} to keep)."
           exit 0
         fi
 
         for digest in "${DIGESTS[@]:${KEEP}}"; do
           if [ -n "${digest}" ]; then
-            echo "Deleting gcr.io/$PROJECT_ID/tetris@${digest}"
-            gcloud container images delete "gcr.io/$PROJECT_ID/tetris@${digest}" --quiet
+            echo "Deleting ${IMAGE_REPOSITORY}@${digest}"
+            if [[ "${IMAGE_REPOSITORY}" == *.pkg.dev/* ]]; then
+              gcloud artifacts docker images delete "${IMAGE_REPOSITORY}@${digest}" --quiet --delete-tags
+            else
+              gcloud container images delete "${IMAGE_REPOSITORY}@${digest}" --quiet
+            fi
           fi
         done
 images:
